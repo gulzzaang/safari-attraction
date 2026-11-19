@@ -4,29 +4,46 @@ Claude 가 박정욱의 실제 로그인된 사파리를 몰 수 있게 하는 �
 
 ## 필요한 것
 
-- macOS, 사파리, Node 20 이상.
+- macOS, 사파리, Node 18 이상(플러그인으로 쓸 때). 소스에서 빌드 · 시험하려면 Node 20 이상.
 - 사파리 설정 두 가지(처음 한 번):
   1. 사파리 ▸ 설정 ▸ 고급 ▸ **웹 개발자용 기능 보기** 켜기.
   2. 메뉴 막대 **개발** ▸ **Apple 이벤트의 JavaScript 허용** 켜기.
 - 처음 쓸 때 macOS 가 「자동화」 허락을 묻는다(터미널이나 Claude 가 사파리를 제어해도 되는지). 허락해야 한다. 막혔다면 시스템 설정 ▸ 개인정보 보호 및 보안 ▸ 자동화에서 켠다.
 - 막혔을 때는 `status` 도구를 먼저 부르면 무엇이 꺼져 있는지 한국어로 알려 준다.
 
-## 빌드
+## 설치 — Claude Code 플러그인(권장)
+
+Claude Code 안에서 한 줄:
+
+```
+/plugin install safari-attraction --marketplace gulzzaang/safari-attraction
+```
+
+또는 두 줄로:
+
+```
+/plugin marketplace add gulzzaang/safari-attraction
+/plugin install safari-attraction@safari-attraction
+```
+
+저장소가 비공개라 그 맥의 git 이 GitHub `gulzzaang` 으로 로그인돼 있어야 한다. 안 되면 저장소를 내려받은 폴더로 설치한다(GitHub 로그인 불필요):
+
+```
+/plugin marketplace add ~/Documents/safari-attraction
+/plugin install safari-attraction@safari-attraction
+```
+
+플러그인은 `plugin/server.mjs`(부품을 한 파일로 묶은 서버)를 그 맥의 `node` 로 띄운다. 설치 뒤 새 세션부터 도구가 보인다. 아래 「직접 등록」으로 이미 등록한 맥이라면 같은 도구가 두 개 생기니 `claude mcp remove --scope user safari-attraction` 으로 하나를 지운다.
+
+## 설치 — 소스에서 직접 등록(개발용)
 
 ```sh
 npm install
-npm run build
-```
-
-결과는 `dist/` 에 생긴다(`dist/src/index.js` 가 서버 진입점).
-
-## Claude Code 에 등록
-
-```sh
+npm run build        # dist/ 와 plugin/server.mjs 를 함께 만든다
 claude mcp add --scope user safari-attraction -- <node 절대경로> <저장소 경로>/dist/src/index.js
 ```
 
-`<node 절대경로>` 는 `which node` 로 확인한다(Node 20 이상이어야 한다). 등록한 뒤 새 세션부터 도구가 보인다.
+`<node 절대경로>` 는 `which node` 로 확인한다(Node 20 이상). 등록한 뒤 새 세션부터 도구가 보인다.
 
 ## 도구 두 개
 
@@ -49,5 +66,7 @@ claude mcp add --scope user safari-attraction -- <node 절대경로> <저장소 
 npm test                                   # 단위 시험(사파리 없이)
 SAFARI_IT=1 npx vitest run test/integration/tabs.it.test.ts   # 통합 시험(진짜 사파리, 파일 하나씩)
 ```
+
+`src/` 를 고치면 `npm run build` 로 `plugin/server.mjs` 도 다시 만들어 함께 커밋한다(플러그인은 설치할 때 빌드하지 않는다).
 
 통합 시험은 자기가 연 탭에만 표시를 달아 열고 닫으며 사용자 탭은 건드리지 않는다. `spikes/` 에는 `.mcpb` 안에서 osascript 가 도는지 · 사파리 창 최소 폭을 재 보는 첫 시험이 들어 있다.
