@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { fileURLToPath } from "node:url";
 import { SafariError } from "./types.js";
 
 /** JXA 호스트가 보낸 오류 답. */
@@ -22,7 +23,7 @@ export class HostTimeoutError extends Error {
   }
 }
 
-const HOST_PATH = new URL("./jxa/host.js", import.meta.url).pathname;
+const HOST_PATH = fileURLToPath(new URL("./jxa/host.js", import.meta.url));
 
 // 입력을 ASCII 로만 보낸다(호스트가 읽기 청크 경계에서 한글이 잘릴 일이 없게).
 function toAsciiJson(value: unknown): string {

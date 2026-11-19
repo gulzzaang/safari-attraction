@@ -21,7 +21,8 @@ async function frontAsn(): Promise<string> {
   }
 }
 
-function opError(op: string, e: unknown): SafariError {
+/** 사파리 오류 문구(로케일에 따라 영어 · 한국어)와 오류 번호로 SafariError 코드를 정한다. */
+export function opError(op: string, e: unknown): SafariError {
   if (e instanceof SafariError) return e;
   if (e instanceof HostTimeoutError) {
     return op === "runJs"
@@ -31,9 +32,9 @@ function opError(op: string, e: unknown): SafariError {
   if (e instanceof HostError) {
     const msg = e.message;
     if (e.code === "SAFARI_NOT_RUNNING") return new SafariError("SAFARI_NOT_RUNNING", msg);
-    if (/Apple Events/i.test(msg) && /JavaScript/i.test(msg)) return new SafariError("JS_FROM_APPLE_EVENTS_OFF", msg);
     if (e.number === -1743 || /-1743/.test(msg)) return new SafariError("AUTOMATION_DENIED", msg);
-    if ((op === "runJs" || op === "closeTab") && (e.number === -1728 || /Can't get|Invalid index/i.test(msg))) {
+    if (/Apple Events|Apple 이벤트/i.test(msg) && /JavaScript/i.test(msg)) return new SafariError("JS_FROM_APPLE_EVENTS_OFF", msg);
+    if ((op === "runJs" || op === "closeTab") && (e.number === -1728 || /Can't get|Invalid index|가져올 수 없/i.test(msg))) {
       return new SafariError("TAB_CLOSED", msg);
     }
     return new SafariError("SAFARI_ERROR", msg);

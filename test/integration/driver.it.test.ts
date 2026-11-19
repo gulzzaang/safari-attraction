@@ -25,11 +25,18 @@ describeIt("사파리 드라이버(JXA)", () => {
     return found.key;
   }
 
+  // 우리 탭 하나를 닫는다. 닫기 직전에 다시 목록을 읽어, 그 주소의 탭이 지금 있는 자리(키)를 찾고
+  // 꼬리표(RUN)가 든 탭일 때만 닫는다. 아니면(사용자가 탭을 옮기거나 닫음) 닫지 않고 건너뛴다.
+  async function closeIfMine(url: string): Promise<void> {
+    if (!url.includes(RUN)) return;
+    const found = (await d.listTabs()).find((t) => t.url === url);
+    if (found && isMine(found)) await d.closeTab(found.key);
+  }
+
   async function closeMine(): Promise<void> {
-    const tabs = (await d.listTabs()).filter(isMine);
-    // 같은 창에서는 뒤 번호부터 닫아야 앞 번호가 밀리지 않는다.
-    tabs.sort((a, b) => a.windowId - b.windowId || b.index - a.index);
-    for (const t of tabs) await d.closeTab(t.key);
+    const urls = (await d.listTabs()).filter(isMine).map((t) => t.url);
+    // 같은 창에서는 뒤 탭부터 닫아야 앞 번호가 밀리지 않는다(listTabs 순서의 거꾸로).
+    for (const url of urls.reverse()) await closeIfMine(url);
   }
 
   afterEach(closeMine);
@@ -54,7 +61,7 @@ describeIt("사파리 드라이버(JXA)", () => {
     const listed = (await d.listTabs()).find((t) => t.url === tab.url);
     expect(listed?.url).toContain(RUN);
     expect(listed?.owned).toBe(true);
-    await d.closeTab(listed!.key);
+    await closeIfMine(tab.url);
     expect((await d.listTabs()).filter(isMine)).toHaveLength(0);
   });
 
@@ -88,7 +95,21 @@ describeIt("사파리 드라이버(JXA)", () => {
   test('닫힌 탭이면 TAB_CLOSED', async () => {
     const { tab } = await d.openTab(mine('basic.html'));
     const key = await keyNow(tab);
-    await d.closeTab(key);
+    await closeIfMine(tab.url);
     await expect(d.runJs(key, '1+1')).rejects.toMatchObject({ code: 'TAB_CLOSED' });
+  });
+
+  test('windowId 를 주면 그 창에 새 탭을 만든다(있던 탭을 돌려주지 않는다)', async () => {
+    const { tab: a } = await d.openTab(mine('basic.html'));
+    const winBefore = (await d.listWindows()).find((w) => w.id === a.windowId)!;
+    const urlB = mine('basic.html');
+    const { tab: b } = await d.openTab(urlB, { windowId: a.windowId });
+    const winAfter = (await d.listWindows()).find((w) => w.id === a.windowId)!;
+    expect(winAfter.tabCount).toBe(winBefore.tabCount + 1);
+    expect(b.windowId).toBe(a.windowId);
+    expect(b.url).toBe(urlB); // 주소가 같은 새 탭(a 도 사용자 탭도 아님)
+    expect(b.url).not.toBe(a.url);
+    expect(b.isActive).toBe(false);
+    expect(await d.runJs(await keyNow(b), 'document.title')).toBe('기본 시험 페이지');
   });
 });

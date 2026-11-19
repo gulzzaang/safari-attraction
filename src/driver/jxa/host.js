@@ -72,6 +72,7 @@ const ops = {
     if (args.windowId !== undefined && args.windowId !== null) {
       win = Safari.windows.byId(args.windowId);
       win.id(); // 없는 창이면 여기서 오류
+      win.tabs.push(Safari.Tab({ url: args.url }));
     } else {
       const wins = normalWindows();
       if (wins.length === 0) {
@@ -97,7 +98,15 @@ const ops = {
       try {
         state = str(Safari.doJavaScript("location.href + ' ' + document.readyState", { in: tab }));
       } catch (e) {
-        if (/Apple Events/i.test(String(e.message))) throw e;
+        // 「Apple 이벤트에서 JavaScript 허용」이 꺼진 오류는 기다려도 소용없다 — 만든 탭을 닫고 그대로 올린다.
+        // (사파리 오류 문구는 로케일에 따라 영어 또는 한국어.)
+        const m = String(e.message);
+        if (/Apple Events|Apple 이벤트/i.test(m) && /JavaScript/i.test(m)) {
+          try {
+            tab.close();
+          } catch (e2) {}
+          throw e;
+        }
       }
       const sp = state.lastIndexOf(" ");
       const href = state.slice(0, sp);
