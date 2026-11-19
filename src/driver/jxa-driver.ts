@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { HostError, HostTimeoutError, JxaHost } from "./jxa-host.js";
-import { TabRegistry, type Guarded, type Probe, type RawTab, type RebindResult, type Spot } from "./tab-registry.js";
+import { TabRegistry, type Guarded, type Probe, type RawTab, type RebindResult, type SettleResult, type Spot } from "./tab-registry.js";
 import { SafariError, type SafariDriver, type TabInfo, type WindowInfo } from "./types.js";
 
 export { SafariError } from "./types.js";
@@ -62,6 +62,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): Safar
     probe: (windowId, index, timeoutMs) => call<Probe>("probe", { windowId, index }, timeoutMs),
     stamp: (windowId, index, key) => call<boolean>("stamp", { windowId, index, key }),
     rebind: (a) => call<RebindResult>("rebind", a),
+    settle: (a) => call<SettleResult>("settle", a),
     close: (spot, urlOnly, timeoutMs) => call<Guarded<null>>("closeTab", { ...guardArgs(spot), urlOnly }, timeoutMs),
   });
 
@@ -118,6 +119,11 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): Safar
     async rebindTab(tabKey) {
       const raw = await registry.rebind(tabKey);
       return toTab({ raw, key: tabKey, owned: registry.isOwned(tabKey) });
+    },
+
+    async settleTab(tabKey) {
+      const r = await registry.settle(tabKey);
+      return { navigated: r.navigated, leaving: r.leaving, tab: toTab({ raw: r.tab, key: tabKey, owned: registry.isOwned(tabKey) }) };
     },
 
     closeOwned: () => registry.closeOwned(),

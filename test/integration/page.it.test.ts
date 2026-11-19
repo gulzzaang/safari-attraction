@@ -90,6 +90,30 @@ describeIt('페이지 조작(Page)', () => {
     expect(listed.find((t) => t.key === page.key)?.url).toContain('result.html'); // 같은 키가 이동한 탭을 가리킨다
   });
 
+  test('핸들러가 기본 동작을 막고 타이머로 이동해도 같은 키가 이어지고 탭이 닫힌다', async () => {
+    const page = await open('form.html');
+    await page.locator('#later').click(); // 막힌 click → 150ms 뒤 location.href = … (동작 직후엔 이동이 안 보인다)
+    expect(await page.title()).toBe('결과: 타이머로 왔다');
+    expect((await d.listTabs()).find((t) => t.key === page.key)?.url).toContain('result.html');
+    expect(await d.closeOwned()).toBe(1); // 키를 잃지 않았으니 우리 탭으로 닫힌다
+    expect((await d.listTabs()).filter(isMine)).toHaveLength(0);
+  });
+
+  test('evaluate 안의 타이머 이동(식 안 location 대입)도 키가 이어진다', async () => {
+    const page = await open('basic.html');
+    const target = mine('result.html') + '&q=' + encodeURIComponent('식 안 타이머');
+    await page.evaluate((u: string) => { setTimeout(() => { location.href = u; }, 100); }, target);
+    expect(await page.title()).toBe('결과: 식 안 타이머');
+  });
+
+  test('엄격한 CSP 페이지에서도 evaluate 가 돈다', async () => {
+    const page = await open('csp.html');
+    expect(await page.evaluate((n: number) => n * 2, 21)).toBe(42);
+    expect(await page.evaluate('document.title')).toBe('CSP 시험 페이지');
+    expect(await page.evaluate(async () => 'ok')).toBe('ok');
+    await page.locator('#b').click(); // 다른 동작도 문자열 eval 을 쓰지 않는다
+  });
+
   test('click 이 이동을 안 시키면 느려지지 않는다(rebind 안 함)', async () => {
     const page = await open('form.html');
     const t0 = performance.now();

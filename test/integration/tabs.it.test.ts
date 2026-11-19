@@ -112,6 +112,21 @@ describeIt('탭 키 · 우리 탭 정리', () => {
     expect(await d.closeOwned()).toBe(1);
   });
 
+  test('settleTab 은 이동했어도 키를 지우지 않고 표시를 다시 적는다', async () => {
+    const { tab } = await d.openTab(mine('basic.html'));
+    expect(await d.settleTab(tab.key)).toMatchObject({ navigated: false, leaving: false });
+    const target = mine('alert.html');
+    await d.runJs(tab.key, `setTimeout(function(){ location.href = ${JSON.stringify(target)} }, 50); 1`);
+    await new Promise((r) => setTimeout(r, 600)); // 새 문서가 떠서 표시가 사라진 뒤 — runJs 였다면 키를 잃는 때
+    const r = await d.settleTab(tab.key);
+    expect(r.navigated).toBe(true);
+    expect(r.tab.key).toBe(tab.key);
+    expect(r.tab.url).toBe(target);
+    expect(await d.settleTab(tab.key)).toMatchObject({ navigated: false });
+    expect(await d.runJs(tab.key, 'document.title')).toBe('경고창 시험 페이지');
+    expect(await d.closeOwned()).toBe(1);
+  });
+
   test.skipIf(safariWindowCount !== 0)('창이 없으면 새 창에 연다', async () => {
     const { tab } = await d.openTab(mine('basic.html'));
     expect((await d.listWindows()).length).toBe(1);

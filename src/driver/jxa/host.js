@@ -84,6 +84,42 @@ function guardTab(args) {
   return null;
 }
 
+// 새 문서가 다 뜰 때까지(최대 15초) 기다려 표시를 적고 탭 정보를 돌려준다(rebind · settle 이 함께 쓴다).
+function finishRebind(args, tab) {
+  // 읽어 보아 표시가 남아 있는지 확인한다(뜨는 중에 적으면 지워질 수 있다).
+  const budget = args.loadBudgetMs || 15000;
+  const t1 = Date.now();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    for (;;) {
+      let ready = false;
+      try {
+        ready = str(Safari.doJavaScript("document.readyState", { in: tab })) === "complete";
+      } catch (e) {
+        if (isJsOffError(e)) throw e;
+      }
+      if (ready || Date.now() - t1 > budget) break;
+      delay(0.05);
+    }
+    const again = probeTab(args.windowId, args.index);
+    if (!again) return { status: "gone" };
+    if (again.marker !== "" && again.marker !== args.key) return { status: "other" };
+    stampTab(tab, args.key);
+    if (readMarker(tab) === args.key) break;
+    delay(0.1);
+  }
+  const win = Safari.windows.byId(args.windowId);
+  return {
+    status: "ok",
+    tab: {
+      windowId: args.windowId,
+      index: args.index,
+      title: str(tab.name()),
+      url: str(tab.url()),
+      isActive: args.index === win.currentTab().index(),
+    },
+  };
+}
+
 function windowTabInfos(w) {
   const windowId = w.id();
   const names = w.tabs.name();
@@ -160,38 +196,32 @@ const ops = {
         delay(0.05);
       }
     }
-    // 새 문서가 다 뜰 때까지(최대 15초) 기다려 표시를 적고, 읽어 보아 남아 있는지 확인한다(뜨는 중에 적으면 지워질 수 있다).
-    const budget = args.loadBudgetMs || 15000;
-    const t1 = Date.now();
-    for (let attempt = 0; attempt < 5; attempt++) {
-      for (;;) {
-        let ready = false;
-        try {
-          ready = str(Safari.doJavaScript("document.readyState", { in: tab })) === "complete";
-        } catch (e) {
-          if (isJsOffError(e)) throw e;
-        }
-        if (ready || Date.now() - t1 > budget) break;
-        delay(0.05);
+    return finishRebind(args, tab);
+  },
+
+  // 이동은 일어났는지 본다 — 표시가 남은 키의 탭이 그대로면 {status:"same"}, 자리의 탭에 표시가 없으면(새 문서)
+  // 다 뜰 때까지 기다려 표시를 다시 적고 {status:"navigated"}. 다른 키의 표시 → "other", 탭 없음 → "gone".
+  // 읽기만 하고 아무것도 지우지 않는다(표시가 없다는 이유로 탭을 잃지 않게 하려는 확인용).
+  settle(args) {
+    const p0 = probeTab(args.windowId, args.index);
+    if (!p0) return { status: "gone" };
+    if (p0.marker !== "" && p0.marker !== args.key) return { status: "other" };
+    if (p0.marker === args.key) {
+      const win = Safari.windows.byId(args.windowId);
+      let leaving = false; // 문서를 떠나는 중인가(beforeunload — Page 가 동작 때 심는 깃발)
+      try {
+        leaving = Safari.doJavaScript("!!window.__saLeaving", { in: p0.tab }) === true;
+      } catch (e) {
+        if (isJsOffError(e)) throw e;
       }
-      const again = probeTab(args.windowId, args.index);
-      if (!again) return { status: "gone" };
-      if (again.marker !== "" && again.marker !== args.key) return { status: "other" };
-      stampTab(tab, args.key);
-      if (readMarker(tab) === args.key) break;
-      delay(0.1);
+      return {
+        status: "same",
+        leaving,
+        tab: { windowId: args.windowId, index: args.index, title: str(p0.tab.name()), url: p0.url, isActive: args.index === win.currentTab().index() },
+      };
     }
-    const win = Safari.windows.byId(args.windowId);
-    return {
-      status: "ok",
-      tab: {
-        windowId: args.windowId,
-        index: args.index,
-        title: str(tab.name()),
-        url: str(tab.url()),
-        isActive: args.index === win.currentTab().index(),
-      },
-    };
+    const r = finishRebind(args, p0.tab);
+    return r.status === "ok" ? { status: "navigated", tab: r.tab } : r;
   },
 
   // 자리의 탭에 표시를 적는다(탭 붙잡기).

@@ -12,6 +12,8 @@
   <button id="count" type="button">누르기</button>
   <p id="clicks">0</p>
   <a id="go" href="result.html">결과로 가기</a>
+  <!-- 클릭 핸들러가 기본 동작을 막고 잠시 뒤에 스스로 이동한다(타이머 리다이렉트 — 동작 직후엔 이동이 보이지 않는다). -->
+  <a id="later" href="result.html">나중에 가기</a>
   <script>
     var input = document.getElementById('name');
     var preview = document.getElementById('preview');
@@ -34,6 +36,12 @@
     });
     // 링크에 시험 꼬리표와 q 를 싣는다.
     var go = document.getElementById('go');
+    var later = document.getElementById('later');
+    later.href = 'result.html' + (location.search || '?') + '&q=' + encodeURIComponent('타이머로 왔다');
+    later.addEventListener('click', function (e) {
+      e.preventDefault();
+      setTimeout(function () { location.href = later.href; }, 150);
+    });
     go.href = 'result.html' + (location.search || '?') + '&q=' + encodeURIComponent('링크로 왔다');
   </script>
 </body>

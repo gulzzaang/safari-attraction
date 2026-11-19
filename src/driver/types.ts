@@ -49,6 +49,13 @@ export interface SafariDriver {
    * 기록한 자리의 탭에 다른 키의 표시가 있으면 TAB_CLOSED.
    */
   rebindTab(tabKey: string): Promise<TabInfo>;
+  /**
+   * 동작 뒤 탭이 제자리에서 이동했는지 본다 — rebindTab 의 읽기 전용 짝. 이동하지 않았으면(탭에 이 키의 표시가 그대로)
+   * navigated:false(leaving: 문서를 떠나는 중이니 더 기다려야 할 수 있다). 새 문서가 떴으면(표시가 없음) 다 뜰 때까지 기다려
+   * 표시를 다시 적고 navigated:true. 표시가 없다는 이유로 키를 지우지 않는다 — 다른 키의 표시가 있거나 탭이 정말 없을 때만
+   * TAB_CLOSED(그때만 키를 지운다).
+   */
+  settleTab(tabKey: string): Promise<{ navigated: boolean; leaving: boolean; tab: TabInfo }>;
   /** 이 드라이버가 연 탭을 모두 닫는다(사용자 탭은 그대로). 닫은 수를 돌려준다. */
   closeOwned(): Promise<number>;
   close(): Promise<void>;

@@ -1,16 +1,20 @@
 import { SafariError, type SafariDriver } from "../driver/types.js";
 import {
   buildActionSource,
+  buildEvalSource,
   buildPendingReadSource,
-  buildTokenCheckSource,
   type ActionErr,
   type ActionOk,
   type ActionOp,
 } from "./inpage-actions.js";
 
 const LOAD_TIMEOUT_MS = 15000;
-/** 이동이 시작됐는데 아직 새 문서가 안 떴을 때 rebindTab 을 다시 부르는 최대 횟수(한 번에 1.5~5초씩 기다린다). */
-const MAX_REBINDS = 4;
+/** 동작이 이동을 일으킬 것 같은데(expectNav) 문서를 떠나는 낌새(beforeunload)가 없을 때 더 기다리는 시간. */
+const EXPECT_NAV_GRACE_MS = 1500;
+/** 문서를 떠나는 중(beforeunload)인데 새 문서가 안 뜰 때(느린 서버 · 내려받기) 기다리는 최대 시간. */
+const LEAVING_MAX_MS = 8000;
+/** 동작 중 페이지가 잡아 둔 setTimeout 이 이 시간 이하면 그만큼 기다렸다가 이동 여부를 본다(타이머 리다이렉트). */
+const TIMER_WAIT_MAX_MS = 1000;
 /** evaluate 가 돌려준 약속을 기다리는 시간. */
 const PENDING_TIMEOUT_MS = 15000;
 
@@ -31,9 +35,10 @@ export interface Locator {
  * 사파리 탭 하나를 Playwright 의 Page 처럼 다룬다. 동작은 전부 페이지 안 자바스크립트(이벤트 보내기)로 한다 —
  * 진짜 마우스 · 키보드 입력이 아니고, 사파리를 앞으로 가져오지 않는다.
  *
- * 탭 키 지키기: 문서가 바뀌면 탭 표시가 사라져 레지스트리가 탭을 잃으므로, 이동을 일으킬 수 있는 동작은
- * 페이지에 표시(window.__saTok)를 심고, 동작 뒤에 문서가 바뀌었다고 판단되면 바로 driver.rebindTab 을 부른다.
- * 이동이 없으면 rebindTab 을 부르지 않는다(1.5초 이상 걸린다).
+ * 탭 키 지키기: 문서가 바뀌면 탭 표시가 사라져 runJs 로는 탭을 못 찾는다(레지스트리가 키를 지운다). 그래서 이동을 일으킬
+ * 수 있는 동작(goto · click · 글쇠 · evaluate) 뒤에는 runJs 가 아니라 driver.settleTab 으로 확인한다 — 읽기 전용이라 새 문서가
+ * 이미 떴어도 키를 지우지 않고 표시를 다시 적어 준다. 이동이 느리거나(떠나는 중) 동작이 이동을 일으킬 게 분명하면 settleTab 을 거듭 부른다.
+ * 동작 중 잡힌 짧은 setTimeout(타이머 리다이렉트)도 그만큼 기다렸다가 확인한다.
  */
 export class Page {
   constructor(
@@ -71,7 +76,14 @@ export class Page {
    */
   async evaluate<T = unknown>(fn: string | ((arg: any) => T), arg?: unknown): Promise<Awaited<T>> {
     const src = typeof fn === "function" ? `(${fn.toString()})` : fn;
-    const r = await this.act("eval", { src, arg }, { expectNav: NAVIGATING_SRC.test(src) });
+    try {
+      // 소스를 스크립트 글에 그대로 끼우므로 문법 오류는 미리 걸러 한국어로 알린다(안 그러면 스크립트 전체가 깨진다).
+      new Function(`return (${src}\n)`);
+    } catch (e) {
+      throw new Error(`evaluate 식의 문법이 잘못됨: ${(e as Error).message} (식 하나나 함수여야 합니다)`);
+    }
+    const tok = newToken();
+    const r = await this.run(buildEvalSource(src, arg, tok), NAVIGATING_SRC.test(src));
     let s = r.s;
     if (r.pending) s = await this.awaitPending(r.pending);
     return (s === undefined ? undefined : JSON.parse(s)) as Awaited<T>;
@@ -96,52 +108,39 @@ export class Page {
   // ---- 안쪽 ----
 
   /** 페이지 안 동작 하나를 돌리고, 문서가 바뀌었으면 탭 키를 다시 붙인다. */
-  private async act(op: ActionOp, args: Record<string, unknown>, o: { expectNav?: boolean } = {}) {
-    const tok = newToken();
-    const raw = await this.driver.runJs(this.key, buildActionSource(op, { ...args, tok }));
+  private act(op: ActionOp, args: Record<string, unknown>) {
+    return this.run(buildActionSource(op, { ...args, tok: newToken() }), false);
+  }
+
+  private async run(source: string, expectNav: boolean) {
+    const raw = await this.driver.runJs(this.key, source);
     const res = JSON.parse(raw) as ActionOk | ActionErr;
     if (!res.ok) throw new Error(res.err);
-    await this.settle(tok, !!res.r.expectNav || !!o.expectNav);
+    await this.settle(expectNav || !!res.r.expectNav, res.r.timerMs ?? -1);
     return res.r;
   }
 
-  private async tokenState(tok: string): Promise<{ tok: boolean; leaving: boolean }> {
-    try {
-      return JSON.parse(await this.driver.runJs(this.key, buildTokenCheckSource(tok)));
-    } catch (e) {
-      if (e instanceof SafariError && e.code === "TAB_CLOSED") {
-        throw new SafariError(
-          "TAB_CLOSED",
-          `동작은 했지만 그 사이 페이지가 바뀌어 탭 ${this.key} 의 표시를 잃음(이동이 끝나기 전에 확인함). 탭을 다시 확인하세요`,
-        );
-      }
-      throw e;
-    }
-  }
-
   /**
-   * 동작 뒤 문서가 바뀌었는지 보고 바뀌었으면 rebindTab(불러오기가 끝나길 기다린다)을 부른다.
-   * expectNav 면(동작이 이동을 일으킨 게 분명) 바로 부른다. 아니면 표시를 한 번 보고, 표시가 사라졌거나
-   * 문서를 떠나는 중(beforeunload)일 때만 부른다. 이동이 없으면 아무것도 안 부른다.
+   * 동작 뒤 탭이 이동했는지 settleTab(읽기 전용)으로 보고, 새 문서면 거기서 끝낸다(표시는 settleTab 이 다시 적는다).
+   * 아직 옛 문서면: 문서를 떠나는 중이면 더 기다리고, 동작이 이동을 일으킬 게 분명했으면(expectNav) 잠깐 더 기다리고, 아니면 끝.
    */
-  private async settle(tok: string, expectNav: boolean): Promise<void> {
-    if (!expectNav) {
-      const st = await this.tokenState(tok);
-      if (st.tok && !st.leaving) return; // 같은 문서
-    }
-    for (let i = 0; i < MAX_REBINDS; i++) {
-      await this.driver.rebindTab(this.key);
-      // 새 문서에는 rebindTab 이 표시를 다시 적어 둔 뒤라 읽어도 안전하다. 표시가 사라졌으면 새 문서다.
-      const st = await this.tokenState(tok);
-      if (!st.tok) return;
-      // 아직 옛 문서: 떠나는 중이면(이동이 느림) 더 기다리고, 아니면 이동이 일어나지 않은 것이다.
-      if (!st.leaving) return;
+  private async settle(expectNav: boolean, timerMs: number): Promise<void> {
+    if (timerMs >= 0 && timerMs <= TIMER_WAIT_MAX_MS) await sleep(timerMs + 80);
+    const t0 = Date.now();
+    for (;;) {
+      const r = await this.driver.settleTab(this.key);
+      if (r.navigated) return;
+      const waited = Date.now() - t0;
+      if (r.leaving ? waited > LEAVING_MAX_MS : !expectNav || waited > EXPECT_NAV_GRACE_MS) return;
+      await sleep(100);
     }
   }
 
   private async awaitPending(id: string): Promise<string | undefined> {
     const t0 = Date.now();
     for (;;) {
+      // 읽기 전에 이동을 확인한다 — 약속을 기다리는 동안 페이지가 이동했으면 runJs 가 탭 키를 지울 수 있다.
+      if ((await this.driver.settleTab(this.key)).navigated) throw new Error("evaluate 의 약속이 끝나기 전에 페이지가 이동해 결과를 받을 수 없음(탭 키는 그대로)");
       const p = JSON.parse(await this.driver.runJs(this.key, buildPendingReadSource(id))) as {
         state: "pending" | "ok" | "err" | "lost";
         s?: string;

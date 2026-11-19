@@ -6,9 +6,10 @@
  *   성공  {"ok":true,"r":{…}}   r.expectNav = 이 동작이 이 문서를 떠나는 이동을 일으켰다고 그 자리에서 알 수 있다
  *   실패  {"ok":false,"err":"한국어 문장"}
  * 사파리의 `do JavaScript` 는 마지막 식의 값을 돌려주고 약속(Promise)은 기다려 주지 않는다.
+ * 페이지 안에서 문자열을 eval 하는 곳은 없다(엄격한 CSP 에서도 돌도록).
  */
 
-export type ActionOp = "click" | "fill" | "text" | "press" | "type" | "eval" | "goto";
+export type ActionOp = "click" | "fill" | "text" | "press" | "type" | "goto";
 
 /** 페이지 안에서 동작이 끝난 뒤 보내는 결과. */
 export interface ActionOk {
@@ -17,6 +18,8 @@ export interface ActionOk {
     /** 링크 · 폼 제출 · goto 처럼 문서를 떠나는 이동이 일어난 게 분명하다. */
     expectNav?: boolean;
     text?: string;
+    /** 동작 중 페이지가 setTimeout 으로 잡아 둔 가장 긴 지연(ms). 없으면 -1. 늦게 일어나는 이동(타이머 리다이렉트)을 기다릴지 정한다. */
+    timerMs?: number;
     /** evaluate 결과를 JSON.stringify 한 글(undefined 면 없다). */
     s?: string;
     /** 결과가 약속이라 끝나길 기다려야 한다 — window.__saPend[pending] 을 읽는다. */
@@ -28,29 +31,64 @@ export interface ActionErr {
   err: string;
 }
 
-/** 동작 직후에 문서가 바뀌었는지 보는 글(표시는 동작마다 새로 심는다). */
-export function buildTokenCheckSource(tok: string): string {
-  return `(function(){return JSON.stringify({tok:window.__saTok===${JSON.stringify(tok)},leaving:!!window.__saLeaving})})()`;
-}
-
 /** evaluate 가 약속을 돌려줬을 때 결과를 읽는 글. */
 export function buildPendingReadSource(id: string): string {
   return `(function(){var p=window.__saPend&&window.__saPend[${JSON.stringify(id)}];if(!p)return JSON.stringify({state:'lost'});if(p.state!=='pending')delete window.__saPend[${JSON.stringify(id)}];return JSON.stringify(p)})()`;
 }
 
 export function buildActionSource(op: ActionOp, args: Record<string, unknown> & { tok: string }): string {
-  return `(function(A){${PRELUDE}${BODY}})(${JSON.stringify({ ...args, op })})`;
+  return `(function(A){${plant('A')}${PRELUDE}${BODY}})(${JSON.stringify({ ...args, op })})`;
+}
+
+const plant = (arg: string) => PLANT.split('__SA_ARG__').join(arg);
+
+/**
+ * evaluate 는 식 · 함수의 소스를 스크립트 글에 그대로 끼워 넣는다 — 페이지 안에서 문자열을 eval 하지 않으므로
+ * 엄격한 CSP(unsafe-eval 없음)에서도 돈다. 다른 동작의 도우미 함수와 이름이 부딪치지 않게 따로 만든 스크립트다.
+ * 식이어야 한다(함수 식이면 arg 를 넣어 부른다). 문법 오류는 스크립트 전체를 깨뜨리므로 부르기 전에 걸러야 한다(page.ts).
+ */
+export function buildEvalSource(src: string, arg: unknown, tok: string): string {
+  return `(function(__saA){${plant('__saA')}
+  try {
+    var __saVal = (function(){ return (${src}
+    ); })();
+    if (typeof __saVal === 'function') __saVal = __saVal(__saA.arg);
+    var __saR = { timerMs: __saTimers() };
+    if (__saVal && typeof __saVal.then === 'function') {
+      window.__saPend = window.__saPend || {};
+      var __saRec = window.__saPend[__saA.tok] = { state: 'pending' };
+      __saVal.then(function (v) { try { __saRec.s = JSON.stringify(v); __saRec.state = 'ok'; } catch (e) { __saRec.err = '결과를 JSON 으로 바꿀 수 없음: ' + (e && e.message); __saRec.state = 'err'; } },
+                   function (e) { __saRec.err = String((e && e.message) || e); __saRec.state = 'err'; });
+      __saR.pending = __saA.tok;
+    } else {
+      try { __saR.s = JSON.stringify(__saVal); } catch (e) { return JSON.stringify({ ok: false, err: '결과를 JSON 으로 바꿀 수 없음: ' + (e && e.message) }); }
+    }
+    return JSON.stringify({ ok: true, r: __saR });
+  } catch (e) {
+    return JSON.stringify({ ok: false, err: String((e && e.message) || e) });
+  } finally { __saTimersStop(); }
+})(${JSON.stringify({ arg, tok })})`;
 }
 
 // 페이지 안에서 도는 코드. 문자열로 둔다(번들러가 함수 이름을 끼워 넣어도 깨지지 않게).
 // 백틱 · ${ 는 쓰지 않는다(String.raw).
-const PRELUDE = String.raw`
-  window.__saTok = A.tok;
+// 모든 동작의 첫머리: 표시를 심고, 문서를 떠나는 중인지(beforeunload) 깃발을 세우고, 동작 동안 setTimeout 지연을 적어 둔다.
+// __SA_ARG__ 는 인자 변수 이름으로 바꿔 넣는다(일반 동작 A, evaluate __saA — 페이지 전역 이름과 안 부딪치게).
+const PLANT = String.raw`
+  window.__saTok = __SA_ARG__.tok;
   window.__saLeaving = false;
   if (!window.__saUnl) {
     window.__saUnl = 1;
     window.addEventListener('beforeunload', function () { window.__saLeaving = true; });
   }
+  var __saOrigST = window.setTimeout, __saMax = -1;
+  function __saPatched(fn, ms) { var d = +ms || 0; if (d > __saMax) __saMax = d; return __saOrigST.apply(this, arguments); }
+  window.setTimeout = __saPatched;
+  function __saTimers() { return __saMax; }
+  function __saTimersStop() { if (window.setTimeout === __saPatched) window.setTimeout = __saOrigST; }
+`;
+
+const PRELUDE = String.raw`
   function fail(msg) { var e = new Error(msg); e.saPlain = true; throw e; }
   function find(ref) {
     var isRef = /^e\d+$/.test(ref);
@@ -206,9 +244,6 @@ const PRELUDE = String.raw`
     return nav || sub.nav;
   }
 
-  function jsonOf(v) {
-    try { return JSON.stringify(v); } catch (e) { fail('결과를 JSON 으로 바꿀 수 없음: ' + (e && e.message)); }
-  }
 `;
 
 const BODY = String.raw`
@@ -254,18 +289,6 @@ const BODY = String.raw`
         r.expectNav = nav || sub.nav;
         break;
       }
-      case 'eval': {
-        var val = (0, eval)(A.src);
-        if (typeof val === 'function') val = val(A.arg);
-        if (val && typeof val.then === 'function') {
-          window.__saPend = window.__saPend || {};
-          var rec = window.__saPend[A.tok] = { state: 'pending' };
-          val.then(function (v) { try { rec.s = JSON.stringify(v); rec.state = 'ok'; } catch (e) { rec.err = '결과를 JSON 으로 바꿀 수 없음: ' + (e && e.message); rec.state = 'err'; } },
-                   function (e) { rec.err = String((e && e.message) || e); rec.state = 'err'; });
-          r.pending = A.tok;
-        } else r.s = jsonOf(val);
-        break;
-      }
       case 'goto': {
         var next = new URL(A.url, location.href);
         var hashOnly = next.hash !== '' && next.href.split('#')[0] === location.href.split('#')[0];
@@ -275,10 +298,12 @@ const BODY = String.raw`
       }
       default: fail('알 수 없는 동작: ' + A.op);
     }
+    r.timerMs = __saTimers();
     return JSON.stringify({ ok: true, r: r });
   } catch (e) {
     return JSON.stringify({ ok: false, err: String((e && e.message) || e) });
   } finally {
     window.removeEventListener('submit', onSubmit);
+    __saTimersStop();
   }
 `;

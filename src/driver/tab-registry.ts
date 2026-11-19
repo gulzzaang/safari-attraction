@@ -32,6 +32,16 @@ export type Guarded<T> = { stale: true } | { value: T; /** 일을 마친 뒤의 
 /** 호스트의 rebind 답. gone = 그 자리에 탭 없음, other = 그 자리에 다른 키의 표시가 있는 탭. */
 export type RebindResult = { status: "ok"; tab: RawTab } | { status: "gone" } | { status: "other" };
 
+/**
+ * 호스트의 settle 답(읽기 전용 확인). same = 자리의 탭에 이 키의 표시가 그대로(leaving: 문서를 떠나는 중),
+ * navigated = 새 문서가 떠 표시를 다시 적었다. gone · other 는 rebind 와 같다.
+ */
+export type SettleResult =
+  | { status: "same"; leaving: boolean; tab: RawTab }
+  | { status: "navigated"; tab: RawTab }
+  | { status: "gone" }
+  | { status: "other" };
+
 /** 레지스트리가 사파리에 바라는 것(호스트 op 와 1:1). */
 export interface TabBackend {
   list(): Promise<RawTab[]>;
@@ -39,6 +49,8 @@ export interface TabBackend {
   stamp(windowId: number, index: number, key: string): Promise<boolean>;
   /** 제자리에서 이동한 탭에 표시를 다시 적는다(불러오기가 끝나길 기다린다). */
   rebind(args: { windowId: number; index: number; key: string; url: string }): Promise<RebindResult>;
+  /** 이동이 일어났는지 보고, 새 문서면 표시를 다시 적는다. 표시가 없다는 이유로 아무것도 지우지 않는다. */
+  settle(args: { windowId: number; index: number; key: string; url: string }): Promise<SettleResult>;
   /** 자리의 탭이 spot.key 의 탭일 때만 닫는다. urlOnly 는 표시를 못 읽는 탭(경고창)용 — 주소만 본다. */
   close(spot: Spot, urlOnly: boolean, timeoutMs?: number): Promise<Guarded<null>>;
 }
@@ -229,6 +241,37 @@ export class TabRegistry {
     e.stamped = true;
     e.blocked = false;
     return r.tab;
+  }
+
+  /**
+   * 동작 뒤 탭이 이동했는지 본다. rebind 와 달리 문서가 이미 바뀌었어도 키를 지우지 않는다 —
+   * 자리의 탭에 이 키의 표시가 있으면 navigated:false, 표시가 없으면(새 문서) 다 뜰 때까지 기다려 표시를
+   * 다시 적고 navigated:true. 다른 키의 표시가 있거나 탭이 정말 없을 때만 TAB_CLOSED(그때만 키를 지운다).
+   */
+  async settle(key: string): Promise<{ navigated: boolean; leaving: boolean; tab: RawTab }> {
+    const e = this.entries.get(key);
+    if (!e) throw tabClosed(key);
+    if (!e.stamped) {
+      // 표시를 아직 안 적은 탭 — 자리와 주소가 그대로일 때만 우리 탭이다. 이 경우 표시 없음은 이동이 아니다.
+      const p = await this.backend.probe(e.windowId, e.index);
+      if (p.exists && p.marker === "" && p.url === e.url && (await this.backend.stamp(e.windowId, e.index, key))) e.stamped = true;
+    }
+    let r = await this.backend.settle({ windowId: e.windowId, index: e.index, key, url: e.url });
+    if (r.status === "gone" || r.status === "other") {
+      // 기록한 자리가 아니다 — 표시로 찾는다(못 찾으면 resolve 가 키를 지우고 TAB_CLOSED).
+      const at = await this.resolve(key);
+      r = await this.backend.settle({ ...at, key, url: e.url });
+      if (r.status === "gone" || r.status === "other") {
+        this.forget(key);
+        throw tabClosed(key);
+      }
+    }
+    e.windowId = r.tab.windowId;
+    e.index = r.tab.index;
+    e.url = r.tab.url;
+    e.stamped = true;
+    e.blocked = false;
+    return { navigated: r.status === "navigated", leaving: r.status === "same" && r.leaving, tab: r.tab };
   }
 
   /** 우리가 연 탭을 모두 닫는다(사용자 탭은 건드리지 않는다). 실제로 닫은 수를 돌려준다. */

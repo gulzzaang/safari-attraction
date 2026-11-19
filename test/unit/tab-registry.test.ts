@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { SafariError } from '../../src/driver/types.js';
-import { TabRegistry, type Guarded, type Probe, type RawTab, type RebindResult, type Spot, type TabBackend } from '../../src/driver/tab-registry.js';
+import { TabRegistry, type Guarded, type Probe, type RawTab, type RebindResult, type SettleResult, type Spot, type TabBackend } from '../../src/driver/tab-registry.js';
 
 /** 사파리 흉내: 창 하나에 탭들이 있고, 탭마다 페이지 안 표시(marker)를 가진다. */
 class FakeSafari implements TabBackend {
@@ -25,6 +25,17 @@ class FakeSafari implements TabBackend {
     if (t.marker !== '' && t.marker !== a.key) return { status: 'other' };
     t.marker = a.key;
     return { status: 'ok', tab: { windowId: 1, index: a.index, title: t.url, url: t.url, isActive: false } };
+  };
+  /** 켜 두면 settle 이 「문서를 떠나는 중」이라고 답한다. */
+  leaving = false;
+  settle = async (a: { windowId: number; index: number; key: string }): Promise<SettleResult> => {
+    const t = this.tabs[a.index - 1];
+    if (!t) return { status: 'gone' };
+    const tab = { windowId: 1, index: a.index, title: t.url, url: t.url, isActive: false };
+    if (t.marker === a.key) return { status: 'same', leaving: this.leaving, tab };
+    if (t.marker !== '') return { status: 'other' };
+    t.marker = a.key;
+    return { status: 'navigated', tab };
   };
   close = async (s: Spot, urlOnly = false): Promise<Guarded<null>> => {
     const t = this.tabs[s.index - 1];
@@ -124,6 +135,43 @@ describe('TabRegistry', () => {
     sf.tabs[1] = { url: 'http://a/new', marker: '' }; // a 는 이동해 표시를 잃음
     await expect(reg.rebind(a)).rejects.toMatchObject({ code: 'TAB_CLOSED' });
     expect(reg.ownedKeys()).toEqual([b]);
+  });
+
+  test('settle: 표시가 이 키면 이동 없음(떠나는 중인지도 전한다)', async () => {
+    const sf = new FakeSafari();
+    const reg = new TabRegistry(sf);
+    const k = openOwned(sf, reg, 'http://a/x');
+    expect(await reg.settle(k)).toMatchObject({ navigated: false, leaving: false });
+    sf.leaving = true;
+    expect(await reg.settle(k)).toMatchObject({ navigated: false, leaving: true });
+  });
+
+  test('settle: 표시가 비었으면(새 문서) 이동으로 보고 키를 지키고 표시를 다시 적는다', async () => {
+    const sf = new FakeSafari();
+    const reg = new TabRegistry(sf);
+    const k = openOwned(sf, reg, 'http://a/x');
+    sf.tabs[0] = { url: 'http://a/y', marker: '' }; // 전체 이동 — 이때 runJs/resolve 는 키를 잃지만 settle 은 아니다
+    const r = await reg.settle(k);
+    expect(r).toMatchObject({ navigated: true, leaving: false });
+    expect(r.tab.url).toBe('http://a/y');
+    expect(sf.tabs[0]!.marker).toBe(k);
+    expect(reg.ownedKeys()).toEqual([k]); // 키가 남았다
+    expect(await reg.resolve(k)).toEqual({ windowId: 1, index: 1 }); // 이후에도 찾는다
+    expect(await reg.closeOwned()).toBe(1);
+  });
+
+  test('settle: 자리에 다른 키의 표시가 있으면 표시로 찾고, 못 찾을 때만 TAB_CLOSED 로 키를 지운다', async () => {
+    const sf = new FakeSafari();
+    const reg = new TabRegistry(sf);
+    const a = openOwned(sf, reg, 'http://a/1');
+    const b = openOwned(sf, reg, 'http://a/2');
+    sf.tabs.reverse(); // 자리가 바뀜 — a 는 이제 2번째, 기록한 1번째엔 b 의 표시
+    expect(await reg.settle(a)).toMatchObject({ navigated: false });
+    expect(sf.tabs[1]!.marker).toBe(a);
+    sf.tabs.splice(1, 1); // a 가 닫힘
+    await expect(reg.settle(a)).rejects.toMatchObject({ code: 'TAB_CLOSED' });
+    expect(reg.ownedKeys()).toEqual([b]);
+    await expect(reg.settle('t99')).rejects.toMatchObject({ code: 'TAB_CLOSED' });
   });
 
   test('표시를 읽다 난 다른 오류는 TAB_CLOSED 로 바꾸지 않고 키도 지우지 않는다', async () => {
