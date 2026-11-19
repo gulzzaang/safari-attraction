@@ -61,6 +61,18 @@ describe("hoistTopLevel", () => {
   });
 });
 
+describe("세미콜론 없는 코드(ASI)", () => {
+  test("세미콜론 없는 문장 뒤의 const · let", async () => {
+    expect((await s.run("console.log(1)\nconst a = 2\nconsole.log(a)")).output).toBe("1\n2");
+    expect((await s.run("console.log(3)\nlet b = 4\nconsole.log(b)")).output).toBe("3\n4");
+  });
+
+  test("세미콜론 없이 두 변수를 선언하고 쓴다", async () => {
+    const r = await s.run("const x = 1\nlet y = x + 1\nconst { z } = { z: y * 2 }\nconsole.log(x, y, z)");
+    expect(r).toEqual({ output: "1 2 4" });
+  });
+});
+
 describe("REPL 세부", () => {
   test("구조 분해 · let · var · function · class 가 남는다", async () => {
     await s.run("const { a, b: [c] } = { a: 1, b: [2] }; let n; var v = 5; function dbl(x) { return x * 2 } class K { get() { return 7 } }");
@@ -165,5 +177,18 @@ describe("REPL 세부", () => {
     const sent = d.calls.runJs.find((c) => c.source.includes('__saA'))!.source;
     expect(sent).toContain("/api");
     expect(sent).toContain("POST");
+  });
+
+  test("시간 초과한 호출의 늦은 출력이 다음 호출에 섞이지 않는다", async () => {
+    const r1 = await s.run('setTimeout(() => console.log("zombie-timer"), 100); await sleep(500)', { timeoutMs: 30 });
+    expect(r1.error).toMatch(/시간/);
+    const r2 = await s.run('await sleep(250); console.log("mine")');
+    expect(r2).toEqual({ output: "mine" });
+  });
+
+  test("시간 초과한 호출이 sleep 뒤에 이어 찍는 것도 버린다", async () => {
+    await s.run('await sleep(100); console.log("zombie-sleep")', { timeoutMs: 30 });
+    const r2 = await s.run('await sleep(250); console.log("mine")');
+    expect(r2).toEqual({ output: "mine" });
   });
 });

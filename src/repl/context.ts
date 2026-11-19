@@ -45,21 +45,50 @@ const errorText = (e: unknown): string => {
 export function createReplSession(driver: SafariDriver): ReplSession {
   const store = new SnapshotStore();
   const owned = new Set<string>();
-  let out: OutputBuffer | null = null; // 지금 도는 호출의 출력(없으면 찍어도 버린다)
+  // 호출마다 출력 칸(slot)을 따로 둔다. 끝난 호출의 칸은 닫혀서, 시간 초과 뒤에 늦게 도는 코드가 찍어도 버려진다.
+  type Slot = { buf: OutputBuffer; closed: boolean };
+  let active: Slot | null = null; // 지금 도는 호출
+  let cur: Slot | null = null; // 지금 코드가 속한 호출(타이머 · sleep 이 깨울 때는 그것을 건 호출)
   let queue: Promise<unknown> = Promise.resolve();
 
-  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, Number(ms) || 0));
-  const log = (...args: unknown[]) => out?.log(...args);
+  /** 타이머 · sleep 이 코드를 깨울 때, 그 코드를 건 호출의 칸에 찍게 한다(이어지는 마이크로태스크가 다 돈 뒤 되돌린다). */
+  const runAs = (slot: Slot | null, f: () => void) => {
+    cur = slot;
+    try {
+      f();
+    } finally {
+      setImmediate(() => {
+        cur = active;
+      });
+    }
+  };
+  const wrapTimer = (timer: typeof setTimeout | typeof setInterval) =>
+    ((cb: unknown, ms?: number, ...args: unknown[]) => {
+      if (typeof cb !== "function") return timer(cb as never, ms);
+      const slot = cur;
+      return timer(() => runAs(slot, () => cb(...args)), ms);
+    }) as unknown;
+
+  const sleep = (ms: number) => {
+    const slot = cur;
+    return new Promise<void>((r) => setTimeout(() => runAs(slot, r), Number(ms) || 0));
+  };
+  const log = (...args: unknown[]) => {
+    if (cur && !cur.closed) cur.buf.log(...args);
+  };
 
   const sandbox: Record<string, unknown> = {
     page: null,
     console: { log, info: log, warn: log, error: log, debug: log },
     sleep,
-    setTimeout,
+    setTimeout: wrapTimer(setTimeout),
     clearTimeout,
-    setInterval,
+    setInterval: wrapTimer(setInterval),
     clearInterval,
-    queueMicrotask,
+    queueMicrotask: (cb: () => void) => {
+      const slot = cur;
+      queueMicrotask(() => runAs(slot, cb));
+    },
     structuredClone,
     URL,
     URLSearchParams,
@@ -177,8 +206,9 @@ export function createReplSession(driver: SafariDriver): ReplSession {
   };
 
   async function exec(code: string, timeoutMs: number): Promise<{ output: string; error?: string }> {
-    const buf = new OutputBuffer();
-    out = buf;
+    const slot: Slot = { buf: new OutputBuffer(), closed: false };
+    const buf = slot.buf;
+    active = cur = slot;
     let timer: NodeJS.Timeout | undefined;
     let error: string | undefined;
     try {
@@ -193,7 +223,8 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       error = (e as { code?: string })?.code === "ERR_SCRIPT_EXECUTION_TIMEOUT" ? `시간 초과: ${Math.round(timeoutMs / 1000)}초 안에 끝나지 않음` : errorText(e);
     } finally {
       clearTimeout(timer);
-      out = null;
+      slot.closed = true;
+      active = cur = null;
     }
     return error === undefined ? { output: buf.text() } : { output: buf.text(), error };
   }
