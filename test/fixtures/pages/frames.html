@@ -7,6 +7,8 @@
   <iframe id="same" src="frame-inner.html" width="400" height="120" title="같은 출처 프레임"></iframe>
   <!-- 다른 출처: 같은 서버를 localhost 로 부른다(이 페이지는 127.0.0.1 로 열린다). -->
   <iframe id="cross" width="400" height="120"></iframe>
+  <!-- sandbox(allow-same-origin 없음): 같은 주소여도 안쪽은 못 읽는다. -->
+  <iframe id="sandboxed" sandbox src="frame-inner.html" width="400" height="60"></iframe>
   <script>
     document.getElementById('cross').src = location.origin.replace('//127.0.0.1', '//localhost') + '/frame-inner.html';
   </script>

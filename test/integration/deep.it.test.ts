@@ -76,6 +76,32 @@ describeIt('iframe · shadow DOM 안쪽', () => {
     expect(text).not.toContain('닫힌 안쪽 단추');
   });
 
+  test('호스트 안에 공백 · 주석만 있는 닫힌 shadow root 도 한 줄로 알린다', async () => {
+    const page = await open('shadow.html');
+    const text = await read(page);
+    expect(text).toContain('- <sa-closed-ws> (닫힌 shadow root — 안쪽은 못 읽음)');
+    expect(text).toContain('- <sa-closed> (닫힌 shadow root — 안쪽은 못 읽음)');
+    expect(text).not.toContain('공백 호스트 안쪽 단추');
+  });
+
+  test('Tab 은 화면 순서대로 shadow 안쪽을 지나 바깥 다음 칸으로 간다', async () => {
+    const page = await open('shadow.html');
+    await page.locator('#before').click(); // 앞 입력에 초점
+    const active = () =>
+      page.evaluate(() => {
+        const host = document.querySelector('sa-card')!;
+        const inner = host.shadowRoot!.activeElement;
+        return inner ? 'shadow:' + (inner.tagName + ':' + (inner.getAttribute('placeholder') ?? inner.textContent)) : 'doc:' + (document.activeElement as HTMLElement).id;
+      });
+    expect(await active()).toBe('doc:before');
+    await page.keyboard.press('Tab');
+    expect(await active()).toBe('shadow:BUTTON:안쪽 단추');
+    await page.keyboard.press('Tab');
+    expect(await active()).toBe('shadow:INPUT:안쪽 입력');
+    await page.keyboard.press('Tab');
+    expect(await active()).toBe('doc:after');
+  });
+
   test('같은 출처 iframe 안쪽이 나오고 입력 · 클릭이 된다', async () => {
     const page = await open('frames.html');
     const text = await read(page);
@@ -105,6 +131,14 @@ describeIt('iframe · shadow DOM 안쪽', () => {
     expect(text).toContain(`- iframe "http://localhost:${port}" (다른 사이트라 안쪽은 못 읽음)`);
     // 같은 출처 프레임의 글은 한 번만(다른 출처 프레임 안쪽은 안 나온다)
     expect(text.match(/프레임 입력/g)).toHaveLength(1);
+  });
+
+  test('sandbox 로 막힌 같은 주소 iframe 은 「다른 사이트」가 아니라 못 읽는다고 알린다', async () => {
+    const page = await open('frames.html');
+    const text = await read(page);
+    const origin = /\[url=(http:\/\/127\.0\.0\.1:\d+)\//.exec(text.split('\n')[0]!)![1];
+    expect(text).toContain(`- iframe "${origin}" (안쪽을 읽을 수 없음)`);
+    expect(text.match(/다른 사이트라 안쪽은 못 읽음/g)).toHaveLength(1); // 진짜 다른 출처 프레임 하나만
   });
 
   test('CSS 선택자도 shadow 안을 찾는다', async () => {

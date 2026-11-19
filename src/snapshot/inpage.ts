@@ -20,7 +20,7 @@ export function buildSnapshotSource(opts: SnapshotOptions = {}): string {
 
 /**
  * 페이지 안 공용 찾기 함수 둘(소스 글). 읽기 · 조작이 같은 규칙으로 요소를 찾도록 둘 다 이 글을 끼워 쓴다.
- *   __saDeepAll(selector)       문서 → 열린 shadow root → 같은 출처 iframe 의 문서 순으로 깊이 우선, 각 트리의 일치를 모두.
+ *   __saDeepAll(selector)       화면에 그려지는 순서(shadow root 는 호스트 자리, 같은 출처 iframe 은 iframe 자리)로 깊이 우선, 일치를 모두.
  *   __saDeepQuery(selectorOrRef) 먼저 문서에서 찾고, 없으면 위 순서로 첫 일치. `e12` 꼴은 data-sa-ref 로 찾는다.
  * 다른 출처 iframe · 닫힌 shadow root 는 들어갈 수 없어 건너뛴다. 오류(잘못된 선택자)는 그대로 던진다.
  * 백틱 · 달러-중괄호는 쓰지 않는다(String.raw).
@@ -41,12 +41,27 @@ export const DEEP_SOURCE = String.raw`
     return acc;
   }
   function __saSel(s) { return /^e\d+$/.test(s) ? '[data-sa-ref="' + s + '"]' : s; }
+  // 평평한 트리(화면에 그려지는 순서)로 깊이 우선: shadow root 안은 호스트 자리에, slot 은 배정된 노드 자리에,
+  // 같은 출처 iframe 안은 iframe 자리에 나온다. 초점 이동(Tab) 순서가 이 순서다.
   function __saDeepAll(sel) {
-    var rs = __saTreeRoots([], document), out = [];
-    for (var i = 0; i < rs.length; i++) {
-      var l = rs[i].querySelectorAll(sel);
-      for (var j = 0; j < l.length; j++) out.push(l[j]);
+    var out = [];
+    function visit(el) {
+      if (el.matches(sel)) out.push(el);
+      var kids = el.children;
+      if (el.shadowRoot) kids = el.shadowRoot.children;
+      else if (el.tagName === 'SLOT' && typeof el.assignedNodes === 'function') {
+        var an = el.assignedNodes({ flatten: true }), els = [];
+        for (var k = 0; k < an.length; k++) if (an[k].nodeType === 1) els.push(an[k]);
+        kids = els;
+      } else if (el.tagName === 'IFRAME') {
+        var d = null;
+        try { d = el.contentDocument; } catch (x) {}
+        kids = d && d.documentElement ? [d.documentElement] : [];
+      }
+      var arr = Array.prototype.slice.call(kids);
+      for (var i = 0; i < arr.length; i++) visit(arr[i]);
     }
+    visit(document.documentElement);
     return out;
   }
   function __saDeepQuery(sel) {
@@ -216,7 +231,10 @@ const PAGE_FN = String.raw`function (o) {
         push(depth, '- iframe ' + q(clip(el.getAttribute('title') || doc.title || originOf(el), NAME_MAX)));
         walkEl(doc.body || doc.documentElement, depth + 1);
       } else {
-        push(depth, '- iframe ' + q(originOf(el)) + ' (다른 사이트라 안쪽은 못 읽음)');
+        var fo = originOf(el);
+        // 출처가 이 페이지와 다른 게 분명할 때만 「다른 사이트」. sandbox · srcdoc · 같은 출처인데 못 읽는 경우는 따로 알린다.
+        if (!el.hasAttribute('sandbox') && !el.hasAttribute('srcdoc') && fo && fo !== 'null' && fo !== location.origin) push(depth, '- iframe ' + q(fo) + ' (다른 사이트라 안쪽은 못 읽음)');
+        else push(depth, '- iframe ' + q(el.hasAttribute('srcdoc') ? 'srcdoc' : fo) + ' (안쪽을 읽을 수 없음)');
       }
       return;
     }
@@ -235,7 +253,7 @@ const PAGE_FN = String.raw`function (o) {
       walkKids(els, depth);
       return;
     }
-    if (tag.indexOf('-') > 0 && !el.firstChild && window.customElements && customElements.get(tag.toLowerCase()) && shown(el)) {
+    if (tag.indexOf('-') > 0 && !el.children.length && !(el.textContent || '').trim() && window.customElements && customElements.get(tag.toLowerCase()) && shown(el)) {
       push(depth, '- <' + tag.toLowerCase() + '> (닫힌 shadow root — 안쪽은 못 읽음)');
       return;
     }

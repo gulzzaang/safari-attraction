@@ -2,12 +2,18 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8"><title>shadow 시험 페이지</title>
-<style>sa-card, sa-closed, sa-wrap { display: block; margin: 8px 0; }</style>
+<style>sa-card, sa-closed, sa-closed-ws, sa-wrap { display: block; margin: 8px 0; }</style>
 </head>
 <body>
   <h1>shadow 시험 페이지</h1>
+  <input id="before" placeholder="앞 입력">
   <sa-card id="card"></sa-card>
+  <input id="after" placeholder="뒤 입력">
   <sa-closed id="closed"></sa-closed>
+  <!-- 안에 공백 · 주석만 든 닫힌 호스트 -->
+  <sa-closed-ws id="closed-ws">
+    <!-- 주석 -->
+  </sa-closed-ws>
   <sa-wrap id="wrap"><button id="slotted">슬롯 단추</button></sa-wrap>
   <p id="out">대기</p>
   <script>
@@ -26,6 +32,12 @@
       connectedCallback() {
         var r = this.attachShadow({ mode: 'closed' });
         r.innerHTML = '<div><button>닫힌 안쪽 단추</button></div>';
+      }
+    });
+    customElements.define('sa-closed-ws', class extends HTMLElement {
+      connectedCallback() {
+        var r = this.attachShadow({ mode: 'closed' });
+        r.innerHTML = '<div><button>공백 호스트 안쪽 단추</button></div>';
       }
     });
     // slot: 바깥(light DOM)의 단추가 shadow 안 slot 자리에 나온다.
