@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -143,6 +143,64 @@ describe("setup — 데스크톱 설정 파일", () => {
   });
 });
 
+describe("setup — 설정 파일 권한 · 심볼릭 링크", () => {
+  test("원래 파일이 0600 이면 고친 뒤에도 0600(사본도 0600)", async () => {
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(cfgPath, JSON.stringify({ mcpServers: { other: { command: "x", env: { KEY: "secret" } } } }));
+    chmodSync(cfgPath, 0o600);
+    const m = make(emptyList, { claudeCode: false });
+    await runSetup(m.opts);
+    expect(statSync(cfgPath).mode & 0o777).toBe(0o600);
+    const bak = readdirSync(cfgDir).find((f) => f.includes(".bak-"))!;
+    expect(statSync(join(cfgDir, bak)).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(readFileSync(cfgPath, "utf8")).mcpServers["safari-attraction"]).toEqual(CMD);
+  });
+
+  test("0640 같은 다른 권한도 그대로 잇는다", async () => {
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(cfgPath, "{}");
+    chmodSync(cfgPath, 0o640);
+    await runSetup(make(emptyList, { claudeCode: false }).opts);
+    expect(statSync(cfgPath).mode & 0o777).toBe(0o640);
+  });
+
+  test("새로 만드는 파일은 0600", async () => {
+    mkdirSync(cfgDir, { recursive: true });
+    await runSetup(make(emptyList, { claudeCode: false }).opts);
+    expect(statSync(cfgPath).mode & 0o777).toBe(0o600);
+  });
+
+  test("임시 파일이 남지 않는다", async () => {
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(cfgPath, "{}");
+    await runSetup(make(emptyList, { claudeCode: false }).opts);
+    expect(readdirSync(cfgDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+  });
+
+  test("설정 파일이 심볼릭 링크면 링크는 그대로, 가리키는 실제 파일에 우리 항목이 들어간다(사본도 실제 파일 옆)", async () => {
+    mkdirSync(cfgDir, { recursive: true });
+    const dotfiles = join(home, "dotfiles");
+    mkdirSync(dotfiles);
+    const target = join(dotfiles, "claude_desktop_config.json");
+    const original = JSON.stringify({ mcpServers: { other: { command: "x" } } });
+    writeFileSync(target, original);
+    chmodSync(target, 0o600);
+    symlinkSync(target, cfgPath);
+
+    const m = make(emptyList, { claudeCode: false });
+    expect(await runSetup(m.opts)).toBe(0);
+
+    expect(lstatSync(cfgPath).isSymbolicLink()).toBe(true);
+    expect(realpathSync(cfgPath)).toBe(realpathSync(target));
+    expect(JSON.parse(readFileSync(target, "utf8")).mcpServers).toEqual({ other: { command: "x" }, "safari-attraction": CMD });
+    expect(statSync(target).mode & 0o777).toBe(0o600);
+    const baks = readdirSync(dotfiles).filter((f) => f.includes(".bak-"));
+    expect(baks).toHaveLength(1);
+    expect(readFileSync(join(dotfiles, baks[0]), "utf8")).toBe(original);
+    expect(readdirSync(cfgDir)).toEqual(["claude_desktop_config.json"]); // 링크 폴더에는 새 파일 · 사본 없음
+  });
+});
+
 describe("setup — Claude Code", () => {
   test("claude 명령이 없으면(Review Focus 3) 건너뛰는 안내 한 줄, 데스크톱은 한다", async () => {
     mkdirSync(cfgDir, { recursive: true });
@@ -153,11 +211,28 @@ describe("setup — Claude Code", () => {
     expect(JSON.parse(readFileSync(cfgPath, "utf8")).mcpServers["safari-attraction"]).toEqual(CMD);
   });
 
-  test("claude mcp list 가 0 이 아닌 코드로 끝나도 같은 안내", async () => {
-    const m = make({ code: 127, stdout: "", stderr: "command not found" });
-    await runSetup(m.opts);
-    expect(m.text()).toContain("Claude Code(claude 명령)를 찾지 못해 건너뜁니다");
+  test("claude mcp list 가 실패하면(0 이 아닌 코드) 「확인하지 못했어요」 + 직접 할 명령, add 는 안 부르고 1", async () => {
+    const m = make({ code: 3, stdout: "", stderr: "Error: broken\nmore detail" });
+    expect(await runSetup(m.opts)).toBe(1);
+    const t = m.text();
+    expect(t).toContain(
+      "Claude Code 등록 상태를 확인하지 못했어요(Error: broken) — 나중에 `safari-attraction setup` 을 다시 실행하거나 " +
+        "`claude mcp add --scope user safari-attraction -- /usr/local/bin/node /opt/sa/server.mjs` 을 직접 실행하세요",
+    );
+    expect(t).not.toContain("찾지 못해 건너뜁니다");
     expect(adds(m.calls)).toHaveLength(0);
+  });
+
+  test("claude mcp list 가 시간 초과 등 ENOENT 아닌 오류로 throw 해도 같은 안내, add 안 함", async () => {
+    const m = make({ code: 1, stdout: "", stderr: "" }, {
+      exec: async () => {
+        throw new Error("timed out");
+      },
+    });
+    expect(await runSetup(m.opts)).toBe(1);
+    expect(m.text()).toContain("Claude Code 등록 상태를 확인하지 못했어요(timed out)");
+    expect(m.text()).not.toContain("찾지 못해 건너뜁니다");
+    expect(m.calls).toEqual([]);
   });
 
   test("플러그인이 이미 있으면(Review Focus 1) 등록하지 않는다", async () => {

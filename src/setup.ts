@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 export interface ExecResult {
@@ -48,15 +48,24 @@ const sameCommand = (v: unknown, c: ServerCommand) =>
 
 /** @returns 실패하면 false */
 async function setupClaudeCode(o: SetupOptions): Promise<boolean> {
-  let listing: ExecResult | undefined;
+  let listing: ExecResult;
   try {
     listing = await o.exec("claude", ["mcp", "list"]);
-  } catch {
-    listing = undefined;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      o.log("Claude Code(claude 명령)를 찾지 못해 건너뜁니다");
+      return true;
+    }
+    listing = { code: 1, stdout: "", stderr: e instanceof Error ? e.message : String(e) };
   }
-  if (!listing || listing.code !== 0) {
-    o.log("Claude Code(claude 명령)를 찾지 못해 건너뜁니다");
-    return true;
+  if (listing.code !== 0) {
+    const first = (listing.stderr || listing.stdout).trim().split("\n")[0] ?? "";
+    const { command, args } = o.serverCommand;
+    o.log(
+      `Claude Code 등록 상태를 확인하지 못했어요(${first}) — 나중에 \`safari-attraction setup\` 을 다시 실행하거나 ` +
+        `\`claude mcp add --scope user ${NAME} -- ${[command, ...args].join(" ")}\` 을 직접 실행하세요`,
+    );
+    return false;
   }
   if (listing.stdout.includes(`plugin:${NAME}:`)) {
     o.log("Claude Code: 플러그인으로 이미 연결돼 있어요");
@@ -89,12 +98,19 @@ async function setupClaudeCode(o: SetupOptions): Promise<boolean> {
 /** @returns 실패하면 false(설정 파일을 못 읽어 건너뛴 것은 실패가 아니다) */
 async function setupDesktop(o: SetupOptions): Promise<boolean> {
   const dir = join(o.home, "Library", "Application Support", "Claude");
-  const file = join(dir, "claude_desktop_config.json");
   try {
     if (!(await stat(dir)).isDirectory()) throw new Error("not a dir");
   } catch {
     o.log("Claude 데스크톱이 없어 건너뜁니다");
     return true;
+  }
+  // 설정 파일이 심볼릭 링크면(dotfiles · iCloud 등) 링크가 아니라 가리키는 실제 파일을 읽고 · 백업하고 · 바꾼다.
+  const linkPath = join(dir, "claude_desktop_config.json");
+  let file = linkPath;
+  try {
+    file = await realpath(linkPath);
+  } catch {
+    /* 파일이 없으면 그 자리에 새로 만든다 */
   }
 
   const entry = { command: o.serverCommand.command, args: o.serverCommand.args };
@@ -103,7 +119,7 @@ async function setupDesktop(o: SetupOptions): Promise<boolean> {
     raw = await readFile(file, "utf8");
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
-      o.log(`설정 파일을 읽을 수 없어 데스크톱 연결은 건너뜁니다(파일: ${file})`);
+      o.log(`설정 파일을 읽을 수 없어 데스크톱 연결은 건너뜁니다(파일: ${linkPath})`);
       return true;
     }
   }
@@ -117,7 +133,7 @@ async function setupDesktop(o: SetupOptions): Promise<boolean> {
       parsed = undefined;
     }
     if (!isObj(parsed) || (parsed.mcpServers !== undefined && !isObj(parsed.mcpServers))) {
-      o.log(`설정 파일을 읽을 수 없어 데스크톱 연결은 건너뜁니다(파일: ${file})`);
+      o.log(`설정 파일을 읽을 수 없어 데스크톱 연결은 건너뜁니다(파일: ${linkPath})`);
       return true;
     }
     config = parsed;
@@ -135,22 +151,26 @@ async function setupDesktop(o: SetupOptions): Promise<boolean> {
   if (o.dryRun) {
     o.log(
       exists
-        ? `Claude 데스크톱: ${file} 에 '${NAME}' 항목만 ${NAME in servers ? "바꾸고" : "더하고"}, 먼저 사본(${backup})을 남길 거예요`
-        : `Claude 데스크톱: ${file} 을(를) 새로 만들 거예요`,
+        ? `Claude 데스크톱: ${linkPath} 에 '${NAME}' 항목만 ${NAME in servers ? "바꾸고" : "더하고"}, 먼저 사본(${backup})을 남길 거예요`
+        : `Claude 데스크톱: ${linkPath} 을(를) 새로 만들 거예요`,
     );
     return true;
   }
+  const tmp = join(dirname(file), `.claude_desktop_config.json.tmp-${process.pid}`);
   try {
+    // 원래 파일의 권한을 그대로 잇는다(다른 서버의 env 에 키가 들어 있을 수 있다). 새 파일이면 나만 읽게(0600).
+    const mode = exists ? (await stat(file)).mode & 0o777 : 0o600;
     if (exists) await copyFile(file, backup);
-    await mkdir(dir, { recursive: true });
-    const tmp = join(dirname(file), `.claude_desktop_config.json.tmp-${process.pid}`);
-    await writeFile(tmp, JSON.stringify(next, null, 2) + "\n");
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(tmp, JSON.stringify(next, null, 2) + "\n", { mode });
+    await chmod(tmp, mode); // umask 에 깎이지 않게
     await rename(tmp, file);
   } catch (e) {
+    await unlink(tmp).catch(() => {});
     o.log(`Claude 데스크톱: 설정 파일을 쓰지 못했어요 — ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
-  o.log(exists ? `Claude 데스크톱: '${NAME}' 항목을 넣었어요(사본: ${backup})` : `Claude 데스크톱: ${file} 을(를) 만들었어요`);
+  o.log(exists ? `Claude 데스크톱: '${NAME}' 항목을 넣었어요(사본: ${backup})` : `Claude 데스크톱: ${linkPath} 을(를) 만들었어요`);
   return true;
 }
 

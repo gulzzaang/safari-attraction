@@ -41,10 +41,16 @@ export const HELP = `safari-attraction ${VERSION} — 평소 로그인된 사파
 인자 없이 실행하고 표준입력이 터미널이 아니면 MCP 서버로 동작합니다(Claude 가 이렇게 띄웁니다).
 터미널에서 인자 없이 치면 이 도움말만 보여 주고 끝납니다.`;
 
+const EXEC_TIMEOUT_MS = 30_000;
+
+/** claude 명령이 없으면(ENOENT) reject, 그 밖의 실패 · 시간 초과는 0 이 아닌 코드로 돌려준다. */
 function realExec(cmd: string, args: string[]): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024, timeout: EXEC_TIMEOUT_MS }, (err, stdout, stderr) => {
       if (err && (err as NodeJS.ErrnoException).code === "ENOENT") return reject(err);
+      if (err && (err as { killed?: boolean }).killed) {
+        return resolve({ code: 1, stdout, stderr: `${EXEC_TIMEOUT_MS / 1000}초 안에 끝나지 않았어요` });
+      }
       const code = err ? (typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : 1) : 0;
       resolve({ code, stdout, stderr });
     });
