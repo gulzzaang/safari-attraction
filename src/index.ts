@@ -1,13 +1,16 @@
 #!/usr/bin/env node
+import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createJxaDriver } from "./driver/jxa-driver.js";
+import { runCli } from "./cli.js";
 import { installProcessGuards } from "./guards.js";
 import { createSafariServer } from "./server.js";
 
 /** 닫기가 이 시간 안에 안 끝나면(코드가 이벤트 루프를 막은 경우 등) 그냥 끝낸다. */
 const SHUTDOWN_MS = 8000;
 
-async function main(): Promise<void> {
+/** MCP 서버로 동작한다(표준입출력). */
+async function serve(): Promise<void> {
   const driver = createJxaDriver();
   const { server, shutdown, handleStray } = createSafariServer(driver);
 
@@ -35,6 +38,20 @@ async function main(): Promise<void> {
   process.stdin.on("close", () => void stop(0));
 
   await server.connect(new StdioServerTransport());
+}
+
+async function main(): Promise<void> {
+  const out = (s: string) => void process.stdout.write(s + "\n");
+  const err = (s: string) => void process.stderr.write(s + "\n");
+  const code = await runCli(
+    process.argv.slice(2),
+    { stdout: out, stderr: err, stdinIsTTY: Boolean(process.stdin.isTTY) },
+    // 묶음(plugin/server.mjs)에서는 이 파일이 곧 server.mjs, dist 에서는 dist/src/index.js.
+    { selfPath: fileURLToPath(import.meta.url) },
+  );
+  if (code === "serve") return serve();
+  // 드라이버를 닫았으니 스스로 끝나게 두고, 코드만 정한다(파이프로 나가는 글이 잘리지 않게).
+  process.exitCode = code;
 }
 
 main().catch((e) => {

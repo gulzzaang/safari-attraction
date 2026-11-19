@@ -4,6 +4,7 @@ import type { SafariDriver } from "./driver/types.js";
 import { formatDoctor, runDoctor } from "./doctor.js";
 import { toKorean } from "./errors-ko.js";
 import { createReplSession } from "./repl/context.js";
+import { VERSION } from "./version.js";
 
 export const REPL_DESCRIPTION = `사용자의 진짜 사파리(로그인된 그대로)를 자바스크립트로 조작한다. 새 탭은 뒤쪽 탭으로 열려 사용자 화면을 가로채지 않는다.
 Drive the user's real, logged-in Safari with JavaScript. New tabs open in the background and never take the user's screen.
@@ -57,7 +58,7 @@ export interface SafariServer {
 
 export function createSafariServer(driver: SafariDriver): SafariServer {
   const session = createReplSession(driver);
-  const server = new McpServer({ name: "safari-attraction", version: "0.1.0" });
+  const server = new McpServer({ name: "safari-attraction", version: VERSION });
 
   server.registerTool(
     "repl",
