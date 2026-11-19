@@ -6,7 +6,7 @@ export interface WindowInfo {
 }
 
 export interface TabInfo {
-  /** 이 Task 에서는 `windowId:index`(index 는 사파리 방식 1부터). 뜻과 찾는 방법은 Task 3 이 채운다. */
+  /** 서버가 정한 탭 키(`t1, t2 …`). 사용자가 탭을 옮기거나 다른 탭이 닫혀도 같은 탭을 가리킨다(TabRegistry). */
   key: string;
   windowId: number;
   /** 창 안의 순서, 1부터. */
@@ -43,5 +43,7 @@ export interface SafariDriver {
   openTab(url: string, opts?: { windowId?: number }): Promise<{ tab: TabInfo; frontAppChanged: boolean }>;
   runJs(tabKey: string, source: string, opts?: { timeoutMs?: number }): Promise<string>;
   closeTab(tabKey: string): Promise<void>;
+  /** 이 드라이버가 연 탭을 모두 닫는다(사용자 탭은 그대로). 닫은 수를 돌려준다. */
+  closeOwned(): Promise<number>;
   close(): Promise<void>;
 }

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { HostError, HostTimeoutError, JxaHost } from "./jxa-host.js";
+import { TabRegistry, type Guarded, type Probe, type RawTab, type Spot } from "./tab-registry.js";
 import { SafariError, type SafariDriver, type TabInfo, type WindowInfo } from "./types.js";
 
 export { SafariError } from "./types.js";
@@ -42,16 +43,8 @@ export function opError(op: string, e: unknown): SafariError {
   return new SafariError("SAFARI_ERROR", e instanceof Error ? e.message : String(e));
 }
 
-function parseKey(key: string): { windowId: number; index: number } {
-  const m = /^(\d+):(\d+)$/.exec(key);
-  if (!m) throw new SafariError("TAB_CLOSED", `탭 키 모양이 아님: ${key}`);
-  return { windowId: Number(m[1]), index: Number(m[2]) };
-}
-
 export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): SafariDriver {
   const host = new JxaHost(opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
-  // openTab 으로 연 탭의 키. 우리가 닫을 때는 뒤 탭 번호를 당겨 맞춘다.
-  const owned = new Set<string>();
 
   async function call<T>(op: string, args: object = {}, timeoutMs?: number): Promise<T> {
     try {
@@ -61,12 +54,17 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): Safar
     }
   }
 
-  const keyOf = (windowId: number, index: number) => `${windowId}:${index}`;
+  const guardArgs = (s: Spot) => ({ windowId: s.windowId, index: s.index, key: s.key, url: s.url, unstamped: s.unstamped });
 
-  function toTab(raw: Omit<TabInfo, "key" | "owned">): TabInfo {
-    const key = keyOf(raw.windowId, raw.index);
-    return { ...raw, key, owned: owned.has(key) };
-  }
+  // 탭 키(t1, t2 …)와 사파리 안 자리를 이어 주는 기록. 사용자가 탭을 옮겨도 같은 키가 같은 탭을 가리킨다.
+  const registry = new TabRegistry({
+    list: () => call<RawTab[]>("listTabs"),
+    probe: (windowId, index, timeoutMs) => call<Probe>("probe", { windowId, index }, timeoutMs),
+    stamp: (windowId, index, key) => call<boolean>("stamp", { windowId, index, key }),
+    close: (spot, urlOnly, timeoutMs) => call<Guarded<null>>("closeTab", { ...guardArgs(spot), urlOnly }, timeoutMs),
+  });
+
+  const toTab = (e: { raw: RawTab; key: string; owned: boolean }): TabInfo => ({ ...e.raw, key: e.key, owned: e.owned });
 
   async function launchSafari(): Promise<void> {
     await execFileP("open", ["-g", "-a", "Safari"]);
@@ -87,14 +85,15 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): Safar
     listWindows: () => call<WindowInfo[]>("listWindows"),
 
     async listTabs() {
-      const raw = await call<Omit<TabInfo, "key" | "owned">[]>("listTabs");
-      return raw.map(toTab);
+      const raw = await call<RawTab[]>("listTabs");
+      return (await registry.sync(raw)).map(toTab);
     },
 
     async openTab(url, o = {}) {
       const before = await frontAsn();
-      const args = { url, windowId: o.windowId };
-      let raw: Omit<TabInfo, "key" | "owned">;
+      const key = registry.nextKey();
+      const args = { url, windowId: o.windowId, key };
+      let raw: RawTab & { stamped: boolean };
       try {
         raw = await call("openTab", args);
       } catch (e) {
@@ -102,31 +101,20 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): Safar
         await launchSafari();
         raw = await call("openTab", args);
       }
-      const tab = toTab(raw);
-      owned.add(tab.key);
-      tab.owned = true;
+      registry.register(key, raw.windowId, raw.index, raw.url, { owned: true, stamped: raw.stamped });
+      const { stamped: _stamped, ...rest } = raw;
+      const tab = toTab({ raw: rest, key, owned: true });
       const after = await frontAsn();
       return { tab, frontAppChanged: before !== after };
     },
 
-    async runJs(tabKey, source, o = {}) {
-      const { windowId, index } = parseKey(tabKey);
-      return call<string>("runJs", { windowId, index, source }, o.timeoutMs);
+    runJs(tabKey, source, o = {}) {
+      return registry.withTab(tabKey, (s) => call<Guarded<string>>("runJs", { ...guardArgs(s), source }, o.timeoutMs));
     },
 
-    async closeTab(tabKey) {
-      const { windowId, index } = parseKey(tabKey);
-      await call("closeTab", { windowId, index });
-      owned.delete(tabKey);
-      // 같은 창에서 뒤에 있던 우리 탭은 번호가 하나 당겨진다.
-      for (const k of [...owned]) {
-        const p = parseKey(k);
-        if (p.windowId === windowId && p.index > index) {
-          owned.delete(k);
-          owned.add(keyOf(windowId, p.index - 1));
-        }
-      }
-    },
+    closeTab: (tabKey) => registry.closeTab(tabKey),
+
+    closeOwned: () => registry.closeOwned(),
 
     close: () => host.close(),
   };

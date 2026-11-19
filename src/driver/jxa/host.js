@@ -14,13 +14,74 @@ function writeLine(obj) {
   stdout.writeData($(s).dataUsingEncoding($.NSUTF8StringEncoding));
 }
 
-// 탭 키 `windowId:index`(index 는 사파리 방식 1부터).
+// 탭 자리 `windowId` + `index`(index 는 사파리 방식 1부터). 탭 키(t1, t2 …)는 Node 쪽 TabRegistry 가 자리와 이어 준다.
 function tabOf(args) {
   return Safari.windows.byId(args.windowId).tabs[args.index - 1];
 }
 
 function str(v) {
   return v === null || v === undefined ? "" : String(v);
+}
+
+// 우리가 붙잡은 탭의 페이지 안에 적어 두는 표시(`document.documentElement.dataset.saTab = 탭 키`).
+// 사용자가 탭을 옮기거나 다른 탭이 닫혀 자리 번호가 밀려도 표시로 같은 탭을 알아본다.
+// 같은 문서 안에서는 남고, 새 문서를 불러오면(전체 이동 · 새로고침) 사라진다.
+function isJsOffError(e) {
+  const m = String((e && e.message) || e);
+  return /Apple Events|Apple 이벤트/i.test(m) && /JavaScript/i.test(m);
+}
+
+function readMarker(tab) {
+  try {
+    return str(Safari.doJavaScript("document.documentElement.dataset.saTab || ''", { in: tab }));
+  } catch (e) {
+    // 「Apple 이벤트에서 JavaScript 허용」이 꺼진 건 올린다. 그 밖의 오류(JS 를 못 돌리는 특수 페이지 등)는 표시 없음으로 본다.
+    if (isJsOffError(e)) throw e;
+    return "";
+  }
+}
+
+function stampTab(tab, key) {
+  try {
+    Safari.doJavaScript("document.documentElement.dataset.saTab = " + JSON.stringify(String(key)), { in: tab });
+    return true;
+  } catch (e) {
+    if (isJsOffError(e)) throw e;
+    return false;
+  }
+}
+
+// 그 자리에 탭이 있으면 {tab, url, marker}, 없으면 null.
+function probeTab(windowId, index) {
+  let tab;
+  let url;
+  try {
+    tab = Safari.windows.byId(windowId).tabs[index - 1];
+    url = str(tab.url());
+  } catch (e) {
+    return null;
+  }
+  return { tab, url, marker: readMarker(tab) };
+}
+
+// 요청이 가리킨 자리의 탭이 정말 그 키의 탭일 때만 돌려준다.
+// 표시가 키와 같거나, 아직 표시를 안 한 탭(args.unstamped)이면서 표시가 없고 주소가 기록과 같을 때.
+// args.urlOnly 는 JS 를 못 도는 탭(경고창이 떠 있는 탭)을 닫을 때만 쓴다 — 표시를 못 읽으니 주소만 본다.
+function guardTab(args) {
+  if (args.urlOnly) {
+    let tab;
+    try {
+      tab = tabOf(args);
+      return str(tab.url()) === args.url ? { tab, marker: "" } : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  const p = probeTab(args.windowId, args.index);
+  if (!p) return null;
+  if (p.marker === args.key) return p;
+  if (args.unstamped && p.marker === "" && p.url === args.url) return p;
+  return null;
 }
 
 function windowTabInfos(w) {
@@ -66,7 +127,22 @@ const ops = {
     return out;
   },
 
+  // 자리에 있는 탭의 {exists, url, marker}. 표시(marker)는 페이지 안 JS 로 읽는다.
+  probe(args) {
+    const p = probeTab(args.windowId, args.index);
+    return p ? { exists: true, url: p.url, marker: p.marker } : { exists: false, url: "", marker: "" };
+  },
+
+  // 자리의 탭에 표시를 적는다(탭 붙잡기).
+  stamp(args) {
+    const tab = tabOf(args);
+    tab.url(); // 없는 탭이면 여기서 오류
+    return stampTab(tab, args.key);
+  },
+
   // 활성 탭은 바꾸지 않고 맨 뒤에 새 탭을 만든다. 페이지가 뜰 때까지(최대 loadBudgetMs) 기다린다.
+  // 새 탭은 맨 앞 창(= 맨 앞 일반 창)에 연다. 사파리 스크립트 사전에는 개인정보 보호 창을 가리키는 속성이 없어
+  // 개인정보 보호 창을 가려낼 수 없다 — 맨 앞 창이 개인정보 보호 창이면 거기에 열린다(알려진 한계).
   openTab(args) {
     let win;
     if (args.windowId !== undefined && args.windowId !== null) {
@@ -116,6 +192,7 @@ const ops = {
       delay(0.05);
     }
 
+    const stamped = args.key ? stampTab(tab, args.key) : false;
     const current = win.currentTab().index();
     return {
       windowId,
@@ -123,20 +200,29 @@ const ops = {
       title: str(tab.name()),
       url: str(tab.url()),
       isActive: index === current,
+      stamped,
     };
   },
 
+  // 자리의 탭이 args.key 의 탭일 때만 돈다. 아니면 {stale: true}(Node 쪽이 탭을 다시 찾는다).
   runJs(args) {
-    const res = Safari.doJavaScript(args.source, { in: tabOf(args) });
-    if (res === null || res === undefined) return "";
-    if (typeof res === "string") return res;
-    if (typeof res === "number" || typeof res === "boolean") return String(res);
-    return JSON.stringify(res);
+    const g = guardTab(args);
+    if (!g) return { stale: true };
+    if (g.marker !== args.key) stampTab(g.tab, args.key); // 표시 없던 탭(붙잡기 전, 새로고침 뒤)에 지금 적는다
+    const res = Safari.doJavaScript(args.source, { in: g.tab });
+    let value;
+    if (res === null || res === undefined) value = "";
+    else if (typeof res === "string") value = res;
+    else if (typeof res === "number" || typeof res === "boolean") value = String(res);
+    else value = JSON.stringify(res);
+    return { value };
   },
 
   closeTab(args) {
-    tabOf(args).close();
-    return null;
+    const g = guardTab(args);
+    if (!g) return { stale: true };
+    g.tab.close();
+    return { value: null };
   },
 
   ping() {
