@@ -7,6 +7,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "pack:mcpb": "sh scripts/pack-mcpb.sh",
     "build": "tsc && mkdir -p dist/src/driver/jxa && cp src/driver/jxa/host.js dist/src/driver/jxa/host.js && npm run bundle",
     "test": "vitest run",
     "it": "SAFARI_IT=1 vitest run --config vitest.config.ts",
