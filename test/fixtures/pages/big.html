@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>큰 시험 페이지</title></head>
+<body>
+<h1>요소 2만 개</h1>
+<div id="root"></div>
+<script>
+  // 요소 2만 개(단추 · 링크 · 문단 · 목록 · 입력칸이 섞임). 앞쪽 일부만 화면에 들어오고 나머지는 아래로 길게 이어진다.
+  var root = document.getElementById('root'), frag = document.createDocumentFragment();
+  for (var i = 0; i < 4000; i++) {
+    var row = document.createElement('div');
+    row.innerHTML = '<p>문단 ' + i + ' 한글로 길게 적은 시험용 글</p><button>단추 ' + i + '</button><a href="#r' + i + '">링크 ' + i + '</a><input placeholder="입력 ' + i + '">';
+    frag.appendChild(row);
+  }
+  root.appendChild(frag); // 4000 * 5 = 20000 요소
+</script>
+</body>
+</html>
