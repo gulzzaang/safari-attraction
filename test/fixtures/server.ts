@@ -13,8 +13,8 @@ const TYPES: Record<string, string> = {
   ".json": "application/json; charset=utf-8",
 };
 
-/** 127.0.0.1 임의 포트에서 test/fixtures/pages 를 정적으로 내준다. */
-export async function startFixtureServer(): Promise<{ baseUrl: string; close(): Promise<void> }> {
+/** 127.0.0.1 임의 포트에서(localhost 로 불러도 닿는다) test/fixtures/pages 를 정적으로 내준다. */
+export async function startFixtureServer(): Promise<{ baseUrl: string; altBaseUrl: string; close(): Promise<void> }> {
   const server: Server = createServer(async (req, res) => {
     const path = decodeURIComponent((req.url ?? "/").split("?")[0]!);
     const file = normalize(join(PAGES_DIR, path));
@@ -35,6 +35,8 @@ export async function startFixtureServer(): Promise<{ baseUrl: string; close(): 
   const port = (server.address() as AddressInfo).port;
   return {
     baseUrl: `http://127.0.0.1:${port}`,
+    // 같은 서버를 다른 호스트 이름으로 부른다 — 출처가 달라 다른 출처 iframe 시험에 쓴다(둘 다 이 맥 안쪽 주소다).
+    altBaseUrl: `http://localhost:${port}`,
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections?.();

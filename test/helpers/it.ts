@@ -6,18 +6,21 @@ import { startFixtureServer } from "../fixtures/server.js";
 export const describeIt: typeof describe = process.env.SAFARI_IT ? describe : (describe.skip as typeof describe);
 
 let baseUrl: string | undefined;
+let altBaseUrl: string | undefined;
 let stop: (() => Promise<void>) | undefined;
 
 /** 시험 서버를 띄운다. beforeAll 에서 부르고, 끝나면 stopFixtures 를 부른다. */
 export async function startFixtures(): Promise<void> {
   const s = await startFixtureServer();
   baseUrl = s.baseUrl;
+  altBaseUrl = s.altBaseUrl;
   stop = s.close;
 }
 
 export async function stopFixtures(): Promise<void> {
   await stop?.();
   baseUrl = undefined;
+  altBaseUrl = undefined;
   stop = undefined;
 }
 
@@ -33,4 +36,10 @@ export function frontApp(): string {
   const out = execFileSync("lsappinfo", ["info", "-only", "name", asn], { encoding: "utf8" });
   const m = /"([^"]*)"/.exec(out);
   return m ? m[1]! : "";
+}
+
+/** 같은 서버를 다른 호스트 이름(localhost)으로 부른 주소 — fixture() 와 출처가 다르다. */
+export function fixtureAlt(name: string): string {
+  if (!altBaseUrl) throw new Error("startFixtures() 를 먼저 부르세요");
+  return `${altBaseUrl}/${name}`;
 }

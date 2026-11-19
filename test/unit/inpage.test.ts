@@ -14,3 +14,12 @@ test('옵션이 그대로 들어간다', () => {
   const src = buildSnapshotSource({ selector: '#a "b"', interactive: true });
   expect(src).toContain(JSON.stringify({ interactive: true, selector: '#a "b"', full: false }));
 });
+
+test('읽기 · 조작 원문 모두 같은 깊이 우선 찾기 함수를 품고, 조작 원문도 문법이 맞는다', async () => {
+  const { buildActionSource } = await import('../../src/repl/inpage-actions.js');
+  for (const src of [buildSnapshotSource({ selector: 'e3' }), buildActionSource('click', { ref: 'e1', tok: 't' })]) {
+    expect(src).toContain('function __saDeepQuery(');
+    expect(src).toContain('function __saDeepAll(');
+    expect(() => new Function(`return ${src}`)).not.toThrow();
+  }
+});

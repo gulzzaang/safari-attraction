@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>프레임 안쪽 페이지</title></head>
+<body>
+  <input placeholder="프레임 입력">
+  <button id="fbtn" type="button">프레임 단추</button>
+  <p id="fout">대기</p>
+  <script>
+    document.getElementById('fbtn').addEventListener('click', function () {
+      document.getElementById('fout').textContent = '프레임 눌림';
+    });
+  </script>
+</body>
+</html>

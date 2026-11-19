@@ -9,6 +9,8 @@
  * 페이지 안에서 문자열을 eval 하는 곳은 없다(엄격한 CSP 에서도 돌도록).
  */
 
+import { DEEP_SOURCE } from "../snapshot/inpage.js";
+
 export type ActionOp = "click" | "fill" | "text" | "press" | "type" | "goto";
 
 /** 페이지 안에서 동작이 끝난 뒤 보내는 결과. */
@@ -37,7 +39,7 @@ export function buildPendingReadSource(id: string): string {
 }
 
 export function buildActionSource(op: ActionOp, args: Record<string, unknown> & { tok: string }): string {
-  return `(function(A){${plant('A')}${PRELUDE}${BODY}})(${JSON.stringify({ ...args, op })})`;
+  return `(function(A){${plant('A')}${DEEP_SOURCE}${PRELUDE}${BODY}})(${JSON.stringify({ ...args, op })})`;
 }
 
 const plant = (arg: string) => PLANT.split('__SA_ARG__').join(arg);
@@ -90,10 +92,13 @@ const PLANT = String.raw`
 
 const PRELUDE = String.raw`
   function fail(msg) { var e = new Error(msg); e.saPlain = true; throw e; }
+  // 요소가 든 문서의 창(iframe 안 요소는 그 iframe 창). 이벤트 · 값 대입은 그 창의 생성자로 만든다.
+  function winOf(el) { return (el && el.ownerDocument && el.ownerDocument.defaultView) || window; }
+  // 요소를 찾는다: 문서 → 열린 shadow root → 같은 출처 iframe 순(ref 도 CSS 선택자도 같은 규칙).
   function find(ref) {
     var isRef = /^e\d+$/.test(ref);
     var el;
-    try { el = document.querySelector(isRef ? '[data-sa-ref="' + ref + '"]' : ref); }
+    try { el = __saDeepQuery(ref); }
     catch (e) { fail('선택자가 잘못됨: ' + ref); }
     if (!el) {
       fail(isRef
@@ -108,9 +113,10 @@ const PRELUDE = String.raw`
     var t = (a.target || '').toLowerCase();
     if ((t && t !== '_self') || a.hasAttribute('download')) return false;
     try {
-      var u = new URL(a.href, location.href);
+      var cur = a.ownerDocument.location.href;
+      var u = new URL(a.href, cur);
       if (!/^(https?|file):$/.test(u.protocol)) return false;
-      if (u.hash && u.href.split('#')[0] === location.href.split('#')[0]) return false;
+      if (u.hash && u.href.split('#')[0] === cur.split('#')[0]) return false;
     } catch (e) { return false; }
     return true;
   }
@@ -125,13 +131,14 @@ const PRELUDE = String.raw`
   window.addEventListener('submit', onSubmit);
 
   function mouse(type, el, x, y, buttons) {
-    var init = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y,
+    var W = winOf(el);
+    var init = { bubbles: true, cancelable: true, composed: true, view: W, clientX: x, clientY: y,
                  screenX: x, screenY: y, button: 0, buttons: buttons, detail: type === 'click' ? 1 : 0 };
     var ev;
-    if (type.indexOf('pointer') === 0 && typeof PointerEvent === 'function') {
+    if (type.indexOf('pointer') === 0 && typeof W.PointerEvent === 'function') {
       init.pointerType = 'mouse'; init.isPrimary = true; init.pointerId = 1;
-      ev = new PointerEvent(type, init);
-    } else ev = new MouseEvent(type, init);
+      ev = new W.PointerEvent(type, init);
+    } else ev = new W.MouseEvent(type, init);
     return el.dispatchEvent(ev);
   }
   var FOCUSABLE = 'input,textarea,select,button,a[href],summary,[tabindex],[contenteditable=""],[contenteditable=true]';
@@ -158,13 +165,14 @@ const PRELUDE = String.raw`
     return /^(text|search|email|url|tel|password|number|)$/i.test(el.getAttribute('type') || '');
   }
   function setNativeValue(el, v) {
-    var proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    var W = winOf(el);
+    var proto = el.tagName === 'TEXTAREA' ? W.HTMLTextAreaElement.prototype : W.HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
   }
   function inputEvent(el, type, data) {
-    var ev;
-    try { ev = new InputEvent(type, { bubbles: true, cancelable: type === 'beforeinput', composed: true, inputType: data === null ? 'deleteContentBackward' : 'insertText', data: data }); }
-    catch (e) { ev = new Event(type, { bubbles: true }); }
+    var ev, W = winOf(el);
+    try { ev = new W.InputEvent(type, { bubbles: true, cancelable: type === 'beforeinput', composed: true, inputType: data === null ? 'deleteContentBackward' : 'insertText', data: data }); }
+    catch (e) { ev = new W.Event(type, { bubbles: true }); }
     return el.dispatchEvent(ev);
   }
   // 글자 하나(또는 지우기: ch === null)를 입력칸의 커서 자리에 넣는다.
@@ -179,7 +187,7 @@ const PRELUDE = String.raw`
       try { el.setSelectionRange(s + ch.length, s + ch.length); } catch (x) {}
       inputEvent(el, 'input', ch === '' ? null : ch);
     } else if (el && el.isContentEditable) {
-      if (ch === null) document.execCommand('delete'); else document.execCommand('insertText', false, ch);
+      if (ch === null) el.ownerDocument.execCommand('delete'); else el.ownerDocument.execCommand('insertText', false, ch);
     }
   }
 
@@ -192,16 +200,26 @@ const PRELUDE = String.raw`
     var ch = name === 'Space' ? ' ' : name;
     var kc = info ? info[0] : (name.length === 1 ? name.toUpperCase().charCodeAt(0) : 0);
     var code = info ? info[1] : (/^[a-z]$/i.test(name) ? 'Key' + name.toUpperCase() : (/^[0-9]$/.test(name) ? 'Digit' + name : ''));
-    var init = { key: ch, code: code, keyCode: kc, which: kc, bubbles: true, cancelable: true, composed: true, view: window };
+    var init = { key: ch, code: code, keyCode: kc, which: kc, bubbles: true, cancelable: true, composed: true, view: winOf(target) };
     if (type === 'keypress') { var cc = ch.length === 1 ? ch.charCodeAt(0) : (name === 'Enter' ? 13 : 0); init.charCode = cc; init.keyCode = cc; init.which = cc; }
-    return target.dispatchEvent(new KeyboardEvent(type, init));
+    return target.dispatchEvent(new (winOf(target).KeyboardEvent)(type, init));
   }
+  // 지금 초점이 있는 요소. shadow root · 같은 출처 iframe 안쪽까지 따라 들어간다.
   function activeTarget() {
     var t = document.activeElement;
-    return (!t || t === document.documentElement) ? document.body : t;
+    for (var i = 0; t && i < 20; i++) {
+      var inner = null;
+      try {
+        if (t.shadowRoot && t.shadowRoot.activeElement) inner = t.shadowRoot.activeElement;
+        else if (t.tagName === 'IFRAME' && t.contentDocument && t.contentDocument.activeElement) inner = t.contentDocument.activeElement;
+      } catch (e) {}
+      if (!inner || inner === t) break;
+      t = inner;
+    }
+    return (!t || t === t.ownerDocument.documentElement) ? (t ? t.ownerDocument.body : document.body) : t;
   }
   function nextFocus(from, back) {
-    var all = Array.prototype.filter.call(document.querySelectorAll('input,textarea,select,button,a[href],summary,[tabindex],[contenteditable=""],[contenteditable=true]'), function (e) {
+    var all = Array.prototype.filter.call(__saDeepAll(FOCUSABLE), function (e) {
       return !e.disabled && e.getAttribute('tabindex') !== '-1' && e.type !== 'hidden' && (e.offsetWidth || e.offsetHeight || e.getClientRects().length);
     });
     if (!all.length) return null;
@@ -214,7 +232,7 @@ const PRELUDE = String.raw`
     name = ALIAS[name] || name;
     var t = activeTarget();
     var mo = new MutationObserver(function () {});
-    mo.observe(document, { childList: true, attributes: true, characterData: true, subtree: true });
+    mo.observe(t.ownerDocument, { childList: true, attributes: true, characterData: true, subtree: true });
     var href0 = location.href;
     var nav = false;
     try {
@@ -228,7 +246,7 @@ const PRELUDE = String.raw`
         else if (name === 'Tab') { var n = nextFocus(t, false); if (n) n.focus(); }
         else if (name === 'Enter') {
           if (t.tagName === 'TEXTAREA') insert(t, '\n');
-          else if (t.isContentEditable) document.execCommand('insertParagraph');
+          else if (t.isContentEditable) t.ownerDocument.execCommand('insertParagraph');
           else if (t.tagName === 'A' || t.tagName === 'BUTTON' || t.tagName === 'SUMMARY' || (t.tagName === 'INPUT' && /^(submit|button|image|reset|checkbox|radio)$/i.test(t.type))) nav = doClick(t);
         }
       }
@@ -260,16 +278,17 @@ const BODY = String.raw`
         try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
         if (el.tagName === 'SELECT') {
           el.focus(); el.value = A.value;
-          el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
+          el.dispatchEvent(new (winOf(el).Event)('input', { bubbles: true })); el.dispatchEvent(new (winOf(el).Event)('change', { bubbles: true }));
         } else if (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && !/^(checkbox|radio|file|button|submit|image|reset|range|color|hidden)$/i.test(el.type))) {
           el.focus();
           setNativeValue(el, A.value);
           inputEvent(el, 'input', A.value);
-          el.dispatchEvent(new Event('change', { bubbles: true }));
+          el.dispatchEvent(new (winOf(el).Event)('change', { bubbles: true }));
         } else if (el.isContentEditable) {
           el.focus();
-          document.execCommand('selectAll', false, null);
-          if (A.value === '') document.execCommand('delete'); else document.execCommand('insertText', false, A.value);
+          var ed = el.ownerDocument;
+          ed.execCommand('selectAll', false, null);
+          if (A.value === '') ed.execCommand('delete'); else ed.execCommand('insertText', false, A.value);
         } else {
           fail('글을 채울 수 없는 요소임(' + el.tagName.toLowerCase() + ') — 입력칸이나 편집 가능한 영역을 고르세요');
         }

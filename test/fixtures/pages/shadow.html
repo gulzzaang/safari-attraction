@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"><title>shadow 시험 페이지</title>
+<style>sa-card, sa-closed, sa-wrap { display: block; margin: 8px 0; }</style>
+</head>
+<body>
+  <h1>shadow 시험 페이지</h1>
+  <sa-card id="card"></sa-card>
+  <sa-closed id="closed"></sa-closed>
+  <sa-wrap id="wrap"><button id="slotted">슬롯 단추</button></sa-wrap>
+  <p id="out">대기</p>
+  <script>
+    // 열린 shadow root: 안쪽 단추 · 입력칸. 단추를 누르면 바깥 #out 이 바뀐다.
+    customElements.define('sa-card', class extends HTMLElement {
+      connectedCallback() {
+        var r = this.attachShadow({ mode: 'open' });
+        r.innerHTML = '<div><button>안쪽 단추</button> <input placeholder="안쪽 입력"></div>';
+        r.querySelector('button').addEventListener('click', function () {
+          document.getElementById('out').textContent = '눌림';
+        });
+      }
+    });
+    // 닫힌 shadow root: 밖에서는 안쪽을 알 길이 없다(화면에는 크기가 있다).
+    customElements.define('sa-closed', class extends HTMLElement {
+      connectedCallback() {
+        var r = this.attachShadow({ mode: 'closed' });
+        r.innerHTML = '<div><button>닫힌 안쪽 단추</button></div>';
+      }
+    });
+    // slot: 바깥(light DOM)의 단추가 shadow 안 slot 자리에 나온다.
+    customElements.define('sa-wrap', class extends HTMLElement {
+      connectedCallback() {
+        var r = this.attachShadow({ mode: 'open' });
+        r.innerHTML = '<div><slot></slot></div>';
+      }
+    });
+  </script>
+</body>
+</html>
