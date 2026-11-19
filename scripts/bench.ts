@@ -131,8 +131,7 @@ catch (e) { console.log("ERR " + (Date.now() - aiT0) + "ms " + String(e && e.mes
   const aiClose = await repl("AI 창 탭 닫기", "await closeTab(aiw)");
   const aiSizeLines = aiSize.text.trim().split("\n");
   const aiShotOk = /^OK /m.test(aiShot.text);
-  const aiDenied = /SCREEN_CAPTURE_DENIED|화면 기록|권한/.test(aiShot.text);
-  
+  const aiDenied = /SCREEN_CAPTURE_DENIED|화면 찍기 권한|창을 찍지 못함/.test(aiShot.text);
   // 4. 끝 정리
   const left = await repl("남은 탭 닫기", "for (const t of [...tabs]) await closeTab(t); console.log(tabs.length)");
   await client.close();

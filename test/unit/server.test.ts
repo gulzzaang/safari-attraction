@@ -38,6 +38,9 @@ describe("MCP 서버", () => {
     const repl = (await c.listTools()).tools.find((t) => t.name === "repl")!;
     const d = repl.description ?? "";
     for (const w of ["console.log", "openTab", "attachActiveBrowserTab", "snapshot", "iframe", "개인정보 보호", "CORS", "openAiWindow", "listWindows", "useWindow", "useAiWindow", "setViewportSize", "screenshot", "display", "4장", "화면 및 시스템 오디오 녹음"]) expect(d).toContain(w);
+    expect(d).toContain("열린 shadow DOM 과 같은 사이트 iframe");
+    expect(d).toContain("닫힌 shadow root");
+    expect(d).not.toContain("Reading skips iframes");
   });
 
   test("repl 은 콘솔 출력을 글로 돌려준다", async () => {

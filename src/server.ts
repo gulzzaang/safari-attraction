@@ -37,7 +37,8 @@ Read values with console.log (the last expression is NOT printed). Errors come b
 - 호출은 120초 안에 끝나야 한다. 입력 · 클릭은 진짜 마우스 · 키보드가 아니라 페이지 안 이벤트로 보내진다.
 
 알려진 한계 / Known limits:
-- 읽기(snapshot)는 iframe 안과 shadow DOM 안을 읽지 못한다. Reading skips iframes and shadow DOM.
+- 읽기(snapshot)는 열린 shadow DOM 과 같은 사이트 iframe 안쪽까지 읽고 클릭도 된다. 닫힌 shadow root 와 다른 사이트(또는 sandbox 된) iframe 은 한 줄로만 보이고 안쪽은 못 읽는다. 그 안에서 Enter 로 제출해 이동하는 것은 이동으로 감지되지 않을 수 있다.
+  Open shadow DOM and same-origin iframes are read (and clickable); closed shadow roots and other-site or sandboxed iframes show as one line and are not read inside; Enter-submits inside shadow DOM/iframes may not be detected as navigation.
 - evaluate 는 함수 하나나 식 하나만 받는다(여러 문장은 함수로 감싼다). 결과는 JSON 으로 오가 DOM · 함수는 못 받는다. 바깥 변수는 못 쓰고 arg 로 넘긴다.
 - await 뒤에서 이벤트 루프를 막는 코드(예: await x; while(true){})는 서버를 멈출 수 있다. 쓰지 말 것.
 - 사파리 스크립트는 개인정보 보호 창과 일반 창을 구별하지 못해, 맨 앞 창을 그대로 쓴다. 개인정보 보호 창이 앞에 있으면 거기에 열릴 수 있다.
