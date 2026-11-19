@@ -36,7 +36,7 @@ export function createFakeDriver(): FakeDriver {
   const d: FakeDriver = {
     calls,
     userTabs: [],
-    windows: [{ id: 1, index: 1, isPrivate: false, tabCount: 1, visible: true, bounds: { x: 0, y: 0, width: 1200, height: 800 }, title: "", owned: false }],
+    windows: [{ id: 1, index: 1, isPrivate: false, tabCount: 1, visible: true, minimized: false, bounds: { x: 0, y: 0, width: 1200, height: 800 }, title: "", owned: false }],
     frontAppChanged: false,
     answer: () => "",
     screenAllowed: true,
@@ -64,6 +64,7 @@ export function createFakeDriver(): FakeDriver {
         isPrivate: false,
         tabCount: 1,
         visible: true,
+        minimized: false,
         bounds: { x: 0, y: 0, width: opts?.width ?? 1200, height: opts?.height ?? 800 },
         title: "",
         owned: true,

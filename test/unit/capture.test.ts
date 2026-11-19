@@ -2,8 +2,18 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { captureWindowPng, type RunCmd } from "../../src/driver/capture.js";
 
-const PNG_BIG = Buffer.from("89504e470d0a1a0a" + "aa".repeat(64), "hex");
-const PNG_SMALL = Buffer.from("89504e470d0a1a0a" + "bb".repeat(8), "hex");
+/** 서명 + IHDR 머리만 있는 가짜 PNG(너비 · 높이는 16~23 바이트). 뒤는 표시용 채움. */
+function fakePng(width: number, height: number, fill: string): Buffer {
+  const head = Buffer.alloc(24);
+  Buffer.from("89504e470d0a1a0a", "hex").copy(head, 0);
+  head.writeUInt32BE(13, 8);
+  head.write("IHDR", 12, "ascii");
+  head.writeUInt32BE(width, 16);
+  head.writeUInt32BE(height, 20);
+  return Buffer.concat([head, Buffer.from(fill.repeat(16), "hex")]);
+}
+const PNG_BIG = fakePng(3000, 2000, "aa");
+const PNG_SMALL = fakePng(1568, 1045, "bb");
 
 describe("captureWindowPng(창 찍기)", () => {
   test("screencapture 가 could not create image 를 내면 SCREEN_CAPTURE_DENIED", async () => {
@@ -52,6 +62,35 @@ describe("captureWindowPng(창 찍기)", () => {
     expect(resize.args.indexOf("1568")).toBe(resize.args.indexOf("-Z") + 1);
     expect(resize.args.at(-1)).toBe(tmp);
     expect(existsSync(tmp)).toBe(false);
+  });
+
+  test("긴 변이 1568 이하면 sips 를 부르지 않고 찍은 그대로 돌려준다(작은 그림을 키우지 않는다)", async () => {
+    const small = fakePng(300, 200, "cc");
+    const cmds: string[] = [];
+    let tmp = "";
+    const run: RunCmd = async (cmd, args) => {
+      cmds.push(cmd);
+      tmp = args.at(-1)!;
+      writeFileSync(tmp, small);
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const png = await captureWindowPng(7, run);
+    expect(cmds).toEqual(["screencapture"]);
+    expect(png.equals(small)).toBe(true);
+    expect(existsSync(tmp)).toBe(false);
+  });
+
+  test("긴 변이 딱 1568 이면 줄이지 않고, 높이가 길어도 긴 변을 본다", async () => {
+    for (const [w, h, expectSips] of [[1568, 900, false], [900, 1568, false], [900, 1569, true]] as const) {
+      const cmds: string[] = [];
+      const run: RunCmd = async (cmd, args) => {
+        cmds.push(cmd);
+        if (cmd === "screencapture") writeFileSync(args.at(-1)!, fakePng(w, h, "dd"));
+        return { code: 0, stdout: "", stderr: "" };
+      };
+      await captureWindowPng(7, run);
+      expect(cmds.includes("sips")).toBe(expectSips);
+    }
   });
 
   test("sips 가 실패해도 임시 파일을 지운다", async () => {

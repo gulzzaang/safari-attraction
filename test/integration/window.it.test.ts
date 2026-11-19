@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { afterAll, afterEach, beforeAll, expect, test } from "vitest";
 import { createJxaDriver } from "../../src/driver/jxa-driver.js";
 import type { SafariDriver } from "../../src/driver/types.js";
@@ -95,6 +96,28 @@ describeIt("AI 창(열기 · 크기 · 닫기 · 찍기)", () => {
     const r = await d.setWindowSize(windowId, 200, 600);
     expect(r.innerWidth).toBeGreaterThan(200);
     expect(r.innerWidth).toBeLessThan(500);
+  });
+
+  test("최소화한 우리 창은 닫힌 창이 아니다: 목록에 남고 closeWindow 로 닫힌다", async () => {
+    const { windowId } = await open(mine("basic.html"));
+    // 사용자가 창을 최소화한 것과 같다(이 시험이 연 창만 만진다).
+    execFileSync("osascript", ["-l", "JavaScript", "-e", `Application("Safari").windows.byId(${windowId}).miniaturized = true; delay(0.8); "ok"`]);
+    const listed = (await d.listWindows()).find((w) => w.id === windowId);
+    expect(listed).toBeDefined();
+    expect(listed!.minimized).toBe(true);
+    expect(listed!.owned).toBe(true);
+    expect((await d.listTabs()).some((t) => t.windowId === windowId)).toBe(true);
+    await d.closeWindow(windowId);
+    opened.pop();
+    expect((await d.listWindows()).some((w) => w.id === windowId)).toBe(false);
+  });
+
+  test("최소화한 창도 closeOwned 가 닫는다", async () => {
+    const { windowId } = await open(mine("basic.html"));
+    execFileSync("osascript", ["-l", "JavaScript", "-e", `Application("Safari").windows.byId(${windowId}).miniaturized = true; delay(0.8); "ok"`]);
+    expect(await d.closeOwned()).toBe(1);
+    opened.length = 0;
+    expect((await d.listWindows()).some((w) => w.id === windowId)).toBe(false);
   });
 
   test("닫은 창은 listWindows 에서 바로 빠진다", async () => {

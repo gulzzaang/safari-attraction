@@ -46,8 +46,11 @@ export function opError(op: string, e: unknown): SafariError {
   return new SafariError("SAFARI_ERROR", e instanceof Error ? e.message : String(e));
 }
 
-export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): SafariDriver {
-  const host = new JxaHost(opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+/** 드라이버가 호스트에 바라는 것(시험에서는 가짜로 바꿔 끼운다). */
+export type HostLike = Pick<JxaHost, "call" | "close">;
+
+export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLike } = {}): SafariDriver {
+  const host: HostLike = opts.host ?? new JxaHost(opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
 
   async function call<T>(op: string, args: object = {}, timeoutMs?: number): Promise<T> {
     try {
@@ -125,6 +128,32 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): Safar
     return r.inner;
   }
 
+  /** 지금 사파리의 창 번호 전부. 사파리가 꺼져 있으면 켜 보고 읽는다. */
+  async function windowIdsNow(): Promise<number[]> {
+    try {
+      return await call<number[]>("windowIds");
+    } catch (e) {
+      if (!(e instanceof SafariError && e.code === "SAFARI_NOT_RUNNING")) throw e;
+      await launchSafari();
+      return call<number[]>("windowIds");
+    }
+  }
+
+  /**
+   * openWindow 가 시간을 넘겼다(호스트는 죽었다). 만들기 전에 없던 창 가운데 우리 표시가 있는 것을 닫는다.
+   * 표시를 확인하지 못한 새 창이 있거나 치우지 못하면, 창이 남았을 수 있다고 오류에 덧붙인다.
+   */
+  async function cleanupAfterTimeout(err: SafariError, beforeIds: number[], key: string): Promise<SafariError> {
+    let leftover = true;
+    try {
+      const r = await call<{ closed: number; unconfirmed: number }>("closeStamped", { beforeIds, key });
+      leftover = r.unconfirmed > 0;
+    } catch {
+      leftover = true;
+    }
+    return leftover ? new SafariError(err.code, `${err.message} — 새 창이 남았을 수 있음(사파리 창을 확인)`) : err;
+  }
+
   async function closeWindow(windowId: number): Promise<void> {
     requireOwnedWindow(windowId, "닫아요");
     const r = await call<{ gone: boolean; closed?: boolean }>("closeWindow", { windowId });
@@ -169,13 +198,13 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): Safar
       const key = registry.nextKey();
       const args = { url, key: registry.markerOf(key) };
       type Opened = { windowId: number; tab: RawTab; stamped: boolean };
+      const idsBefore = await windowIdsNow(); // 시간을 넘겨 호스트가 죽어도 새 창을 알아보는 기준
       let raw: Opened;
       try {
         raw = await call<Opened>("openWindow", args, OPEN_WINDOW_TIMEOUT_MS);
       } catch (e) {
-        if (!(e instanceof SafariError && e.code === "SAFARI_NOT_RUNNING")) throw e;
-        await launchSafari();
-        raw = await call<Opened>("openWindow", args, OPEN_WINDOW_TIMEOUT_MS);
+        if (e instanceof SafariError && e.code === "TIMEOUT") throw await cleanupAfterTimeout(e, idsBefore, args.key);
+        throw e;
       }
       ownedWindows.add(raw.windowId);
       registry.register(key, raw.windowId, raw.tab.index, raw.tab.url, { owned: true, stamped: raw.stamped });

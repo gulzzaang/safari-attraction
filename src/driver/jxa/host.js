@@ -134,24 +134,42 @@ function windowTabInfos(w) {
   }));
 }
 
-// 탭이 있고 보이는 창만 일반 창으로 본다(설정 창 같은 건 탭이 없다). 맨 앞 것부터.
-// 닫은 창은 한참(몇 분) 사파리 창 목록에 남아 visible() 이 false 가 되고 탭이 없다 — 닫힌 창으로 본다.
+// 최소화한 창은 사파리에서 visible() 이 false 가 된다 — 닫힌 창이 아니다.
+function isMinimized(w) {
+  try {
+    return w.miniaturized() === true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// 닫힌 창인가. 닫은 창은 한참(몇 분) 사파리 창 목록에 남아 visible() 이 false 가 되고 탭이 없다.
+// visible() 이 false 여도 최소화한 창이면 닫힌 것이 아니다.
+function isGone(w) {
+  try {
+    return w.visible() === false && !isMinimized(w);
+  } catch (e) {
+    return true;
+  }
+}
+
+// 탭이 있고 닫히지 않은 창만 일반 창으로 본다(설정 창 같은 건 탭이 없다). 맨 앞 것부터. 최소화한 창도 들어간다.
 function normalWindows() {
   const out = [];
   Safari.windows().forEach((w) => {
     try {
-      if (w.visible() !== false && w.tabs.length > 0) out.push(w);
+      if (!isGone(w) && w.tabs.length > 0) out.push(w);
     } catch (e) {}
   });
   return out;
 }
 
-// id 로 창을 찾는다. 없거나 닫혔으면(visible() 이 false) null. 창을 가리킬 때는 항상 이것(순서가 바뀌어도 같은 창).
+// id 로 창을 찾는다. 없거나 닫혔으면 null(최소화한 창은 있는 창이다). 창을 가리킬 때는 항상 이것(순서가 바뀌어도 같은 창).
 function aliveWindow(windowId) {
   try {
     const w = Safari.windows.byId(windowId);
     if (w.id() !== windowId) return null;
-    if (w.visible() === false) return null;
+    if (isGone(w)) return null;
     return w;
   } catch (e) {
     return null;
@@ -223,6 +241,7 @@ const ops = {
       isPrivate: false, // 사파리 스크립트 사전에 개인정보 보호 창을 가리키는 속성이 없다.
       tabCount: w.tabs.length,
       visible: true,
+      minimized: isMinimized(w),
       bounds: boundsOf(w),
       title: currentTabName(w),
     }));
@@ -322,7 +341,8 @@ const ops = {
         if (again.length === 0) throw new Error("새 창을 만들지 못함");
         win = again[0];
       } else {
-        win = wins[0];
+        // 맨 앞의 최소화하지 않은 창, 모두 최소화했으면 맨 앞의 최소화한 창(새 창을 만들지 않는다).
+        win = wins.filter((w) => !isMinimized(w))[0] || wins[0];
         win.tabs.push(Safari.Tab({ url: args.url }));
       }
     }
@@ -349,37 +369,78 @@ const ops = {
   openWindow(args) {
     const before = Safari.windows().map((w) => w.id());
     Safari.make({ new: "document", withProperties: { url: args.url } });
-    const findNew = () => Safari.windows().filter((w) => before.indexOf(w.id()) < 0 && w.visible() !== false);
+    const findNew = () => Safari.windows().filter((w) => before.indexOf(w.id()) < 0 && !isGone(w));
     let created = findNew();
     for (let i = 0; i < 100 && created.length === 0; i++) {
       delay(0.1);
       created = findNew();
     }
-    if (created.length !== 1) throw new Error("새 창을 하나로 특정하지 못함: " + created.length);
+    // 어느 창이 우리 것인지 모르면 아무것도 닫지 않는다(사용자 창을 닫을 수 있으니).
+    if (created.length !== 1) throw new Error("새 창을 하나로 특정하지 못함(" + created.length + "개) — 새로 열린 창이 남아 있을 수 있음");
     const windowId = created[0].id();
-    const win = () => Safari.windows.byId(windowId);
+    // 여기부터 실패하면 우리가 만든 창을 닫고 그대로 올린다(창이 홀로 남지 않게).
+    try {
+      const win = () => Safari.windows.byId(windowId);
 
-    // 맨 뒤로: 보이는 일반 창 가운데 가장 뒤에 있는 창의 순서로 보낸다(안 보이는 창이 더 뒤에 있어도 그 앞에 둔다).
-    const others = normalWindows().filter((w) => w.id() !== windowId);
-    if (others.length > 0) win().index = Math.max.apply(null, others.map((w) => w.index()));
+      // 맨 뒤로: 일반 창 가운데 가장 뒤에 있는 창의 순서로 보낸다(안 보이는 닫힌 창이 더 뒤에 있어도 그 앞에 둔다).
+      const others = normalWindows().filter((w) => w.id() !== windowId);
+      if (others.length > 0) win().index = Math.max.apply(null, others.map((w) => w.index()));
 
-    for (let i = 0; i < 50 && win().tabs.length === 0; i++) delay(0.1);
-    const tab = () => win().tabs[0];
-    waitForLoad(tab(), args, () => win().close());
+      for (let i = 0; i < 50 && win().tabs.length === 0; i++) delay(0.1);
+      const tab = () => win().tabs[0];
+      // 만들자마자 표시를 한 번 적어 둔다(시간을 넘겨 치울 때 우리 창을 알아보는 단서. 새 문서가 뜨면 지워질 수 있다).
+      if (args.key) stampTab(tab(), args.key);
+      waitForLoad(tab(), args, () => win().close());
 
-    const stamped = args.key ? stampTab(tab(), args.key) : false;
-    return {
-      windowId,
-      windowIndex: win().index(),
-      tab: {
+      const stamped = args.key ? stampTab(tab(), args.key) : false;
+      return {
         windowId,
-        index: 1,
-        title: str(tab().name()),
-        url: str(tab().url()),
-        isActive: win().currentTab().index() === 1,
-      },
-      stamped,
-    };
+        windowIndex: win().index(),
+        tab: {
+          windowId,
+          index: 1,
+          title: str(tab().name()),
+          url: str(tab().url()),
+          isActive: win().currentTab().index() === 1,
+        },
+        stamped,
+      };
+    } catch (e) {
+      try {
+        Safari.windows.byId(windowId).close();
+      } catch (e2) {}
+      throw e;
+    }
+  },
+
+  // 지금 사파리가 가진 창 번호 전부(닫힌 채 남은 창 · 설정 창 포함). openWindow 가 새 창을 알아보는 기준.
+  windowIds() {
+    return Safari.windows().map((w) => w.id());
+  },
+
+  // openWindow 가 시간을 넘겨 호스트가 죽은 뒤 홀로 남은 새 창을 치운다: args.beforeIds 에 없던 창 가운데
+  // 첫 탭의 표시가 args.key 인 것만 닫는다. 표시를 확인하지 못한 새 창은 그냥 두고 unconfirmed 로 센다.
+  closeStamped(args) {
+    let closed = 0;
+    let unconfirmed = 0;
+    Safari.windows().forEach((w) => {
+      try {
+        if (args.beforeIds.indexOf(w.id()) >= 0 || isGone(w)) return;
+        let marker = "";
+        try {
+          marker = readMarker(w.tabs[0]);
+        } catch (e) {}
+        if (marker === args.key) {
+          w.close();
+          closed++;
+        } else {
+          unconfirmed++;
+        }
+      } catch (e) {
+        unconfirmed++;
+      }
+    });
+    return { closed, unconfirmed };
   },
 
   // 창 바깥 크기와 페이지 크기. 창이 없거나 닫혔으면 {gone:true}.

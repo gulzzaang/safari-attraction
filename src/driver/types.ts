@@ -11,8 +11,10 @@ export interface WindowInfo {
   index: number;
   isPrivate: boolean;
   tabCount: number;
-  /** 사파리가 보이는 창이라고 하는가. listWindows 는 false 인 창(닫혔는데 목록에 남은 창)을 빼고 돌려준다. */
+  /** 닫히지 않은 창인가. listWindows 는 닫혔는데 목록에 남은 창을 빼고 돌려주므로 항상 true 다. */
   visible: boolean;
+  /** 최소화한 창인가. 최소화한 창은 닫힌 창이 아니라 목록에 남는다(사파리는 visible 을 false 로 돌려주지만 우리는 닫힌 것으로 보지 않는다). */
+  minimized: boolean;
   /** 창 바깥 크기와 자리(화면 점 단위). */
   bounds: WindowBounds;
   /** 현재 탭의 이름. 없으면 빈 글. */
