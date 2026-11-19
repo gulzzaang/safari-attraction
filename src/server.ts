@@ -1,7 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { SafariError, type SafariDriver } from "./driver/types.js";
-import { GUIDE_KO, toKorean } from "./errors-ko.js";
+import type { SafariDriver } from "./driver/types.js";
+import { formatDoctor, runDoctor } from "./doctor.js";
+import { toKorean } from "./errors-ko.js";
 import { createReplSession } from "./repl/context.js";
 
 export const REPL_DESCRIPTION = `사용자의 진짜 사파리(로그인된 그대로)를 자바스크립트로 조작한다. 새 탭은 뒤쪽 탭으로 열려 사용자 화면을 가로채지 않는다.
@@ -43,7 +44,7 @@ Read values with console.log (the last expression is NOT printed). Errors come b
 - 처음 쓸 때 설정이 막히면 오류 글에 안내가 나온다. status 도구로 설정 상태를 볼 수 있다.`;
 
 export const STATUS_DESCRIPTION =
-  "사파리 연결 상태를 한국어로 알려 준다 — 사파리 켜짐, 창 수, 「Apple 이벤트의 JavaScript 허용」, 자동화 허락. 막혔을 때 먼저 부른다. 빈 탭을 잠깐 열었다 닫는다. / Reports Safari connection status.";
+  "빠진 준비를 한국어로 점검한다 — 사파리 실행, 자동화 허락, 「Apple 이벤트의 JavaScript 허용」, 화면 기록(찍기용). 항목마다 ✓ / ✗ / ? 와 고칠 곳을 보여 준다. 막혔을 때 먼저 부른다. 빈 탭을 잠깐 열었다 닫는다. / Reports Safari connection status.";
 
 export interface SafariServer {
   server: McpServer;
@@ -51,52 +52,6 @@ export interface SafariServer {
   shutdown(): Promise<void>;
   /** REPL 코드에서 비롯된, 아무도 받지 않은 거부 · 오류를 해당 호출 출력에 알린다(ReplSession.handleStray). */
   handleStray(reason: unknown, kind: "rejection" | "exception"): boolean;
-}
-
-/** status 도구의 본문: 한국어 줄 목록. 사파리를 켜지 않고, 연 탭은 반드시 닫는다. */
-async function statusText(driver: SafariDriver): Promise<string> {
-  const lines: string[] = [];
-  let windows;
-  try {
-    windows = await driver.listWindows();
-  } catch (e) {
-    if (e instanceof SafariError && e.code === "SAFARI_NOT_RUNNING") {
-      return ["사파리: 꺼짐", GUIDE_KO.SAFARI_NOT_RUNNING].join("\n");
-    }
-    if (e instanceof SafariError && e.code === "AUTOMATION_DENIED") {
-      return ["사파리: 켜짐(조작 허락 안 됨)", "자동화 허락: 거부", toKorean(e)].join("\n");
-    }
-    return ["사파리: 알 수 없음", toKorean(e)].join("\n");
-  }
-  lines.push("사파리: 켜짐", `창: ${windows.length}개`, "자동화 허락: 됨");
-
-  let tabKey: string | undefined;
-  try {
-    const { tab, frontAppChanged } = await driver.openTab("about:blank");
-    tabKey = tab.key;
-    const v = await driver.runJs(tab.key, "1+1");
-    if (v.trim() === "2") lines.push("Apple 이벤트의 JavaScript 허용: 켜짐");
-    else lines.push(`Apple 이벤트의 JavaScript 허용: 알 수 없음(시험 값 ${JSON.stringify(v)})`);
-    if (frontAppChanged) lines.push("주의: 탭을 여는 동안 맨 앞 앱이 바뀌었어요.");
-  } catch (e) {
-    if (e instanceof SafariError && e.code === "JS_FROM_APPLE_EVENTS_OFF") {
-      lines.push("Apple 이벤트의 JavaScript 허용: 꺼짐", toKorean(e));
-    } else if (e instanceof SafariError && e.code === "AUTOMATION_DENIED") {
-      lines[lines.indexOf("자동화 허락: 됨")] = "자동화 허락: 거부";
-      lines.push(toKorean(e));
-    } else {
-      lines.push("Apple 이벤트의 JavaScript 허용: 확인 못 함", toKorean(e));
-    }
-  } finally {
-    if (tabKey) {
-      try {
-        await driver.closeTab(tabKey);
-      } catch (e) {
-        if (!(e instanceof SafariError && e.code === "TAB_CLOSED")) lines.push(`주의: 시험용 빈 탭을 닫지 못했어요(${toKorean(e)})`);
-      }
-    }
-  }
-  return lines.join("\n");
 }
 
 export function createSafariServer(driver: SafariDriver): SafariServer {
@@ -126,7 +81,7 @@ export function createSafariServer(driver: SafariDriver): SafariServer {
   server.registerTool(
     "status",
     { title: "사파리 연결 상태", description: STATUS_DESCRIPTION, inputSchema: {} },
-    async () => ({ content: [{ type: "text", text: await statusText(driver) }] }),
+    async () => ({ content: [{ type: "text", text: formatDoctor(await runDoctor(driver)) }] }),
   );
 
   return { server, shutdown: () => session.dispose(), handleStray: (reason, kind) => session.handleStray(reason, kind) };

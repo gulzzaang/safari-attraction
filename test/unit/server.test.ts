@@ -112,16 +112,17 @@ describe("MCP 서버", () => {
     expect(r2.isError).toBeFalsy();
   });
 
-  test("status 는 한국어 줄로 상태를 알리고 연 탭을 닫는다", async () => {
+  test("status 는 점검 결과를 ✓ 줄로 알리고 연 탭을 닫는다", async () => {
     const d = createFakeDriver();
     d.answer = () => "2";
     const c = await connect(d);
     const r = await c.callTool({ name: "status", arguments: {} });
     const t = textOf(r);
-    expect(t).toContain("사파리: 켜짐");
-    expect(t).toContain("창: 1개");
-    expect(t).toContain("Apple 이벤트의 JavaScript 허용: 켜짐");
-    expect(t).toContain("자동화 허락: 됨");
+    expect(t).toContain("✓ 사파리 실행");
+    expect(t).toContain("✓ 자동화 허락");
+    expect(t).toContain("✓ Apple 이벤트의 JavaScript 허용");
+    expect(t).toContain("✓ 화면 기록(찍기용)");
+    expect(t).toContain("준비 끝 — 바로 쓰면 됩니다");
     expect(d.calls.openTab).toHaveLength(1);
     expect(d.calls.closeTab).toEqual(["t1"]);
   });
@@ -133,8 +134,8 @@ describe("MCP 서버", () => {
     };
     const c = await connect(d);
     const t = textOf(await c.callTool({ name: "status", arguments: {} }));
-    expect(t).toContain("Apple 이벤트의 JavaScript 허용: 꺼짐");
-    expect(t).toContain("사파리 설정 → 개발자");
+    expect(t).toContain("✗ Apple 이벤트의 JavaScript 허용");
+    expect(t).toContain("사파리 → 설정 → 고급");
     expect(d.calls.closeTab).toEqual(["t1"]);
   });
 
@@ -145,7 +146,8 @@ describe("MCP 서버", () => {
     };
     const c = await connect(d);
     const t = textOf(await c.callTool({ name: "status", arguments: {} }));
-    expect(t).toContain("사파리: 꺼짐");
+    expect(t).toContain("✗ 사파리 실행");
+    expect(t).toContain("사파리를 켜 두세요");
     expect(d.calls.openTab).toHaveLength(0);
   });
 
@@ -156,7 +158,7 @@ describe("MCP 서버", () => {
     };
     const c = await connect(d);
     const t = textOf(await c.callTool({ name: "status", arguments: {} }));
-    expect(t).toContain("자동화 허락: 거부");
+    expect(t).toContain("✗ 자동화 허락");
     expect(t).toContain("시스템 설정 → 개인정보 보호 및 보안 → 자동화");
   });
 
