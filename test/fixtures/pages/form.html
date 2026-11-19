@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>폼 시험 페이지</title></head>
+<body>
+  <h1>폼 시험 페이지</h1>
+  <!-- React 같은 프레임워크 입력칸 흉내: 칸의 value 를 가로채 값을 따로 기억하고,
+       input 이벤트 때 실제 값이 기억한 값과 같으면 변화 없음으로 넘긴다.
+       그래서 el.value = '…' 로 넣으면 미리보기가 안 바뀌고, 원래 setter 로 넣고 input 이벤트를 보내야 바뀐다. -->
+  <input id="name" type="text" placeholder="이름을 입력">
+  <p id="preview">미리보기: </p>
+  <textarea id="memo" aria-label="메모"></textarea>
+  <button id="count" type="button">누르기</button>
+  <p id="clicks">0</p>
+  <a id="go" href="result.html">결과로 가기</a>
+  <script>
+    var input = document.getElementById('name');
+    var preview = document.getElementById('preview');
+    var desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+    var tracked = '';
+    Object.defineProperty(input, 'value', {
+      configurable: true,
+      get: function () { return desc.get.call(input); },
+      set: function (v) { tracked = String(v); desc.set.call(input, v); },
+    });
+    input.addEventListener('input', function () {
+      var real = desc.get.call(input);
+      if (real === tracked) return;
+      tracked = real;
+      preview.textContent = '미리보기: ' + real;
+    });
+    var n = 0;
+    document.getElementById('count').addEventListener('click', function () {
+      document.getElementById('clicks').textContent = String(++n);
+    });
+    // 링크에 시험 꼬리표와 q 를 싣는다.
+    var go = document.getElementById('go');
+    go.href = 'result.html' + (location.search || '?') + '&q=' + encodeURIComponent('링크로 왔다');
+  </script>
+</body>
+</html>

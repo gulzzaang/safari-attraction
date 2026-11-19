@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>검색 시험 페이지</title></head>
+<body>
+  <h1>검색 시험 페이지</h1>
+  <!-- 위키백과 검색칸처럼: 글자를 넣으면 추천 목록이 뜨고, 엔터 keydown 을 막는다(폼은 스스로 제출하지 않는다). -->
+  <form id="searchForm" action="result.html" method="get">
+    <input id="searchInput" type="search" name="q" placeholder="검색어를 입력" autocomplete="off">
+    <button id="searchBtn" type="submit">검색</button>
+  </form>
+  <ul id="suggest"></ul>
+  <script>
+    var input = document.getElementById('searchInput');
+    var list = document.getElementById('suggest');
+    input.addEventListener('input', function () {
+      list.innerHTML = '';
+      if (!input.value) return;
+      ['', ' 등반', ' 높이'].forEach(function (s) {
+        var li = document.createElement('li');
+        li.textContent = input.value + s;
+        list.appendChild(li);
+      });
+    });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') e.preventDefault();
+    });
+    // 시험 꼬리표(주소의 나머지 값)를 제출한 주소에도 그대로 싣는다 — 시험이 자기 탭만 알아보도록.
+    var form = document.getElementById('searchForm');
+    new URLSearchParams(location.search).forEach(function (v, k) {
+      var h = document.createElement('input');
+      h.type = 'hidden'; h.name = k; h.value = v;
+      form.appendChild(h);
+    });
+  </script>
+</body>
+</html>
