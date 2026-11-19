@@ -127,7 +127,8 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): Safar
 
   async function closeWindow(windowId: number): Promise<void> {
     requireOwnedWindow(windowId, "닫아요");
-    const r = await call<{ gone: boolean }>("closeWindow", { windowId });
+    const r = await call<{ gone: boolean; closed?: boolean }>("closeWindow", { windowId });
+    if (!r.gone && r.closed === false) throw new SafariError("SAFARI_ERROR", `창 ${windowId} 이(가) 닫히지 않음`); // 우리 창으로 남겨 둔다
     ownedWindows.delete(windowId);
     registry.forgetWindow(windowId);
     if (r.gone) throw windowClosed(windowId);

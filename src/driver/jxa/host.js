@@ -409,7 +409,7 @@ const ops = {
     if (!w) return { gone: true };
     w.close();
     for (let i = 0; i < 30 && aliveWindow(args.windowId); i++) delay(0.1);
-    return { gone: false };
+    return { gone: false, closed: aliveWindow(args.windowId) === null };
   },
 
   // 이 앱에 화면 기록 권한이 있는가(사파리를 건드리지 않는다).
