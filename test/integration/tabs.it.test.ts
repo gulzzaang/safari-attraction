@@ -98,6 +98,20 @@ describeIt('탭 키 · 우리 탭 정리', () => {
     expect(await d.closeOwned()).toBe(1); // 닫힌 a 는 우리 탭 목록에서 빠졌다
   });
 
+  test('제자리에서 이동해도 rebindTab 으로 같은 키를 유지한다', async () => {
+    const { tab } = await d.openTab(mine('basic.html'));
+    const target = mine('alert.html');
+    await d.runJs(tab.key, `location.href = ${JSON.stringify(target)}`).catch(() => undefined);
+    const rebound = await d.rebindTab(tab.key); // 새 문서가 뜨고 표시가 사라진 탭에 같은 키를 다시 붙인다
+    expect(rebound.key).toBe(tab.key);
+    expect(rebound.url).toBe(target);
+    expect(rebound.owned).toBe(true);
+    expect(await d.runJs(tab.key, 'document.title')).toBe('경고창 시험 페이지');
+    const listed = (await d.listTabs()).find((t) => t.url === target)!;
+    expect(listed.key).toBe(tab.key);
+    expect(await d.closeOwned()).toBe(1);
+  });
+
   test.skipIf(safariWindowCount !== 0)('창이 없으면 새 창에 연다', async () => {
     const { tab } = await d.openTab(mine('basic.html'));
     expect((await d.listWindows()).length).toBe(1);

@@ -133,6 +133,67 @@ const ops = {
     return p ? { exists: true, url: p.url, marker: p.marker } : { exists: false, url: "", marker: "" };
   },
 
+  // 우리가 연 탭이 제자리에서 이동했다(주소 이동 · 링크 · 폼 전송). 새 문서에는 표시가 없다 — 불러오기가 끝나길 기다려
+  // 표시를 다시 적고 탭 정보를 돌려준다. 자리에 다른 키의 표시가 있으면 {status:"other"}, 탭이 없으면 {status:"gone"}.
+  // 아직 옛 문서(표시가 그대로)면 이동이 시작되길 잠깐(최대 1.5초) 기다리고, 그래도 안 바뀌면 같은 문서로 본다.
+  rebind(args) {
+    const p0 = probeTab(args.windowId, args.index);
+    if (!p0) return { status: "gone" };
+    if (p0.marker !== "" && p0.marker !== args.key) return { status: "other" };
+    const tab = p0.tab;
+    const t0 = Date.now();
+    if (p0.marker === args.key) {
+      // 아직 옛 문서 — 새 문서로 바뀌어 표시가 사라질 때까지 기다린다. 주소가 바뀌었는데 표시가 남아 있으면 이동이 시작된 것이니
+      // 더 기다리고(최대 5초), 주소도 안 바뀌면(1.5초) 같은 문서로 본다(주소 이동이 없었거나 같은 문서 안 이동).
+      for (;;) {
+        let m = args.key;
+        let u = args.url;
+        try {
+          u = str(tab.url());
+          m = readMarker(tab);
+        } catch (e) {
+          if (isJsOffError(e)) throw e;
+        }
+        if (m !== args.key) break;
+        const waited = Date.now() - t0;
+        if (waited > (u !== args.url ? 5000 : 1500)) break;
+        delay(0.05);
+      }
+    }
+    // 새 문서가 다 뜰 때까지(최대 15초) 기다려 표시를 적고, 읽어 보아 남아 있는지 확인한다(뜨는 중에 적으면 지워질 수 있다).
+    const budget = args.loadBudgetMs || 15000;
+    const t1 = Date.now();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      for (;;) {
+        let ready = false;
+        try {
+          ready = str(Safari.doJavaScript("document.readyState", { in: tab })) === "complete";
+        } catch (e) {
+          if (isJsOffError(e)) throw e;
+        }
+        if (ready || Date.now() - t1 > budget) break;
+        delay(0.05);
+      }
+      const again = probeTab(args.windowId, args.index);
+      if (!again) return { status: "gone" };
+      if (again.marker !== "" && again.marker !== args.key) return { status: "other" };
+      stampTab(tab, args.key);
+      if (readMarker(tab) === args.key) break;
+      delay(0.1);
+    }
+    const win = Safari.windows.byId(args.windowId);
+    return {
+      status: "ok",
+      tab: {
+        windowId: args.windowId,
+        index: args.index,
+        title: str(tab.name()),
+        url: str(tab.url()),
+        isActive: args.index === win.currentTab().index(),
+      },
+    };
+  },
+
   // 자리의 탭에 표시를 적는다(탭 붙잡기).
   stamp(args) {
     const tab = tabOf(args);
@@ -215,7 +276,11 @@ const ops = {
     else if (typeof res === "string") value = res;
     else if (typeof res === "number" || typeof res === "boolean") value = String(res);
     else value = JSON.stringify(res);
-    return { value };
+    let url;
+    try {
+      url = str(g.tab.url()); // 이동했을 수 있으니 지금 주소도 돌려준다(Node 쪽 기록을 새로 한다)
+    } catch (e) {}
+    return { value, url };
   },
 
   closeTab(args) {

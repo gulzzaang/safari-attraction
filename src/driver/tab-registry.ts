@@ -27,13 +27,18 @@ export interface Spot {
 }
 
 /** 호스트가 보낸 답 — 자리의 탭이 키와 맞지 않으면 stale. */
-export type Guarded<T> = { stale: true } | { value: T };
+export type Guarded<T> = { stale: true } | { value: T; /** 일을 마친 뒤의 탭 주소(알면). */ url?: string };
+
+/** 호스트의 rebind 답. gone = 그 자리에 탭 없음, other = 그 자리에 다른 키의 표시가 있는 탭. */
+export type RebindResult = { status: "ok"; tab: RawTab } | { status: "gone" } | { status: "other" };
 
 /** 레지스트리가 사파리에 바라는 것(호스트 op 와 1:1). */
 export interface TabBackend {
   list(): Promise<RawTab[]>;
   probe(windowId: number, index: number, timeoutMs?: number): Promise<Probe>;
   stamp(windowId: number, index: number, key: string): Promise<boolean>;
+  /** 제자리에서 이동한 탭에 표시를 다시 적는다(불러오기가 끝나길 기다린다). */
+  rebind(args: { windowId: number; index: number; key: string; url: string }): Promise<RebindResult>;
   /** 자리의 탭이 spot.key 의 탭일 때만 닫는다. urlOnly 는 표시를 못 읽는 탭(경고창)용 — 주소만 본다. */
   close(spot: Spot, urlOnly: boolean, timeoutMs?: number): Promise<Guarded<null>>;
 }
@@ -70,7 +75,10 @@ function tabClosed(key: string): SafariError {
  *   표시는 같은 문서 안에서는 남고, 새 문서를 불러오면(전체 이동 · 새로고침) 사라진다.
  * - 목록(`sync`)만 본 탭은 표시 없이 자리 + 주소로만 기억한다(JS 를 돌리지 않는다). 처음 쓸 때 표시를 적는다.
  * - 표시를 적은 탭은 표시가 키와 맞아야만 그 키의 탭이다. 주소만 같은 다른 탭을 잘못 잡아 닫지 않기 위해서다.
- *   그래서 전체 새로고침 · 이동으로 표시가 사라진 탭은 못 찾고 TAB_CLOSED 가 된다(알려진 한계).
+ *   전체 새로고침 · 이동 · 링크 · 폼 전송으로 새 문서가 뜨면 표시가 사라지므로, 우리가 그렇게 이동시킨 쪽이
+ *   바로 `rebind(key)` 를 불러 표시를 다시 적어야 한다. 안 하면 그 탭은 못 찾고 TAB_CLOSED 가 된다.
+ * - 목록에서만 본(표시 없는) 사용자 탭은 기록한 자리의 탭이 같은 주소일 때만 그 탭이다. 자리가 바뀌면
+ *   주소가 같은 다른 탭으로 옮겨 잡지 않고 놓는다(다른 탭을 잘못 건드리지 않기 위해).
  */
 export class TabRegistry {
   private entries = new Map<string, Entry>();
@@ -151,6 +159,10 @@ export class TabRegistry {
         }
       }
       this.confirm(key);
+      if (r.url !== undefined) {
+        const e = this.entries.get(key);
+        if (e) e.url = r.url; // 같은 문서 안 이동(SPA)으로 바뀐 주소
+      }
       return r.value;
     } catch (err) {
       if (err instanceof SafariError && (err.code === "ALERT_BLOCKED" || err.code === "TIMEOUT")) this.markBlocked(key);
@@ -160,14 +172,27 @@ export class TabRegistry {
 
   /** 탭 하나를 닫는다. 이미 닫혔으면 TAB_CLOSED 를 올리되 기록과 우리 탭 목록에서는 뺀다. */
   async closeTab(key: string): Promise<void> {
+    const e = this.entries.get(key);
+    if (!e) throw tabClosed(key);
+    const timedOut = (err: unknown) => err instanceof SafariError && (err.code === "TIMEOUT" || err.code === "ALERT_BLOCKED");
     const run = async (s: Spot): Promise<Guarded<null>> => {
-      if (this.entries.get(key)?.blocked) return this.backend.close(s, true);
+      if (e.blocked) return this.backend.close(s, true);
       try {
-        return await this.backend.close(s, false, PROBE_TIMEOUT_MS);
+        return await this.backend.close(s, false); // 창을 닫는 데는 시간이 걸릴 수 있어 보통 제한 시간을 쓴다
       } catch (err) {
-        // 경고창이 떠 JS 로 표시를 못 읽는 탭 — 주소만 보고 닫는다(호스트는 다시 떠 있다).
-        if (err instanceof SafariError && (err.code === "TIMEOUT" || err.code === "ALERT_BLOCKED")) return this.backend.close(s, true);
-        throw err;
+        if (!timedOut(err)) throw err;
+        // 답이 없었다 — 경고창이 떠 JS 로 표시를 못 읽는 탭이거나, 닫는 중이었을 수 있다(호스트는 다시 떠 있다).
+        const r = await this.backend.close(s, true);
+        if (!("stale" in r)) return r;
+        // 자리에 그 탭이 없다 — 방금 시간 초과한 닫기가 실제로 끝났다면 성공이다.
+        try {
+          const moved = await this.resolve(key);
+          const r2 = await this.backend.close({ ...s, ...moved }, true);
+          return "stale" in r2 ? { value: null } : r2;
+        } catch (err2) {
+          if (err2 instanceof SafariError && err2.code === "TAB_CLOSED") return { value: null }; // 이미 사라졌다
+          throw err2;
+        }
       }
     };
     try {
@@ -176,9 +201,34 @@ export class TabRegistry {
       if (err instanceof SafariError && err.code === "TAB_CLOSED") this.forget(key);
       throw err;
     }
-    const e = this.entries.get(key)!;
     this.forget(key);
     this.shiftAfterClose(e.windowId, e.index);
+  }
+
+  /**
+   * 제자리에서 이동한 우리 탭(주소 이동 · 링크 · 폼 전송)에 표시를 다시 적고 기록한 주소를 새로 한다.
+   * 이동을 시킨 쪽이 바로 부른다. 기록한 자리의 탭에 표시가 없거나(새 문서) 이 키의 표시일 때만 받아들이고,
+   * 다른 키의 표시가 있으면 TAB_CLOSED.
+   */
+  async rebind(key: string): Promise<RawTab> {
+    const e = this.entries.get(key);
+    if (!e) throw tabClosed(key);
+    let r = await this.backend.rebind({ windowId: e.windowId, index: e.index, key, url: e.url });
+    if (r.status !== "ok") {
+      // 기록한 자리가 아니다 — 표시가 남은 채 옮겨 갔다면 표시로 찾는다(못 찾으면 TAB_CLOSED 로 키를 지운다).
+      const at = await this.resolve(key);
+      r = await this.backend.rebind({ ...at, key, url: e.url });
+      if (r.status !== "ok") {
+        this.forget(key);
+        throw tabClosed(key);
+      }
+    }
+    e.windowId = r.tab.windowId;
+    e.index = r.tab.index;
+    e.url = r.tab.url;
+    e.stamped = true;
+    e.blocked = false;
+    return r.tab;
   }
 
   /** 우리가 연 탭을 모두 닫는다(사용자 탭은 건드리지 않는다). 실제로 닫은 수를 돌려준다. */
@@ -265,11 +315,10 @@ export class TabRegistry {
     };
 
     if (!e.stamped) {
-      // 표시 없는 탭 — 자리와 주소가 그대로면 그 탭, 아니면 같은 주소 탭이 하나뿐일 때만 그 탭.
+      // 표시 없는 탭 — 자리와 주소가 그대로일 때만 그 탭. 주소가 같은 다른 탭으로 옮겨 잡지 않는다
+      // (사용자가 이 탭을 닫았을 때 주소가 같은 다른 탭을 건드리게 되므로).
       const here = at(e);
-      if (here && free(here) && here.url === e.url) return take(here);
-      const same = raw.filter((t) => free(t) && t.url === e.url);
-      return same.length === 1 ? take(same[0]!) : null;
+      return here && free(here) && here.url === e.url ? take(here) : null;
     }
 
     // JS 에 답하지 않는 탭은 표시를 못 읽는다 — 자리와 주소가 그대로면 그 탭으로 본다.
@@ -294,7 +343,9 @@ export class TabRegistry {
           e.blocked = true;
           return take(t);
         }
-        continue;
+        // 그 밖의 오류(JS 허용 꺼짐 · 자동화 거부 · 호스트 오류)는 「탭이 닫힘」이 아니다 — 키를 지우지 않고 올린다.
+        if (err instanceof SafariError && (err.code === "TIMEOUT" || err.code === "ALERT_BLOCKED")) continue;
+        throw err;
       }
       if (p.exists && p.marker === e.key) return take({ ...t, url: p.url });
     }

@@ -43,6 +43,12 @@ export interface SafariDriver {
   openTab(url: string, opts?: { windowId?: number }): Promise<{ tab: TabInfo; frontAppChanged: boolean }>;
   runJs(tabKey: string, source: string, opts?: { timeoutMs?: number }): Promise<string>;
   closeTab(tabKey: string): Promise<void>;
+  /**
+   * 우리가 제자리에서 이동시킨 탭(주소 이동 · 링크 클릭 · 폼 전송)에 같은 키를 다시 붙인다.
+   * 새 문서가 뜨면 탭 표시가 사라지므로, 이동을 시킨 쪽이 바로 부른다. 불러오기가 끝나길 기다린 뒤 탭 정보를 돌려준다.
+   * 기록한 자리의 탭에 다른 키의 표시가 있으면 TAB_CLOSED.
+   */
+  rebindTab(tabKey: string): Promise<TabInfo>;
   /** 이 드라이버가 연 탭을 모두 닫는다(사용자 탭은 그대로). 닫은 수를 돌려준다. */
   closeOwned(): Promise<number>;
   close(): Promise<void>;
