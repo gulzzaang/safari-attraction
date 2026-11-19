@@ -1,0 +1,20 @@
+{
+  "manifest_version": "0.3",
+  "name": "safari-attraction-spike",
+  "display_name": "사파리-어트랙션 시험 A",
+  "version": "0.0.1",
+  "description": "확장 안에서 osascript 로 사파리를 부를 수 있는지 재 보는 시험용 확장.",
+  "author": { "name": "gulzzaang" },
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"]
+    }
+  },
+  "tools": [
+    { "name": "ping_safari", "description": "osascript 로 사파리 창 개수를 읽고 내장 Node 판 · 경로를 돌려준다." }
+  ],
+  "compatibility": { "platforms": ["darwin"] }
+}
