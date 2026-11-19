@@ -51,6 +51,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
   type Slot = { buf: OutputBuffer; closed: boolean };
   const slots = new AsyncLocalStorage<Slot>();
   let queue: Promise<unknown> = Promise.resolve();
+  let disposed = false;
 
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, Number(ms) || 0));
   const log = (...args: unknown[]) => {
@@ -93,7 +94,13 @@ export function createReplSession(driver: SafariDriver): ReplSession {
   };
 
   sandbox.openTab = async (url: string): Promise<Page> => {
+    if (disposed) throw new Error("openTab: 서버가 끝나는 중이라 탭을 열 수 없음");
     const { tab } = await driver.openTab(String(url));
+    if (disposed) {
+      // 닫는 도중에 열린 탭도 남기지 않는다.
+      await driver.closeTab(tab.key).catch(() => {});
+      throw new Error("openTab: 서버가 끝나는 중이라 탭을 열 수 없음");
+    }
     owned.add(tab.key);
     return track(new Page(driver, tab.key));
   };
@@ -215,11 +222,15 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       return next;
     },
     async dispose() {
-      await queue.catch(() => {});
-      owned.clear();
-      tabs.length = 0;
-      sandbox.page = null;
-      await driver.closeOwned();
+      // 돌고 있는 호출을 기다리지 않는다 — 오래 걸리거나 멈춘 호출 때문에 우리 탭이 남지 않도록 탭부터 닫는다.
+      disposed = true;
+      try {
+        await driver.closeOwned();
+      } finally {
+        owned.clear();
+        tabs.length = 0;
+        sandbox.page = null;
+      }
     },
   };
 }

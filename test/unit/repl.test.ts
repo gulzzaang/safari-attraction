@@ -207,3 +207,28 @@ describe("REPL 세부", () => {
     expect(r).toEqual({ output: "t\np" });
   });
 });
+
+describe("dispose", () => {
+  test("돌고 있는 호출이 멈춰 있어도 우리 탭부터 바로 닫는다", async () => {
+    const d2 = createFakeDriver();
+    d2.answer = () => new Promise<string>(() => {}); // 영원히 안 오는 답
+    const s2 = createReplSession(d2);
+    const running = s2.run('const hp = await openTab("http://a/"); await hp.url()', { timeoutMs: 3000 });
+    while (d2.calls.runJs.length === 0) await new Promise((r) => setTimeout(r, 10)); // 호출이 멈춘 자리에 닿을 때까지
+    const t0 = Date.now();
+    await s2.dispose();
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect((await d2.listTabs()).length).toBe(0);
+    const r = await running;
+    expect(r.error).toBeTruthy(); // 시간 초과로 끝남
+  });
+
+  test("끝난 뒤에는 openTab 이 거절된다", async () => {
+    const d2 = createFakeDriver();
+    const s2 = createReplSession(d2);
+    await s2.dispose();
+    const r = await s2.run('await openTab("http://a/")');
+    expect(r.error).toContain("끝나는 중");
+    expect(d2.calls.openTab).toHaveLength(0);
+  });
+});
