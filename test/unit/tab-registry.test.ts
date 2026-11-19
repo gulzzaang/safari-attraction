@@ -53,7 +53,7 @@ class FakeSafari implements TabBackend {
 function openOwned(sf: FakeSafari, reg: TabRegistry, url: string): string {
   sf.tabs.push({ url, marker: '' });
   const key = reg.nextKey();
-  sf.tabs[sf.tabs.length - 1]!.marker = key;
+  sf.tabs[sf.tabs.length - 1]!.marker = reg.markerOf(key);
   return reg.register(key, 1, sf.tabs.length, url, { owned: true, stamped: true });
 }
 
@@ -66,14 +66,23 @@ describe('TabRegistry', () => {
     expect(await reg.resolve(k)).toEqual({ windowId: 1, index: 2 });
   });
 
-  test('닫힌 탭은 TAB_CLOSED 이고 우리 탭 목록에서 빠진다(주소가 같은 다른 탭이 있어도)', async () => {
+  test('닫힌 탭은 TAB_CLOSED 이고 우리 탭 목록에서 빠진다(다른 키의 표시가 있는 탭이 자리에 와도)', async () => {
     const sf = new FakeSafari();
     const reg = new TabRegistry(sf);
     const k = openOwned(sf, reg, 'http://a/x');
-    sf.tabs = [{ url: 'http://a/x', marker: '' }]; // 닫힘, 자리에는 표시 없는 같은 주소 탭
+    sf.tabs = [{ url: 'http://a/x', marker: 't9.deadbeef' }]; // 닫힘, 자리에는 다른 표시의 같은 주소 탭
     await expect(reg.closeTab(k)).rejects.toMatchObject({ code: 'TAB_CLOSED' });
     expect(reg.ownedKeys()).toEqual([]);
     expect(sf.tabs).toHaveLength(1); // 남의 탭은 안 닫음
+  });
+
+  test('닫힌 탭의 자리가 비면 TAB_CLOSED 이고 키가 빠진다', async () => {
+    const sf = new FakeSafari();
+    const reg = new TabRegistry(sf);
+    const k = openOwned(sf, reg, 'http://a/x');
+    sf.tabs = [];
+    await expect(reg.closeTab(k)).rejects.toMatchObject({ code: 'TAB_CLOSED' });
+    expect(reg.ownedKeys()).toEqual([]);
   });
 
   test('closeOwned 는 우리 탭만 닫고 센다', async () => {
@@ -103,7 +112,7 @@ describe('TabRegistry', () => {
     const reg = new TabRegistry(sf);
     sf.tabs.push({ url: 'http://user/1', marker: '' });
     const k = await reg.adopt(1, 1);
-    expect(sf.tabs[0]!.marker).toBe(k);
+    expect(sf.tabs[0]!.marker).toBe(reg.markerOf(k));
     expect(reg.isOwned(k)).toBe(false);
     sf.tabs.unshift({ url: 'http://user/0', marker: '' });
     expect(await reg.resolve(k)).toEqual({ windowId: 1, index: 2 });
@@ -119,7 +128,7 @@ describe('TabRegistry', () => {
     sf.tabs[1] = { url: 'http://a/y2', marker: '' };
     const tab = await reg.rebind(k2);
     expect(tab.url).toBe('http://a/y2');
-    expect(sf.tabs[1]!.marker).toBe(k2);
+    expect(sf.tabs[1]!.marker).toBe(reg.markerOf(k2));
     sf.tabs.unshift({ url: 'http://user/0', marker: '' }); // 그 뒤에 탭이 밀려도
     expect(await reg.resolve(k2)).toEqual({ windowId: 1, index: 3 });
     expect(reg.isOwned(k2)).toBe(true);
@@ -154,7 +163,7 @@ describe('TabRegistry', () => {
     const r = await reg.settle(k);
     expect(r).toMatchObject({ navigated: true, leaving: false });
     expect(r.tab.url).toBe('http://a/y');
-    expect(sf.tabs[0]!.marker).toBe(k);
+    expect(sf.tabs[0]!.marker).toBe(reg.markerOf(k));
     expect(reg.ownedKeys()).toEqual([k]); // 키가 남았다
     expect(await reg.resolve(k)).toEqual({ windowId: 1, index: 1 }); // 이후에도 찾는다
     expect(await reg.closeOwned()).toBe(1);
@@ -167,7 +176,7 @@ describe('TabRegistry', () => {
     const b = openOwned(sf, reg, 'http://a/2');
     sf.tabs.reverse(); // 자리가 바뀜 — a 는 이제 2번째, 기록한 1번째엔 b 의 표시
     expect(await reg.settle(a)).toMatchObject({ navigated: false });
-    expect(sf.tabs[1]!.marker).toBe(a);
+    expect(sf.tabs[1]!.marker).toBe(reg.markerOf(a));
     sf.tabs.splice(1, 1); // a 가 닫힘
     await expect(reg.settle(a)).rejects.toMatchObject({ code: 'TAB_CLOSED' });
     expect(reg.ownedKeys()).toEqual([b]);
@@ -210,5 +219,78 @@ describe('TabRegistry', () => {
     const k = openOwned(sf, reg, 'http://a/x');
     await reg.withTab(k, async () => ({ value: 1, url: 'http://a/x#spa' }));
     expect(reg.spot(k).url).toBe('http://a/x#spa');
+  });
+  test('다른 서버 프로세스의 표시는 같은 키여도 맞지 않는다', async () => {
+    const sf = new FakeSafari();
+    const mine = new TabRegistry(sf, 'aaaa1111');
+    const other = new TabRegistry(sf, 'bbbb2222');
+    expect(mine.markerOf('t1')).not.toBe(other.markerOf('t1'));
+    const k = openOwned(sf, mine, 'http://a/x'); // t1
+    // 다른 서버도 같은 사파리에서 t1 을 쓴다 — 그 탭이 앞에 끼어들어 자리가 밀렸다
+    const otherKey = other.nextKey();
+    expect(otherKey).toBe(k);
+    sf.tabs.unshift({ url: 'http://a/x', marker: other.markerOf(otherKey) });
+    expect(await mine.resolve(k)).toEqual({ windowId: 1, index: 2 }); // 주소가 같아도 내 표시의 탭만 잡는다
+    // 내 탭이 사라지면 다른 서버의 t1 을 내 것으로 착각하지 않는다
+    sf.tabs.splice(1, 1);
+    await expect(mine.resolve(k)).rejects.toMatchObject({ code: 'TAB_CLOSED' });
+    expect(sf.tabs).toHaveLength(1); // 다른 서버의 탭은 그대로
+    // 끝난 세션이 남긴 옛 표시도 맞지 않는다
+    const k2 = openOwned(sf, mine, 'http://a/y');
+    sf.tabs.unshift({ url: 'http://a/y', marker: `${k2}.deadbeef` });
+    expect(await mine.closeOwned()).toBe(1);
+    expect(sf.tabs.map((t) => t.marker)).toEqual([`${k2}.deadbeef`, other.markerOf(otherKey)]);
+  });
+
+  describe('예기치 못한 이동으로 표시가 사라진 우리 탭', () => {
+    test('withTab: 키를 지키고 표시를 다시 적은 뒤 일을 마친다', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf);
+      const k = openOwned(sf, reg, 'http://a/x');
+      sf.tabs[0] = { url: 'http://a/after', marker: '' }; // XHR 뒤 늦은 이동 · JS 리다이렉트: 새 문서라 표시가 없다
+      const ran: string[] = [];
+      const v = await reg.withTab(k, async (s) => {
+        const t = sf.tabs[s.index - 1];
+        if (!t || (t.marker !== s.key && !(s.unstamped && t.marker === '' && t.url === s.url))) return { stale: true };
+        ran.push(t.url);
+        return { value: 'ok' };
+      });
+      expect(v).toBe('ok');
+      expect(ran).toEqual(['http://a/after']);
+      expect(reg.ownedKeys()).toEqual([k]);
+      expect(sf.tabs[0]!.marker).toBe(reg.markerOf(k));
+      expect(await reg.closeOwned()).toBe(1);
+      expect(sf.tabs).toHaveLength(0);
+    });
+
+    test('sync(listTabs) 가 키를 지우지 않는다', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf);
+      const k = openOwned(sf, reg, 'http://a/x');
+      sf.tabs[0] = { url: 'http://a/after', marker: '' };
+      const listed = await reg.sync(await sf.list());
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({ key: k, owned: true });
+      expect(reg.ownedKeys()).toEqual([k]);
+      expect(await reg.closeOwned()).toBe(1);
+    });
+
+    test('closeTab(종료 때 closeOwned)이 이어서 닫는다', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf);
+      openOwned(sf, reg, 'http://a/x');
+      sf.tabs[0] = { url: 'http://a/after', marker: '' };
+      expect(await reg.closeOwned()).toBe(1);
+      expect(sf.tabs).toHaveLength(0);
+    });
+
+    test('탭이 정말 닫혔으면(표시 없는 다른 탭이 자리에 와도 주소가 다르면) 지금처럼 TAB_CLOSED', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf);
+      const k = openOwned(sf, reg, 'http://a/x');
+      sf.tabs.splice(0, 1); // 사용자가 닫음
+      await expect(reg.withTab(k, async () => ({ stale: true }))).rejects.toMatchObject({ code: 'TAB_CLOSED' });
+      expect(reg.ownedKeys()).toEqual([]);
+    });
   });
 });

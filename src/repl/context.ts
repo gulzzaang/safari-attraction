@@ -10,6 +10,12 @@ import { hoistTopLevel } from "./transform.js";
 
 export interface ReplSession {
   run(code: string, opts?: { timeoutMs?: number }): Promise<{ output: string; error?: string; errorCode?: SafariErrorCode }>;
+  /**
+   * 기다리지 않은 거부(Promise.reject · 늦게 던진 오류)나 타이머 · 콜백에서 난 오류가 프로세스 바깥까지 올라왔을 때 부른다.
+   * 그 일이 REPL 호출 코드에서 비롯됐으면(AsyncLocalStorage 칸이 따라옴) 살아 있는 호출의 출력에 한국어 한 줄을 남기고 true 를 돌려준다.
+   * 서버 자신의 문제거나 어느 호출 것인지 모르면 false.
+   */
+  handleStray(reason: unknown, kind: "rejection" | "exception"): boolean;
   /** 우리가 연 탭을 닫고 기억을 비운다. 드라이버 자체는 닫지 않는다(부른 쪽 몫). */
   dispose(): Promise<void>;
 }
@@ -95,7 +101,8 @@ export function createReplSession(driver: SafariDriver): ReplSession {
 
   sandbox.openTab = async (url: string): Promise<Page> => {
     if (disposed) throw new Error("openTab: 서버가 끝나는 중이라 탭을 열 수 없음");
-    const { tab } = await driver.openTab(String(url));
+    const { tab, frontAppChanged } = await driver.openTab(String(url));
+    if (frontAppChanged) log("주의: 사파리가 맨 앞으로 나왔어요");
     if (disposed) {
       // 닫는 도중에 열린 탭도 남기지 않는다.
       await driver.closeTab(tab.key).catch(() => {});
@@ -220,6 +227,16 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       const next = queue.then(() => exec(code, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS));
       queue = next.catch(() => {});
       return next;
+    },
+    handleStray(reason, kind) {
+      const slot = slots.getStore();
+      if (!slot) return false;
+      // 시간 초과로 닫힌 호출에서 난 것이면 출력은 버려진다(서버는 그대로 산다).
+      if (!slot.closed) {
+        const what = kind === "rejection" ? "기다리지 않은 비동기 작업(await 빠짐)" : "타이머나 콜백";
+        slot.buf.log(`주의: ${what}에서 오류가 났어요 — ${errorText(reason)}`);
+      }
+      return true;
     },
     async dispose() {
       // 돌고 있는 호출을 기다리지 않는다 — 오래 걸리거나 멈춘 호출 때문에 우리 탭이 남지 않도록 탭부터 닫는다.

@@ -232,3 +232,17 @@ describe("dispose", () => {
     expect(d2.calls.openTab).toHaveLength(0);
   });
 });
+
+describe("앞 창 알림", () => {
+  test("openTab 이 사파리를 맨 앞으로 불러냈으면 그 호출 출력에 한국어 주의가 남는다", async () => {
+    d.frontAppChanged = true;
+    const r = await s.run('await openTab("http://a/"); console.log("열림")');
+    expect(r.output).toContain("주의: 사파리가 맨 앞으로 나왔어요");
+    expect(r.output).toContain("열림");
+  });
+
+  test("바뀌지 않았으면 주의가 없다", async () => {
+    const r = await s.run('await openTab("http://a/"); console.log("열림")');
+    expect(r.output).toBe("열림");
+  });
+});

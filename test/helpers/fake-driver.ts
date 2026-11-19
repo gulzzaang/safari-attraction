@@ -12,6 +12,8 @@ export interface FakeDriver extends SafariDriver {
   /** 사용자가 열어 둔 탭(listTabs 에 나온다). 시험이 채운다. */
   userTabs: TabInfo[];
   windows: WindowInfo[];
+  /** openTab 이 돌려줄 frontAppChanged 값. 기본 false. */
+  frontAppChanged: boolean;
   /** runJs 가 소스를 받아 답한다. 기본은 빈 글. */
   answer: (key: string, source: string) => string | Promise<string>;
 }
@@ -25,6 +27,7 @@ export function createFakeDriver(): FakeDriver {
     calls,
     userTabs: [],
     windows: [{ id: 1, index: 1, isPrivate: false, tabCount: 1 }],
+    frontAppChanged: false,
     answer: () => "",
     async listWindows() {
       return d.windows;
@@ -36,7 +39,7 @@ export function createFakeDriver(): FakeDriver {
       calls.openTab.push({ url, windowId: opts?.windowId });
       const tab: TabInfo = { key: `t${++seq}`, windowId: 1, index: 1 + owned.length, title: "", url, isActive: false, owned: true };
       owned.push(tab);
-      return { tab, frontAppChanged: false };
+      return { tab, frontAppChanged: d.frontAppChanged };
     },
     async runJs(key, source) {
       calls.runJs.push({ key, source });

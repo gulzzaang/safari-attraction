@@ -94,7 +94,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): Safar
     async openTab(url, o = {}) {
       const before = await frontAsn();
       const key = registry.nextKey();
-      const args = { url, windowId: o.windowId, key };
+      const args = { url, windowId: o.windowId, key: registry.markerOf(key) }; // 페이지에는 서버마다 다른 표시를 적는다
       let raw: RawTab & { stamped: boolean };
       try {
         raw = await call("openTab", args);

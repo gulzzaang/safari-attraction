@@ -41,6 +41,8 @@ export interface SafariServer {
   server: McpServer;
   /** 우리가 연 탭을 닫고 기억을 비운다(드라이버 자체는 닫지 않는다). */
   shutdown(): Promise<void>;
+  /** REPL 코드에서 비롯된, 아무도 받지 않은 거부 · 오류를 해당 호출 출력에 알린다(ReplSession.handleStray). */
+  handleStray(reason: unknown, kind: "rejection" | "exception"): boolean;
 }
 
 /** status 도구의 본문: 한국어 줄 목록. 사파리를 켜지 않고, 연 탭은 반드시 닫는다. */
@@ -117,5 +119,5 @@ export function createSafariServer(driver: SafariDriver): SafariServer {
     async () => ({ content: [{ type: "text", text: await statusText(driver) }] }),
   );
 
-  return { server, shutdown: () => session.dispose() };
+  return { server, shutdown: () => session.dispose(), handleStray: (reason, kind) => session.handleStray(reason, kind) };
 }

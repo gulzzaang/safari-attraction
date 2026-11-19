@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { SafariError } from "./types.js";
 
 /** 사파리가 알려 주는 탭 한 칸(키는 아직 없다). */
@@ -16,7 +17,7 @@ export interface Probe {
   marker: string;
 }
 
-/** 요청이 가리킨 자리. 호스트는 이 자리의 탭이 정말 key 의 탭일 때만 일한다. */
+/** 요청이 가리킨 자리. 호스트는 이 자리의 탭이 정말 key 의 탭일 때만 일한다. key 는 페이지 안에 적는 표시(markerOf)다. */
 export interface Spot {
   windowId: number;
   index: number;
@@ -96,7 +97,16 @@ export class TabRegistry {
   private entries = new Map<string, Entry>();
   private seq = 0;
 
-  constructor(private backend: TabBackend) {}
+  /**
+   * instanceId 는 이 서버 프로세스를 가리키는 값(기본은 무작위). 페이지 안 표시를 `키.instanceId` 로 적어,
+   * 같은 사파리에서 도는 다른 서버(다른 Claude 세션)나 끝난 세션이 남긴 표시와 겹치지 않게 한다.
+   */
+  constructor(private backend: TabBackend, private instanceId: string = randomBytes(4).toString("hex")) {}
+
+  /** 키(t1)에 대응하는 페이지 안 표시 — 호스트와 사파리 쪽에는 이 값을 키로 넘긴다. 서버 프로세스마다 다르다. */
+  markerOf(key: string): string {
+    return `${key}.${this.instanceId}`;
+  }
 
   /** 새 키를 미리 정한다(탭을 열 때 호스트가 표시를 적도록). */
   nextKey(): string {
@@ -113,16 +123,16 @@ export class TabRegistry {
   async adopt(windowId: number, index: number): Promise<string> {
     const p = await this.backend.probe(windowId, index);
     if (!p.exists) throw new SafariError("TAB_CLOSED", `그 자리에 탭이 없음: 창 ${windowId} · ${index}번째`);
-    const known = [...this.entries.values()].find((e) => (p.marker !== "" ? e.key === p.marker : sameSpot(e, { windowId, index }) && e.url === p.url));
+    const known = [...this.entries.values()].find((e) => (p.marker !== "" ? this.markerOf(e.key) === p.marker : sameSpot(e, { windowId, index }) && e.url === p.url));
     if (known) {
       known.windowId = windowId;
       known.index = index;
       known.url = p.url;
-      if (!known.stamped) known.stamped = await this.backend.stamp(windowId, index, known.key);
+      if (!known.stamped) known.stamped = await this.backend.stamp(windowId, index, this.markerOf(known.key));
       return known.key;
     }
     const key = this.nextKey();
-    const stamped = await this.backend.stamp(windowId, index, key);
+    const stamped = await this.backend.stamp(windowId, index, this.markerOf(key));
     this.register(key, windowId, index, p.url, { owned: false, stamped });
     return key;
   }
@@ -131,7 +141,7 @@ export class TabRegistry {
   spot(key: string): Spot {
     const e = this.entries.get(key);
     if (!e) throw new SafariError("TAB_CLOSED", `모르는 탭 키(닫혔거나 만든 적 없음): ${key}`);
-    return { windowId: e.windowId, index: e.index, key, url: e.url, unstamped: !e.stamped };
+    return { windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, unstamped: !e.stamped };
   }
 
   isOwned(key: string): boolean {
@@ -156,6 +166,16 @@ export class TabRegistry {
   }
 
   /**
+   * 자리의 탭이 키의 탭이 아니라고 했을 때 탭을 다시 찾는다. 우리가 연 탭은 표시가 사라졌어도(예기치 못한 이동으로
+   * 새 문서가 뜸) 키를 지키는 settle 로 표시를 다시 적고, 그 밖의 탭 · JS 에 답하지 않는 탭은 resolve 로 찾는다.
+   */
+  private async relocate(key: string): Promise<void> {
+    const e = this.entries.get(key);
+    if (e && e.owned && !e.blocked) await this.settle(key);
+    else await this.resolve(key);
+  }
+
+  /**
    * 기록한 자리로 일을 시킨다. 호스트가 자리의 탭이 그 키가 아니라고 하면(사용자가 탭을 옮김 · 닫힘)
    * 탭을 다시 찾아 한 번 더 시킨다. 그래도 아니면 TAB_CLOSED.
    */
@@ -163,7 +183,7 @@ export class TabRegistry {
     try {
       let r = await run(this.spot(key));
       if ("stale" in r) {
-        await this.resolve(key);
+        await this.relocate(key);
         r = await run(this.spot(key));
         if ("stale" in r) {
           this.forget(key);
@@ -225,11 +245,11 @@ export class TabRegistry {
   async rebind(key: string): Promise<RawTab> {
     const e = this.entries.get(key);
     if (!e) throw tabClosed(key);
-    let r = await this.backend.rebind({ windowId: e.windowId, index: e.index, key, url: e.url });
+    let r = await this.backend.rebind({ windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url });
     if (r.status !== "ok") {
       // 기록한 자리가 아니다 — 표시가 남은 채 옮겨 갔다면 표시로 찾는다(못 찾으면 TAB_CLOSED 로 키를 지운다).
       const at = await this.resolve(key);
-      r = await this.backend.rebind({ ...at, key, url: e.url });
+      r = await this.backend.rebind({ ...at, key: this.markerOf(key), url: e.url });
       if (r.status !== "ok") {
         this.forget(key);
         throw tabClosed(key);
@@ -254,13 +274,13 @@ export class TabRegistry {
     if (!e.stamped) {
       // 표시를 아직 안 적은 탭 — 자리와 주소가 그대로일 때만 우리 탭이다. 이 경우 표시 없음은 이동이 아니다.
       const p = await this.backend.probe(e.windowId, e.index);
-      if (p.exists && p.marker === "" && p.url === e.url && (await this.backend.stamp(e.windowId, e.index, key))) e.stamped = true;
+      if (p.exists && p.marker === "" && p.url === e.url && (await this.backend.stamp(e.windowId, e.index, this.markerOf(key)))) e.stamped = true;
     }
-    let r = await this.backend.settle({ windowId: e.windowId, index: e.index, key, url: e.url });
+    let r = await this.backend.settle({ windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url });
     if (r.status === "gone" || r.status === "other") {
       // 기록한 자리가 아니다 — 표시로 찾는다(못 찾으면 resolve 가 키를 지우고 TAB_CLOSED).
       const at = await this.resolve(key);
-      r = await this.backend.settle({ ...at, key, url: e.url });
+      r = await this.backend.settle({ ...at, key: this.markerOf(key), url: e.url });
       if (r.status === "gone" || r.status === "other") {
         this.forget(key);
         throw tabClosed(key);
@@ -333,7 +353,15 @@ export class TabRegistry {
         claimed.add(spotId(found));
         bySpot.set(spotId(found), e.key);
       } else {
-        this.forget(e.key);
+        // 우리가 연 탭이 표시를 잃었을 수 있다(예기치 못한 이동으로 새 문서가 뜸) — 기록한 자리가 비어 있으면 settle 로 이어 본다.
+        const here = raw.find((t) => sameSpot(t, e));
+        const kept = e.owned && !e.blocked && here && !claimed.has(spotId(here)) ? await this.settleQuietly(e.key) : null;
+        if (kept) {
+          claimed.add(spotId(kept.tab));
+          bySpot.set(spotId(kept.tab), e.key);
+        } else {
+          this.forget(e.key);
+        }
       }
     }
     return raw.map((t) => {
@@ -344,6 +372,16 @@ export class TabRegistry {
       }
       return { raw: t, key, owned: this.isOwned(key) };
     });
+  }
+
+  /** settle 하되 탭을 못 찾으면(TAB_CLOSED) null — 그때 settle 이 이미 키를 지웠다. 다른 오류는 올린다. */
+  private async settleQuietly(key: string): Promise<{ tab: RawTab } | null> {
+    try {
+      return await this.settle(key);
+    } catch (err) {
+      if (err instanceof SafariError && err.code === "TAB_CLOSED") return null;
+      throw err;
+    }
   }
 
   /** 한 탭이 지금 어디 있는지 찾아 기록을 새로 한다. 못 찾으면 null(기록은 건드리지 않는다). */
@@ -390,7 +428,7 @@ export class TabRegistry {
         if (err instanceof SafariError && (err.code === "TIMEOUT" || err.code === "ALERT_BLOCKED")) continue;
         throw err;
       }
-      if (p.exists && p.marker === e.key) return take({ ...t, url: p.url });
+      if (p.exists && p.marker === this.markerOf(e.key)) return take({ ...t, url: p.url });
     }
     return null;
   }
