@@ -10,6 +10,7 @@ export interface FakeCalls {
   closeWindow: number[];
   captureWindow: number[];
   showTab: string[];
+  adoptWindow: number[];
 }
 
 export interface FakeDriver extends SafariDriver {
@@ -33,7 +34,9 @@ export function createFakeDriver(): FakeDriver {
   const owned: TabInfo[] = [];
   let winSeq = 100;
   const ownedWindows: WindowInfo[] = [];
-  const calls: FakeCalls = { openTab: [], runJs: [], closeTab: [], settleTab: [], openWindow: [], setWindowSize: [], closeWindow: [], captureWindow: [], showTab: [] };
+  const adopted = new Set<number>();
+  const usable = (id: number) => adopted.has(id) || ownedWindows.some((w) => w.id === id);
+  const calls: FakeCalls = { openTab: [], runJs: [], closeTab: [], settleTab: [], openWindow: [], setWindowSize: [], closeWindow: [], captureWindow: [], showTab: [], adoptWindow: [] };
   const d: FakeDriver = {
     calls,
     userTabs: [],
@@ -74,6 +77,7 @@ export function createFakeDriver(): FakeDriver {
     },
     async setWindowSize(windowId, width, height) {
       calls.setWindowSize.push({ windowId, width, height });
+      if (!usable(windowId)) throw new SafariError("SAFARI_ERROR", "Claude 가 연 창이나 AI 전용 창으로 고른 창만 크기를 바꿔요");
       return { innerWidth: width, innerHeight: height };
     },
     async closeWindow(windowId) {
@@ -92,7 +96,12 @@ export function createFakeDriver(): FakeDriver {
       calls.showTab.push(key);
       const t = owned.find((x) => x.key === key);
       if (!t) throw new SafariError("TAB_CLOSED", `모르는 탭 ${key}`);
-      if (!ownedWindows.some((w) => w.id === t.windowId)) throw new SafariError("SAFARI_ERROR", "Claude 가 연 창 안의 탭만 앞에 보여요");
+      if (!usable(t.windowId)) throw new SafariError("SAFARI_ERROR", "Claude 가 연 창 안의 탭만 앞에 보여요");
+    },
+    async adoptWindow(windowId) {
+      calls.adoptWindow.push(windowId);
+      if (![...d.windows, ...ownedWindows].some((w) => w.id === windowId)) throw new SafariError("WINDOW_CLOSED", `창 ${windowId} 이(가) 이미 닫혔음`);
+      if (!ownedWindows.some((w) => w.id === windowId)) adopted.add(windowId);
     },
     async screenCaptureAllowed() {
       return d.screenAllowed;
@@ -117,6 +126,7 @@ export function createFakeDriver(): FakeDriver {
       const n = ownedWindows.length + owned.filter((t) => !ownedWindows.some((w) => w.id === t.windowId)).length;
       owned.length = 0;
       ownedWindows.length = 0;
+      adopted.clear();
       return n;
     },
     async close() {},

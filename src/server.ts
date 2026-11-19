@@ -18,6 +18,10 @@ Read values with console.log (the last expression is NOT printed). Errors come b
 - page.screenshot() → Buffer(PNG, 긴 변 1568px 이하) — AI 창 전체(주소창 포함)를 찍는다. AI 창의 탭에서만(그 탭을 창의 현재 탭으로 만든 뒤 찍는다). 화면 기록 권한이 필요하다(시스템 설정 → 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음) — 없으면 오류 글에 안내가 나온다. 찍은 걸 보려면 display(buf) 로 붙인다.
 - display(buf) — 이 호출의 결과에 이미지를 붙인다. 한 호출에 4장까지.
   Screenshots: openAiWindow() opens a Claude-only Safari window (behind the user's windows, never activates Safari); page.setViewportSize / page.screenshot work only on tabs in that window and need Screen Recording permission; display(buf) attaches a PNG to the result (max 4 per call).
+- listWindows() → [{id, index, title, tabCount, width, height, isAiWindow, isWorkWindow}] — 열린 사파리 창 목록. 사용자가 "두 번째 창", "그 창" 이라고 하면 title(그 창 현재 탭 이름) · tabCount · 크기로 골라 id 를 얻는다.
+- useWindow(id) — 이후 openTab 이 그 창에 뒤쪽 탭을 연다(그 창의 프로필을 따른다). useWindow(null) 이면 맨 앞 일반 창(기본). 없는 id 는 오류. 고른 창이 닫히면 다음 openTab 에서 안내 한 줄과 함께 맨 앞 창으로 돌아간다. 사용자 탭 · 창은 떼기만 하고 닫지 않는다.
+- useAiWindow(id) — 사용자가 이미 열어 둔 창(예: 다른 프로필 창)을 AI 전용 창으로 쓴다. 이후 openAiWindow(url) 은 그 창에 새 탭을 열고, page.setViewportSize · page.screenshot 도 된다(setViewportSize 는 그 창 크기를 실제로 바꾼다). 이 창은 우리 창이 아니라서 끝나도 닫지 않고, 우리가 그 안에 연 탭만 닫는다.
+  Windows: listWindows() lists Safari windows so the user can say "the second window"; useWindow(id) makes openTab open background tabs in that window (follows its profile), useWindow(null) goes back to the frontmost normal window; useAiWindow(id) uses an already-open window as the AI window (never closed by us; only tabs we opened in it are closed).
 - closeTab(page?) — 우리가 연 탭만 닫는다. 서버가 끝나면 우리가 연 탭과 AI 창은 모두 닫힌다.
 - snapshot(page?, {interactive, selector, full}) — 페이지를 읽는다. console.log(await snapshot()) 로 찍으면 "지난번과 바뀐 곳만" 나오고, 처음이거나 같으면 전체 · 「변화 없음」이 나온다. 요소 앞의 e12 같은 ref 를 locator(ref) 에 쓴다. 16KB 를 넘으면 잘린다.
 - Page: goto(url), url(), title(), waitForLoadState(), evaluate(fn | 식, arg), locator(ref | CSS).click() / .fill(값) / .textContent(), keyboard.press("Enter") / keyboard.type(글).

@@ -82,8 +82,8 @@ export interface SafariDriver {
    */
   openWindow(url: string, opts?: { width?: number; height?: number }): Promise<{ windowId: number; tab: TabInfo; frontAppChanged: boolean }>;
   /**
-   * 우리가 연 창의 페이지 크기(innerWidth · innerHeight)를 요청과 같게 맞춘다. 창 바깥 크기를 한 번 재고 한 번 고친다.
-   * 사파리 최소 폭보다 좁거나 화면보다 크면 실제 값을 그대로 돌려준다(오류 아님). 우리 창이 아니면 SAFARI_ERROR, 닫힌 창이면 WINDOW_CLOSED.
+   * 우리가 연 창(또는 adoptWindow 로 고른 AI 창)의 페이지 크기(innerWidth · innerHeight)를 요청과 같게 맞춘다. 창 바깥 크기를 한 번 재고 한 번 고친다.
+   * 사파리 최소 폭보다 좁거나 화면보다 크면 실제 값을 그대로 돌려준다(오류 아님). 그 밖의 창이면 SAFARI_ERROR, 닫힌 창이면 WINDOW_CLOSED.
    */
   setWindowSize(windowId: number, width: number, height: number): Promise<{ innerWidth: number; innerHeight: number }>;
   /** 우리가 연 창만 닫는다. 그 밖의 창은 SAFARI_ERROR, 이미 닫힌 창은 WINDOW_CLOSED. */
@@ -91,10 +91,15 @@ export interface SafariDriver {
   /** 창을 PNG 로 찍는다(긴 변 1568px 이하). 화면 기록 권한이 없으면 SCREEN_CAPTURE_DENIED, 닫힌 창이면 WINDOW_CLOSED. */
   captureWindow(windowId: number): Promise<Buffer>;
   /**
-   * 우리가 연 창 안의 탭을 그 창의 현재 탭(화면에 보이는 탭)으로 만든다 — 찍기 전에 쓴다. 사파리를 앞으로 가져오지 않고, 우리 창이 아닌 곳의 탭이면
+   * 우리가 연 창(또는 adoptWindow 로 고른 AI 창) 안의 탭을 그 창의 현재 탭(화면에 보이는 탭)으로 만든다 — 찍기 전에 쓴다. 사파리를 앞으로 가져오지 않고, 그 밖의 창의 탭이면
    * SAFARI_ERROR(사용자 창은 건드리지 않는다). 탭이 없으면 TAB_CLOSED.
    */
   showTab(tabKey: string): Promise<void>;
+  /**
+   * 사용자가 AI 전용 창으로 고른 이미 열린 창 하나를 쓸 수 있게 한다 — 그 안의 탭을 showTab 으로 앞에 보이고 setWindowSize 로 크기를 바꿀 수 있다.
+   * 우리 창(owned)은 아니므로 closeWindow · closeOwned 는 이 창을 닫지 않는다(우리가 그 안에 연 탭만 닫힌다). 없는 창이면 WINDOW_CLOSED.
+   */
+  adoptWindow(windowId: number): Promise<void>;
   /** 이 앱에 화면 기록 권한이 있는가(CGPreflightScreenCaptureAccess). */
   screenCaptureAllowed(): Promise<boolean>;
   /** 이 드라이버가 연 창과 탭을 모두 닫는다(사용자 창 · 탭은 그대로). 닫은 수(우리 창 안의 탭은 따로 세지 않는다)를 돌려준다. */

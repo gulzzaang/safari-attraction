@@ -139,4 +139,42 @@ describeIt("AI 전용 창(REPL: openAiWindow · setViewportSize · screenshot ·
     expect(second).toHaveLength(1);
     expect(second[0]!.id).not.toBe(first.id);
   });
+
+  test("useAiWindow: 다른 드라이버가 연 창(우리 창이 아님)을 AI 창으로 고르면 크기 · 탭이 되고, 끝나도 창은 남고 우리 탭만 닫힌다", async () => {
+    // 이 시험이 따로 연 창을 「사용자가 열어 둔 창」으로 쓴다(진짜 사용자 창은 고르지 않는다). 두 번째 드라이버가 열었으므로 d 에게는 우리 창이 아니다.
+    const other = createJxaDriver();
+    let otherId: number | undefined;
+    try {
+      const w = await other.openWindow(mine("basic.html"), { width: 700, height: 500 });
+      otherId = w.windowId;
+      expect((await d.listWindows()).find((x) => x.id === otherId)?.owned).toBe(false);
+
+      const r = await s.run(
+        `await useAiWindow(${otherId});
+         const ai = await openAiWindow(${JSON.stringify(mine("basic.html"))});
+         const v = await ai.setViewportSize({width: 600, height: 400});
+         const ws = await listWindows();
+         console.log(JSON.stringify(v), JSON.stringify(ws.filter((x) => x.isAiWindow).map((x) => [x.id, x.tabCount])))`,
+      );
+      expect(r.error).toBeUndefined();
+      expect(r.output).toContain('{"width":600,"height":400}');
+      expect(r.output).toContain(`[[${otherId},2]]`);
+      expect(await windowIds()).toEqual([...userWindowIds, otherId!].sort((a, b) => a - b)); // 새 창을 따로 열지 않았다
+      // 고른 창의 탭을 앞에 보여 찍는다(권한이 있을 때만).
+      if (await d.screenCaptureAllowed()) {
+        const shot = await s.run(`display(await page.screenshot())`);
+        expect(shot.error).toBeUndefined();
+        expect(shot.images).toHaveLength(1);
+      }
+
+      await s.dispose();
+      const left = (await d.listWindows()).find((x) => x.id === otherId);
+      expect(left).toBeDefined(); // 고른 창은 닫히지 않았다
+      expect(left!.tabCount).toBe(1); // 우리가 연 탭만 닫혔다(창이 처음 가졌던 탭 하나)
+    } finally {
+      if (otherId !== undefined) await other.closeWindow(otherId).catch(() => undefined);
+      await other.close();
+    }
+    expect(await windowIds()).toEqual(userWindowIds);
+  });
 });

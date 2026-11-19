@@ -75,11 +75,18 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
   // 우리가 openWindow 로 연 창(창 번호). 이 안의 창만 setWindowSize · closeWindow 가 만진다.
   const ownedWindows = new Set<number>();
 
+  // 사용자가 AI 전용 창으로 고른 창(adoptWindow). showTab · setWindowSize 는 쓸 수 있지만 닫지는 않는다.
+  const adoptedWindows = new Set<number>();
+
   type WindowState = { gone: true } | { gone: false; bounds: WindowBounds; inner: { innerWidth: number; innerHeight: number } | null };
 
   const windowClosed = (id: number) => new SafariError("WINDOW_CLOSED", `창 ${id} 이(가) 이미 닫혔음`);
   function requireOwnedWindow(id: number, what: string): void {
     if (!ownedWindows.has(id)) throw new SafariError("SAFARI_ERROR", `Claude 가 연 창만 ${what}`);
+  }
+
+  function requireUsableWindow(id: number, what: string): void {
+    if (!ownedWindows.has(id) && !adoptedWindows.has(id)) throw new SafariError("SAFARI_ERROR", `Claude 가 연 창이나 AI 전용 창으로 고른 창만 ${what}`);
   }
 
   const toTab = (e: { raw: RawTab; key: string; owned: boolean }): TabInfo => ({ ...e.raw, key: e.key, owned: e.owned });
@@ -222,11 +229,16 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     },
 
     async setWindowSize(windowId, width, height) {
-      requireOwnedWindow(windowId, "크기를 바꿔요");
+      requireUsableWindow(windowId, "크기를 바꿔요");
       return resizeTo(windowId, width, height);
     },
 
     closeWindow,
+
+    async adoptWindow(windowId) {
+      if ((await windowState(windowId, false)).gone) throw windowClosed(windowId);
+      if (!ownedWindows.has(windowId)) adoptedWindows.add(windowId);
+    },
 
     async captureWindow(windowId) {
       if ((await windowState(windowId, false)).gone) throw windowClosed(windowId);
@@ -235,8 +247,8 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
 
     async showTab(tabKey) {
       await registry.withTab(tabKey, async (s) => {
-        // 사용자 창의 현재 탭은 바꾸지 않는다. 우리가 연 창 안에서만.
-        if (!ownedWindows.has(s.windowId)) throw new SafariError("SAFARI_ERROR", "Claude 가 연 창 안의 탭만 앞에 보여요");
+        // 사용자 창의 현재 탭은 바꾸지 않는다. 우리가 연 창과 사용자가 AI 전용 창으로 고른 창 안에서만.
+        if (!ownedWindows.has(s.windowId) && !adoptedWindows.has(s.windowId)) throw new SafariError("SAFARI_ERROR", "Claude 가 연 창(또는 AI 전용 창으로 고른 창) 안의 탭만 앞에 보여요");
         return call<Guarded<null>>("showTab", guardArgs(s));
       });
     },
@@ -279,6 +291,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
       } catch (err) {
         firstError ??= err;
       }
+      adoptedWindows.clear(); // 고른 창은 닫지 않고 그저 놓아 준다
       if (firstError) throw firstError;
       return closed;
     },

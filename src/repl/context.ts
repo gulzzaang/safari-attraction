@@ -68,8 +68,11 @@ export function createReplSession(driver: SafariDriver): ReplSession {
   let disposed = false;
   // AI 전용 창은 세션에 하나. 번호가 이 값 하나라서, 나중에 이미 있는 창을 AI 창으로 삼는 호출도 이 값만 바꾸면 된다.
   let aiWindowId: number | null = null;
-  // AI 창에서 연 탭 키. 창이 닫힌 뒤에도 그 옛 탭에서 부르면 「AI 창이 아니다」가 아니라 「닫혔다」로 알리려고 남겨 둔다.
-  const aiKeys = new Set<string>();
+  // AI 창에서 연 탭 키 → 그 탭을 연 창 번호. 창이 닫힌 뒤(새 AI 창이 열린 뒤에도) 그 옛 탭에서 부르면 「AI 창이 아니다」가 아니라
+  // 「닫혔다」로 알리려고 남겨 둔다. closeTab 으로 닫은 탭은 뺀다.
+  const aiKeys = new Map<string, number>();
+  // useWindow 로 고른 작업 창(openTab 의 뒤쪽 탭이 열리는 곳). null 이면 맨 앞 일반 창(기본).
+  let workWindowId: number | null = null;
 
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, Number(ms) || 0));
   const log = (...args: unknown[]) => {
@@ -107,7 +110,8 @@ export function createReplSession(driver: SafariDriver): ReplSession {
   };
   // ---- AI 전용 창 ----
   const guideOnlyAi = (what: string) => new Error(`${what}는 AI 전용 창에서만 돼요 — openAiWindow(url) 로 여세요`);
-  const aiClosed = () => new SafariError("WINDOW_CLOSED", `AI 전용 창(${aiWindowId ?? "?"}) 이(가) 닫혔음`);
+  const noSuchWindow = () => new Error("그런 창이 없어요 — listWindows() 로 확인하세요");
+  const windowExists = async (id: number): Promise<boolean> => (await driver.listWindows()).some((w) => w.id === id);
 
   /** AI 창이 아직 있는가. 목록에 없으면(사용자가 닫음) 상태를 비우고 false. */
   const aiWindowAlive = async (): Promise<boolean> => {
@@ -120,15 +124,22 @@ export function createReplSession(driver: SafariDriver): ReplSession {
 
   const aiAccess: AiWindowAccess = {
     async windowFor(tabKey, what) {
-      if (aiWindowId === null) throw aiKeys.has(tabKey) ? new SafariError("WINDOW_CLOSED", "AI 전용 창이 이미 닫혔음") : guideOnlyAi(what);
+      const former = aiKeys.get(tabKey); // 이 탭이 AI 창에서 열렸다면 그 창 번호
+      if (aiWindowId === null) throw former !== undefined ? new SafariError("WINDOW_CLOSED", "AI 전용 창이 이미 닫혔음") : guideOnlyAi(what);
       const id = aiWindowId;
       if (!(await aiWindowAlive())) throw new SafariError("WINDOW_CLOSED", `AI 전용 창(${id}) 이(가) 닫혔음`);
       const t = (await driver.listTabs()).find((x) => x.key === tabKey);
-      if (!t || t.windowId !== id) throw guideOnlyAi(what);
+      if (!t) {
+        // 옛 AI 창의 탭이었는데 그 창이 없어졌으면 「창이 닫혔다」, 그 밖에는 탭이 없다.
+        if (former !== undefined && former !== id && !(await windowExists(former))) throw new SafariError("WINDOW_CLOSED", `AI 전용 창(${former}) 이(가) 닫혔음`);
+        throw new SafariError("TAB_CLOSED", `탭 ${tabKey} 이(가) 닫혔음`);
+      }
+      if (t.windowId !== id) throw guideOnlyAi(what);
       return id;
     },
-    closed() {
-      aiWindowId = null;
+    closed(windowId) {
+      // 그사이 다른 창이 AI 창이 되었으면 그 상태를 지우지 않는다.
+      if (aiWindowId === windowId) aiWindowId = null;
     },
     note: (line) => log(line),
   };
@@ -141,7 +152,25 @@ export function createReplSession(driver: SafariDriver): ReplSession {
 
   sandbox.openTab = async (url: string): Promise<Page> => {
     if (disposed) throw new Error("openTab: 서버가 끝나는 중이라 탭을 열 수 없음");
-    const { tab, frontAppChanged } = await driver.openTab(String(url));
+    const backToFront = () => {
+      log("고른 창이 닫혀서 맨 앞 창으로 돌아갑니다");
+      workWindowId = null;
+    };
+    let target: number | undefined;
+    if (workWindowId !== null) {
+      if (await windowExists(workWindowId)) target = workWindowId;
+      else backToFront();
+    }
+    let opened;
+    try {
+      opened = await driver.openTab(String(url), target === undefined ? undefined : { windowId: target });
+    } catch (e) {
+      // 창을 확인한 뒤 열기 전에 닫혔다면 맨 앞 창에 다시 연다. 창이 살아 있으면 원래 오류 그대로.
+      if (target === undefined || (await windowExists(target))) throw e;
+      backToFront();
+      opened = await driver.openTab(String(url));
+    }
+    const { tab, frontAppChanged } = opened;
     if (frontAppChanged) log("주의: 사파리가 맨 앞으로 나왔어요");
     if (disposed) {
       // 닫는 도중에 열린 탭도 남기지 않는다.
@@ -163,17 +192,18 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     if (aiWindowId !== null && !(await aiWindowAlive())) log("주의: 이전 AI 전용 창이 닫혀 있어서 새로 열었어요");
     let key: string;
     let front: boolean;
+    let winId: number;
     if (aiWindowId === null) {
       const r = await driver.openWindow(String(url), { width: Math.round(width), height: Math.round(height) });
       if (disposed) {
         await driver.closeWindow(r.windowId).catch(() => {});
         throw new Error("openAiWindow: 서버가 끝나는 중이라 창을 열 수 없음");
       }
-      aiWindowId = r.windowId;
+      aiWindowId = winId = r.windowId;
       key = r.tab.key;
       front = r.frontAppChanged;
     } else {
-      const id = aiWindowId;
+      const id = (winId = aiWindowId);
       const r = await driver.openTab(String(url), { windowId: id });
       if (disposed) {
         await driver.closeTab(r.tab.key).catch(() => {});
@@ -186,7 +216,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     }
     if (front) log("주의: 사파리가 맨 앞으로 나왔어요");
     owned.add(key);
-    aiKeys.add(key);
+    aiKeys.set(key, winId);
     return track(new Page(driver, key, aiAccess));
   };
 
@@ -199,10 +229,49 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       if (!(e instanceof SafariError && e.code === "TAB_CLOSED")) throw e; // 이미 닫혔으면 정리만 한다
     }
     owned.delete(pg.key);
+    aiKeys.delete(pg.key);
     store.forget(pg.key);
     const i = tabs.findIndex((t) => t.key === pg.key);
     if (i >= 0) tabs.splice(i, 1);
     if (currentPage()?.key === pg.key) sandbox.page = tabs.length ? tabs[tabs.length - 1]! : null;
+  };
+
+  // ---- 창 고르기 ----
+  const windowIdArg = (id: unknown): number => {
+    const n = typeof id === "number" ? id : Number.NaN;
+    if (!Number.isInteger(n)) throw noSuchWindow();
+    return n;
+  };
+
+  sandbox.listWindows = async () =>
+    (await driver.listWindows()).map((w) => ({
+      id: w.id,
+      index: w.index,
+      title: w.title,
+      tabCount: w.tabCount,
+      width: w.bounds.width,
+      height: w.bounds.height,
+      isAiWindow: w.id === aiWindowId,
+      isWorkWindow: w.id === workWindowId,
+    }));
+
+  sandbox.useWindow = async (id: number | null): Promise<void> => {
+    if (id === null) {
+      workWindowId = null;
+      return;
+    }
+    const n = windowIdArg(id);
+    if (!(await windowExists(n))) throw noSuchWindow();
+    workWindowId = n;
+  };
+
+  sandbox.useAiWindow = async (id: number): Promise<void> => {
+    if (disposed) throw new Error("useAiWindow: 서버가 끝나는 중이라 창을 고를 수 없음");
+    const n = windowIdArg(id);
+    if (!(await windowExists(n))) throw noSuchWindow();
+    // 고른 창은 우리 창이 아니다: 크기 · 찍기는 되지만 끝나도 닫지 않고, 우리가 그 안에 연 탭만 닫는다.
+    await driver.adoptWindow(n);
+    aiWindowId = n;
   };
 
   sandbox.listBrowserTabs = (): Promise<TabInfo[]> => driver.listTabs();
@@ -330,6 +399,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       } finally {
         owned.clear();
         aiWindowId = null;
+        workWindowId = null;
         aiKeys.clear();
         tabs.length = 0;
         sandbox.page = null;

@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import type { SafariDriver, TabInfo } from '../../src/driver/types.js';
 import { SafariError } from '../../src/driver/types.js';
 import { Page } from '../../src/repl/page.js';
@@ -136,5 +136,76 @@ describe('Page 의 이동 판단(settleTab 로 확인, runJs 로 확인하지 �
       },
     } as unknown as SafariDriver;
     await expect(new Page(d, 't1').locator('e1').click()).rejects.toMatchObject({ code: 'TAB_CLOSED' });
+  });
+});
+
+describe('Page.screenshot 은 새 현재 탭이 그려진 뒤에 찍는다', () => {
+  /** 호출 순서를 적는 가짜 드라이버. visibility 는 runJs("document.visibilityState") 가 차례로 돌려줄 값이다. */
+  function shot(visibility: string[]) {
+    const order: string[] = [];
+    let n = 0;
+    const d = {
+      async showTab() {
+        order.push('showTab');
+      },
+      async runJs(_key: string, source: string) {
+        order.push(`runJs:${source}`);
+        return visibility[Math.min(n++, visibility.length - 1)]!;
+      },
+      async captureWindow(id: number) {
+        order.push(`capture:${id}`);
+        return Buffer.from('png');
+      },
+    } as unknown as SafariDriver;
+    const closed: number[] = [];
+    const ai = { windowFor: async () => 7, closed: (id: number) => void closed.push(id), note: () => {} };
+    return { page: new Page(d, 't1', ai), order, closed };
+  }
+
+  test('showTab → 보이는지 확인 → captureWindow 순서', async () => {
+    const { page, order } = shot(['visible']);
+    await page.screenshot();
+    expect(order).toEqual(['showTab', 'runJs:document.visibilityState', 'capture:7']);
+  });
+
+  test('아직 hidden 이면 visible 이 될 때까지 확인을 거듭한 뒤 찍는다', async () => {
+    const { page, order } = shot(['hidden', 'hidden', 'visible']);
+    await page.screenshot();
+    expect(order.filter((o) => o.startsWith('runJs'))).toHaveLength(3);
+    expect(order.at(-1)).toBe('capture:7');
+  });
+
+  test('끝내 hidden 이어도 약 1초 뒤에는 막지 않고 찍는다', async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, order } = shot(['hidden']);
+      const p = page.screenshot();
+      await vi.advanceTimersByTimeAsync(2000);
+      await p;
+      expect(order.at(-1)).toBe('capture:7');
+      const polls = order.filter((o) => o.startsWith('runJs')).length;
+      expect(polls).toBeGreaterThanOrEqual(5);
+      expect(polls).toBeLessThanOrEqual(12);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('보이는지 읽다가 오류가 나도 막지 않고 찍는다', async () => {
+    const { page, order } = shot(['visible']);
+    (page as unknown as { driver: SafariDriver }).driver.runJs = async () => {
+      throw new SafariError('TAB_CLOSED', '탭 없음');
+    };
+    await page.screenshot();
+    expect(order.at(-1)).toBe('capture:7');
+  });
+
+  test('창이 닫혔다는 오류에는 그 창 번호로 closed(id) 를 부른다', async () => {
+    const { page, closed } = shot(['visible']);
+    (page as unknown as { driver: SafariDriver }).driver.captureWindow = async () => {
+      throw new SafariError('WINDOW_CLOSED', '창 닫힘');
+    };
+    await expect(page.screenshot()).rejects.toMatchObject({ code: 'WINDOW_CLOSED' });
+    expect(closed).toEqual([7]);
   });
 });

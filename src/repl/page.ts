@@ -19,6 +19,11 @@ const LEAVING_MAX_MS = 8000;
 const TIMER_WAIT_MAX_MS = 1000;
 /** evaluate 가 돌려준 약속을 기다리는 시간. */
 const PENDING_TIMEOUT_MS = 15000;
+/** 찍기 전에 새로 현재가 된 탭이 그려지길(visibilityState) 기다리는 최대 시간과 확인 간격. */
+const PAINT_WAIT_MS = 1000;
+const PAINT_POLL_MS = 100;
+/** 보이게 된 뒤 한 번 더 그려지도록 두는 시간(프레임 한두 장). */
+const PAINT_SETTLE_MS = 120;
 
 /** evaluate 소스가 주소를 바꾸는 식인가(대입 · assign · replace · reload · submit · click · history 이동 · open). */
 const NAVIGATING_SRC =
@@ -31,8 +36,8 @@ const newToken = () => `sa${Date.now().toString(36)}_${++tokenSeq}`;
 export interface AiWindowAccess {
   /** 이 탭이 AI 창 안에 있으면 그 창 번호. 아니면 `what` 을 AI 창에서만 된다고 알리는 오류. AI 창이 닫혔으면 WINDOW_CLOSED(상태를 비운다). */
   windowFor(tabKey: string, what: string): Promise<number>;
-  /** 드라이버가 창이 닫혔다고 했을 때 세션 상태를 비운다. */
-  closed(): void;
+  /** 드라이버가 그 창(windowId)이 닫혔다고 했을 때 세션 상태를 비운다. 그사이 AI 창이 다른 창으로 바뀌었으면 건드리지 않는다. */
+  closed(windowId: number): void;
   /** 이 호출의 출력에 한 줄 남긴다. */
   note(line: string): void;
 }
@@ -134,7 +139,7 @@ export class Page {
       throw new Error("setViewportSize({width, height}): 폭과 높이는 0 보다 큰 숫자여야 합니다");
     }
     const id = await this.aiWindow("화면 크기 바꾸기");
-    const r = await this.guardClosed(() => this.driver.setWindowSize(id, Math.round(width), Math.round(height)));
+    const r = await this.guardClosed(id, () => this.driver.setWindowSize(id, Math.round(width), Math.round(height)));
     if (r.innerWidth > Math.round(width)) this.ai!.note(`사파리 창은 약 ${MIN_WINDOW_WIDTH_PX}px 보다 좁게 못 줄여요(지금 ${r.innerWidth} px)`);
     return { width: r.innerWidth, height: r.innerHeight };
   }
@@ -145,8 +150,9 @@ export class Page {
    */
   async screenshot(): Promise<Buffer> {
     const id = await this.aiWindow("화면 찍기");
-    return this.guardClosed(async () => {
+    return this.guardClosed(id, async () => {
       await this.driver.showTab(this.key);
+      await this.waitForPaint();
       return this.driver.captureWindow(id);
     });
   }
@@ -158,16 +164,34 @@ export class Page {
     return this.ai.windowFor(this.key, what);
   }
 
-  /** 드라이버가 창이 닫혔다고 하면 세션이 AI 창을 잊게 한 뒤 그대로 올린다. */
-  private async guardClosed<T>(run: () => Promise<T>): Promise<T> {
+  /** 드라이버가 창(windowId)이 닫혔다고 하면 세션이 그 AI 창을 잊게 한 뒤 그대로 올린다. */
+  private async guardClosed<T>(windowId: number, run: () => Promise<T>): Promise<T> {
     try {
       return await run();
     } catch (e) {
-      if (e instanceof SafariError && e.code === "WINDOW_CLOSED") this.ai?.closed();
+      if (e instanceof SafariError && e.code === "WINDOW_CLOSED") this.ai?.closed(windowId);
       throw e;
     }
   }
 
+  /**
+   * showTab 뒤 새로 현재가 된 탭이 그려지길 잠깐 기다린다 — 안 그러면 이전 탭이 찍힌다. 탭이 보이는 상태(visibilityState)가 될 때까지
+   * 최대 1초 확인하고, 한 번 더 그려지도록 잠깐 둔다. 확인이 실패하거나 끝내 안 보여도 막지 않는다(찍기가 알아서 오류를 낸다).
+   */
+  private async waitForPaint(): Promise<void> {
+    const t0 = Date.now();
+    for (;;) {
+      let state = "";
+      try {
+        state = await this.driver.runJs(this.key, "document.visibilityState");
+      } catch {
+        break; // 읽지 못하면(자바스크립트를 못 돌리는 문서 등) 기다리지 않고 찍는다
+      }
+      if (state !== "hidden" || Date.now() - t0 >= PAINT_WAIT_MS) break;
+      await sleep(PAINT_POLL_MS);
+    }
+    await sleep(PAINT_SETTLE_MS);
+  }
 
   /** 페이지 안 동작 하나를 돌리고, 문서가 바뀌었으면 탭 키를 다시 붙인다. */
   private act(op: ActionOp, args: Record<string, unknown>) {

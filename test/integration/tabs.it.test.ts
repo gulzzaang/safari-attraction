@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { afterAll, afterEach, beforeAll, expect, test } from 'vitest';
 import { createJxaDriver } from '../../src/driver/jxa-driver.js';
 import type { SafariDriver, TabInfo } from '../../src/driver/types.js';
+import { createReplSession } from '../../src/repl/context.js';
 import { describeIt, fixture, frontApp, startFixtures, stopFixtures } from '../helpers/it.js';
 
 // 이 파일이 연 탭에만 붙는 꼬리표. 시험은 이 꼬리표가 든 탭만 만지고 닫는다(사용자 탭은 건드리지 않는다).
@@ -153,5 +154,33 @@ describeIt('탭 키 · 우리 탭 정리', () => {
     expect((await d.listTabs()).filter(isMine)).toHaveLength(0);
     expect(await userTabs()).toEqual(before); // 사용자 탭 수 · 주소가 전후 같다
     expect(await d.closeOwned()).toBe(0);
+  });
+
+  test('useWindow(그 창 번호) 뒤 openTab 한 탭은 그 창에 열린다', async () => {
+    // 시험이 직접 연 창(사용자 창이 아니다)을 「고른 창」으로 쓴다. 끝나면 이 창과 탭을 닫는다.
+    const win = await d.openWindow(mine('basic.html'));
+    const s = createReplSession(d);
+    try {
+      const r = await s.run(`const ws = await listWindows();
+        const w = ws.find((x) => x.id === ${win.windowId});
+        if (!w) throw new Error('창 목록에 시험 창이 없음');
+        await useWindow(w.id);
+        const p = await openTab(${JSON.stringify(mine('alert.html'))});
+        console.log(JSON.stringify({ key: p.key }))`);
+      expect(r.error).toBeUndefined();
+      const out = JSON.parse(r.output) as { key: string };
+      const listed = (await d.listTabs()).find((t) => t.key === out.key)!;
+      expect(listed.windowId).toBe(win.windowId); // 맨 앞 창이 아니라 고른 창에 열렸다
+      expect((await d.listWindows()).find((w) => w.id === win.windowId)?.tabCount).toBe(2);
+      // 고른 창을 닫으면 다음 openTab 은 안내와 함께 맨 앞 창으로 돌아간다.
+      await d.closeWindow(win.windowId);
+      const r2 = await s.run(`const p2 = await openTab(${JSON.stringify(mine('basic.html'))}); console.log(p2.key)`);
+      expect(r2.error).toBeUndefined();
+      expect(r2.output).toContain('고른 창이 닫혀서 맨 앞 창으로 돌아갑니다');
+      const back = (await d.listTabs()).find((t) => t.key === r2.output.split('\n').pop()!)!;
+      expect(back.windowId).not.toBe(win.windowId);
+    } finally {
+      await s.dispose(); // 세션이 연 탭을 닫고, 아직 열려 있으면 시험이 연 창도 닫는다(드라이버의 closeOwned)
+    }
   });
 });

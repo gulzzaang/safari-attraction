@@ -386,3 +386,151 @@ describe("AI 전용 창", () => {
     expect(d.calls.openWindow).toHaveLength(1);
   });
 });
+
+describe("창 고르기(listWindows · useWindow · useAiWindow)", () => {
+  /** 사용자가 창을 하나 더 열어 둔 상태를 흉내 낸다(가짜 드라이버의 창 하나, 번호 101). */
+  const openSecondWindow = async () => (await d.openWindow("http://w/", { width: 800, height: 600 })).windowId;
+
+  test("listWindows 는 창 고르는 근거(제목 · 탭 수 · 크기 · 표시)를 돌려준다", async () => {
+    d.windows[0]!.title = "첫 창 탭";
+    d.windows[0]!.tabCount = 3;
+    await openSecondWindow();
+    const r = await s.run("console.log(JSON.stringify(await listWindows()))");
+    expect(r.error).toBeUndefined();
+    expect(JSON.parse(r.output)).toEqual([
+      { id: 1, index: 1, title: "첫 창 탭", tabCount: 3, width: 1200, height: 800, isAiWindow: false, isWorkWindow: false },
+      { id: 101, index: 2, title: "", tabCount: 1, width: 800, height: 600, isAiWindow: false, isWorkWindow: false },
+    ]);
+  });
+
+  test("useWindow 뒤 openTab 은 그 창에 열리고, listWindows 가 표시한다", async () => {
+    const id = await openSecondWindow();
+    const r = await s.run(`await useWindow(${id}); const p = await openTab("http://a/"); console.log(JSON.stringify((await listWindows()).map(w => [w.id, w.isWorkWindow])))`);
+    expect(r.error).toBeUndefined();
+    expect(d.calls.openTab).toEqual([{ url: "http://a/", windowId: id }]);
+    expect(r.output).toBe("[[1,false],[101,true]]");
+  });
+
+  test("useWindow(null) 이면 맨 앞 창(기본)으로 돌아간다", async () => {
+    const id = await openSecondWindow();
+    await s.run(`await useWindow(${id}); await openTab("http://a/"); await useWindow(null); await openTab("http://b/")`);
+    expect(d.calls.openTab).toEqual([
+      { url: "http://a/", windowId: id },
+      { url: "http://b/", windowId: undefined },
+    ]);
+  });
+
+  test("고른 창이 사라지면 안내 한 줄을 남기고 맨 앞 창으로 돌아가며, 그다음엔 안내가 없다", async () => {
+    const id = await openSecondWindow();
+    await s.run(`await useWindow(${id})`);
+    await d.closeWindow(id); // 사용자가 창을 닫음
+    const r = await s.run('await openTab("http://a/")');
+    expect(r.error).toBeUndefined();
+    expect(r.output).toContain("고른 창이 닫혀서 맨 앞 창으로 돌아갑니다");
+    expect(d.calls.openTab).toEqual([{ url: "http://a/", windowId: undefined }]);
+    const r2 = await s.run('await openTab("http://b/")');
+    expect(r2.output).toBe("");
+    expect(d.calls.openTab[1]).toEqual({ url: "http://b/", windowId: undefined });
+  });
+
+  test("확인한 뒤 열기 전에 창이 닫혀 openTab 이 실패해도 맨 앞 창으로 다시 연다", async () => {
+    const id = await openSecondWindow();
+    await s.run(`await useWindow(${id})`);
+    const real = d.openTab.bind(d);
+    d.openTab = async (url, opts) => {
+      if (opts?.windowId === id) {
+        await d.closeWindow(id); // 확인과 열기 사이에 창이 닫힘
+        throw new SafariError("SAFARI_ERROR", "Can't get window");
+      }
+      return real(url, opts);
+    };
+    const r = await s.run('const q = await openTab("http://a/"); console.log(q.key)');
+    expect(r.error).toBeUndefined();
+    expect(r.output).toContain("고른 창이 닫혀서 맨 앞 창으로 돌아갑니다");
+    expect(d.calls.openTab.at(-1)).toEqual({ url: "http://a/", windowId: undefined });
+  });
+
+  test("창이 살아 있는데 openTab 이 실패하면 그 오류를 그대로 올린다", async () => {
+    const id = await openSecondWindow();
+    await s.run(`await useWindow(${id})`);
+    d.openTab = async () => {
+      throw new SafariError("SAFARI_ERROR", "열기 실패");
+    };
+    const r = await s.run('await openTab("http://a/")');
+    expect(r.error).toContain("열기 실패");
+  });
+
+  test("없는 창 번호는 오류(useWindow · useAiWindow)", async () => {
+    for (const code of ["await useWindow(999)", "await useWindow('abc')", "await useWindow()", "await useAiWindow(999)"]) {
+      const r = await s.run(code);
+      expect(r.error).toBe("그런 창이 없어요 — listWindows() 로 확인하세요");
+    }
+    expect(d.calls.adoptWindow).toHaveLength(0);
+  });
+
+  test("useAiWindow 창에는 우리 탭이 열리고 크기 · 찍기가 되며, 창은 dispose 때 닫지 않고 우리 탭만 닫는다", async () => {
+    d.userTabs.push({ key: "u1", windowId: 1, index: 1, title: "내 탭", url: "http://mine/", isActive: true, owned: false });
+    const r = await s.run(`await useAiWindow(1);
+      const ai = await openAiWindow("http://a/");
+      const v = await page.setViewportSize({width: 390, height: 844});
+      display(await page.screenshot());
+      console.log(ai.key, JSON.stringify(v), JSON.stringify((await listWindows()).map(w => [w.id, w.isAiWindow])))`);
+    expect(r.error).toBeUndefined();
+    expect(r.output).toBe('t1 {"width":390,"height":844} [[1,true]]');
+    expect(d.calls.adoptWindow).toEqual([1]);
+    expect(d.calls.openWindow).toHaveLength(0); // 새 창을 열지 않고 고른 창을 쓴다
+    expect(d.calls.openTab).toEqual([{ url: "http://a/", windowId: 1 }]);
+    expect(d.calls.setWindowSize).toEqual([{ windowId: 1, width: 390, height: 844 }]);
+    expect(d.calls.showTab).toEqual(["t1"]);
+    expect(d.calls.captureWindow).toEqual([1]);
+    expect(r.images).toHaveLength(1);
+
+    await s.dispose();
+    expect(d.calls.closeWindow).toEqual([]); // 사용자의 창은 닫지 않았다
+    expect((await d.listWindows()).map((w) => w.id)).toEqual([1]);
+    expect((await d.listTabs()).map((t) => t.key)).toEqual(["u1"]); // 우리가 연 탭만 사라졌다
+  });
+
+  test("고르지 않은 사용자 창에서는 크기 바꾸기가 드라이버에서도 막힌다", async () => {
+    await expect(d.setWindowSize(1, 400, 400)).rejects.toMatchObject({ code: "SAFARI_ERROR" });
+  });
+
+  test("useAiWindow 로 고른 창이 닫히면 WINDOW_CLOSED, 다시 openAiWindow 하면 새 창", async () => {
+    const id = await openSecondWindow();
+    await s.run(`await useAiWindow(${id}); await openAiWindow("http://a/")`);
+    await d.closeWindow(id); // fake 에서는 우리 창이라 닫힌다(사용자가 닫은 것과 같다)
+    expect((await s.run("await page.screenshot()")).errorCode).toBe("WINDOW_CLOSED");
+    d.calls.openWindow.length = 0;
+    expect((await s.run('await openAiWindow("http://b/")')).error).toBeUndefined();
+    expect(d.calls.openWindow).toHaveLength(1);
+  });
+
+  test("다른 창을 AI 창으로 고르면 옛 AI 창의 살아 있는 탭은 「AI 창이 아니다」 안내", async () => {
+    const other = await openSecondWindow();
+    await s.run('await openAiWindow("http://a/")'); // 창 102(세션이 연 것)
+    await s.run(`await useAiWindow(${other})`);
+    const r = await s.run("await page.screenshot()"); // page 는 옛 AI 창의 탭
+    expect(r.error).toContain("AI 전용 창에서만 돼요");
+    expect(r.errorCode).toBeUndefined();
+  });
+});
+
+describe("AI 창 기억 정리(Task 3 검토 반영)", () => {
+  test("옛 AI 창이 닫힌 뒤 새 AI 창을 열어도 옛 탭은 WINDOW_CLOSED", async () => {
+    await s.run('const old = await openAiWindow("http://a/")');
+    await d.closeWindow(101); // 사용자가 창을 닫음
+    const r = await s.run('await openAiWindow("http://b/")'); // 새 창 102
+    expect(r.output).toContain("이전 AI 전용 창이 닫혀 있어서 새로 열었어요");
+    const r2 = await s.run("await old.screenshot()");
+    expect(r2.errorCode).toBe("WINDOW_CLOSED");
+    expect(r2.error).not.toContain("AI 전용 창에서만 돼요");
+    expect((await s.run("await page.screenshot()")).error).toBeUndefined(); // 새 창의 탭은 그대로 된다
+  });
+
+  test("closeTab 한 탭에서 다시 찍으면 TAB_CLOSED(「AI 창이 아니다」 아님)", async () => {
+    await s.run('const gone = await openAiWindow("http://a/"); await openAiWindow("http://b/"); await closeTab(gone)');
+    const r = await s.run("await gone.screenshot()");
+    expect(r.errorCode).toBe("TAB_CLOSED");
+    expect(r.error).not.toContain("AI 전용 창에서만 돼요");
+  });
+});

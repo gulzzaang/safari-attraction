@@ -102,3 +102,57 @@ describe("showTab", () => {
     expect(calls.some((c) => c.op === "showTab")).toBe(false);
   });
 });
+
+describe("adoptWindow(사용자가 AI 전용 창으로 고른 창)", () => {
+  const tab = (windowId: number) => ({ windowId, index: 2, title: "", url: "http://x/", isActive: false, stamped: true });
+  const state = { gone: false, bounds: { x: 0, y: 0, width: 500, height: 400 }, inner: { innerWidth: 480, innerHeight: 300 } };
+  const answers = () => ({
+    windowState: state,
+    // 요청한 바깥 크기를 그대로 받아들인 것처럼 답한다(테두리 20 · 100 은 그대로).
+    setBounds: () => ({ gone: false, bounds: { x: 0, y: 0, width: 420, height: 944 }, inner: { innerWidth: 400, innerHeight: 844 } }),
+    openTab: tab(7),
+    showTab: { value: null },
+    closeTab: { value: null },
+    closeWindow: { gone: false, closed: true },
+  });
+
+  test("고른 뒤에는 그 창의 탭을 앞에 보이고 크기를 바꿀 수 있다", async () => {
+    const { calls, host } = stubHost(answers());
+    const d = createJxaDriver({ host });
+    await d.adoptWindow(7);
+    const { tab: t } = await d.openTab("http://x/", { windowId: 7 });
+    await d.showTab(t.key);
+    expect(calls.some((c) => c.op === "showTab")).toBe(true);
+    await d.setWindowSize(7, 400, 844);
+    expect(calls.some((c) => c.op === "setBounds")).toBe(true);
+  });
+
+  test("고르지 않은 창은 여전히 막힌다(크기 · 앞에 보이기)", async () => {
+    const { calls, host } = stubHost(answers());
+    const d = createJxaDriver({ host });
+    await expect(d.setWindowSize(7, 400, 844)).rejects.toMatchObject({ code: "SAFARI_ERROR" });
+    const { tab: t } = await d.openTab("http://x/", { windowId: 7 });
+    await expect(d.showTab(t.key)).rejects.toMatchObject({ code: "SAFARI_ERROR" });
+    expect(calls.some((c) => c.op === "setBounds" || c.op === "showTab")).toBe(false);
+  });
+
+  test("없는 창은 WINDOW_CLOSED, 고르지 못한다", async () => {
+    const { host } = stubHost({ windowState: { gone: true } });
+    const d = createJxaDriver({ host });
+    await expect(d.adoptWindow(7)).rejects.toMatchObject({ code: "WINDOW_CLOSED" });
+    await expect(d.setWindowSize(7, 400, 400)).rejects.toMatchObject({ code: "SAFARI_ERROR" });
+  });
+
+  test("고른 창은 closeWindow 로 닫히지 않고, closeOwned 는 우리 탭만 닫는다", async () => {
+    const { calls, host } = stubHost(answers());
+    const d = createJxaDriver({ host });
+    await d.adoptWindow(7);
+    await expect(d.closeWindow(7)).rejects.toMatchObject({ code: "SAFARI_ERROR" });
+    await d.openTab("http://x/", { windowId: 7 });
+    expect(await d.closeOwned()).toBe(1);
+    expect(calls.filter((c) => c.op === "closeWindow")).toHaveLength(0);
+    expect(calls.filter((c) => c.op === "closeTab")).toHaveLength(1);
+    // closeOwned 뒤에는 고른 창도 놓아 준다
+    await expect(d.setWindowSize(7, 400, 844)).rejects.toMatchObject({ code: "SAFARI_ERROR" });
+  });
+});
