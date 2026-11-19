@@ -12,6 +12,10 @@ export const GUIDE_KO: Record<SafariErrorCode, string> = {
   TAB_CLOSED: "그 탭이 이미 닫혔거나 사라졌어요. listBrowserTabs() 로 지금 있는 탭을 보고 openTab · attachBrowserTab 으로 다시 여세요.",
   ALERT_BLOCKED: "그 탭에 경고창(alert · confirm · 인쇄 창 등)이 떠서 사파리가 답하지 못해요. 사파리에서 그 창을 닫아 주세요.",
   TIMEOUT: "시간 안에 끝나지 않았어요. 페이지가 느리거나 사파리가 바쁜 것일 수 있으니 잠시 뒤 다시 해 보세요.",
+  SCREEN_CAPTURE_DENIED:
+    "창을 찍지 못했어요. 시스템 설정 → 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음 에서 이 서버를 실행한 앱(터미널 · Claude 등)을 켜 주세요. " +
+    "권한이 있는데도 안 되면 화면이 잠겨 있거나 창이 가려졌는지 보세요.",
+  WINDOW_CLOSED: "그 창이 이미 닫혔거나 사라졌어요. 지금 있는 창을 확인한 뒤 필요하면 새 창을 여세요.",
   SAFARI_ERROR: "사파리가 오류를 돌려줬어요.",
 };
 

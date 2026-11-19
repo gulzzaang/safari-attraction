@@ -12,7 +12,7 @@ describe("toKorean(오류 → 한국어 안내)", () => {
   });
 
   test("모든 코드가 안내를 가지고 원문도 함께 남긴다", () => {
-    const codes: SafariErrorCode[] = ["TAB_CLOSED", "ALERT_BLOCKED", "JS_FROM_APPLE_EVENTS_OFF", "AUTOMATION_DENIED", "SAFARI_NOT_RUNNING", "TIMEOUT", "SAFARI_ERROR"];
+    const codes: SafariErrorCode[] = ["TAB_CLOSED", "ALERT_BLOCKED", "JS_FROM_APPLE_EVENTS_OFF", "AUTOMATION_DENIED", "SAFARI_NOT_RUNNING", "TIMEOUT", "SCREEN_CAPTURE_DENIED", "WINDOW_CLOSED", "SAFARI_ERROR"];
     for (const c of codes) {
       const t = toKorean(new SafariError(c, "원문-메시지"));
       expect(t).toContain("원문-메시지");

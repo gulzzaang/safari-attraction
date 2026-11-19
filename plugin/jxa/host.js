@@ -134,16 +134,86 @@ function windowTabInfos(w) {
   }));
 }
 
-// 탭이 있는 창만 일반 창으로 본다(설정 창 같은 건 탭이 없다). 맨 앞 것부터.
+// 탭이 있고 보이는 창만 일반 창으로 본다(설정 창 같은 건 탭이 없다). 맨 앞 것부터.
+// 닫은 창은 한참(몇 분) 사파리 창 목록에 남아 visible() 이 false 가 되고 탭이 없다 — 닫힌 창으로 본다.
 function normalWindows() {
   const out = [];
   Safari.windows().forEach((w) => {
     try {
-      if (w.tabs.length > 0) out.push(w);
+      if (w.visible() !== false && w.tabs.length > 0) out.push(w);
     } catch (e) {}
   });
   return out;
 }
+
+// id 로 창을 찾는다. 없거나 닫혔으면(visible() 이 false) null. 창을 가리킬 때는 항상 이것(순서가 바뀌어도 같은 창).
+function aliveWindow(windowId) {
+  try {
+    const w = Safari.windows.byId(windowId);
+    if (w.id() !== windowId) return null;
+    if (w.visible() === false) return null;
+    return w;
+  } catch (e) {
+    return null;
+  }
+}
+
+function currentTabName(w) {
+  try {
+    return str(w.currentTab().name());
+  } catch (e) {
+    return "";
+  }
+}
+
+function boundsOf(w) {
+  const b = w.bounds();
+  return { x: b.x, y: b.y, width: b.width, height: b.height };
+}
+
+// 그 창 현재 탭 페이지의 innerWidth · innerHeight. 못 재면(JS 를 못 도는 페이지) null.
+function innerSizeOf(w) {
+  try {
+    const t = str(Safari.doJavaScript("innerWidth + ',' + innerHeight", { in: w.currentTab() })).split(",");
+    return { innerWidth: Number(t[0]), innerHeight: Number(t[1]) };
+  } catch (e) {
+    if (isJsOffError(e)) throw e;
+    return null;
+  }
+}
+
+function windowState(w, measure) {
+  return { gone: false, bounds: boundsOf(w), inner: measure === false ? null : innerSizeOf(w) };
+}
+
+// 페이지가 다 뜰 때까지(최대 args.loadBudgetMs) 기다린다. 「Apple 이벤트에서 JavaScript 허용」이 꺼진 오류는
+// 기다려도 소용없으니 onJsOff() 로 만든 것을 치운 뒤 그대로 올린다(사파리 오류 문구는 로케일에 따라 영어 또는 한국어).
+function waitForLoad(tab, args, onJsOff) {
+  const t0 = Date.now();
+  const budget = args.loadBudgetMs || 15000;
+  const blank = args.url === "about:blank";
+  for (;;) {
+    let state = "";
+    try {
+      state = str(Safari.doJavaScript("location.href + ' ' + document.readyState", { in: tab }));
+    } catch (e) {
+      if (isJsOffError(e)) {
+        try {
+          onJsOff();
+        } catch (e2) {}
+        throw e;
+      }
+    }
+    const sp = state.lastIndexOf(" ");
+    const href = state.slice(0, sp);
+    const ready = state.slice(sp + 1) === "complete";
+    if (ready && href !== "" && (blank || href !== "about:blank")) break;
+    if (Date.now() - t0 > budget) break;
+    delay(0.05);
+  }
+}
+
+let screenFnBound = false;
 
 const ops = {
   listWindows() {
@@ -152,6 +222,9 @@ const ops = {
       index: w.index(),
       isPrivate: false, // 사파리 스크립트 사전에 개인정보 보호 창을 가리키는 속성이 없다.
       tabCount: w.tabs.length,
+      visible: true,
+      bounds: boundsOf(w),
+      title: currentTabName(w),
     }));
   },
 
@@ -257,31 +330,7 @@ const ops = {
     const index = win.tabs.length;
     const tab = win.tabs[index - 1];
 
-    const t0 = Date.now();
-    const budget = args.loadBudgetMs || 15000;
-    const blank = args.url === "about:blank";
-    for (;;) {
-      let state = "";
-      try {
-        state = str(Safari.doJavaScript("location.href + ' ' + document.readyState", { in: tab }));
-      } catch (e) {
-        // 「Apple 이벤트에서 JavaScript 허용」이 꺼진 오류는 기다려도 소용없다 — 만든 탭을 닫고 그대로 올린다.
-        // (사파리 오류 문구는 로케일에 따라 영어 또는 한국어.)
-        const m = String(e.message);
-        if (/Apple Events|Apple 이벤트/i.test(m) && /JavaScript/i.test(m)) {
-          try {
-            tab.close();
-          } catch (e2) {}
-          throw e;
-        }
-      }
-      const sp = state.lastIndexOf(" ");
-      const href = state.slice(0, sp);
-      const ready = state.slice(sp + 1) === "complete";
-      if (ready && href !== "" && (blank || href !== "about:blank")) break;
-      if (Date.now() - t0 > budget) break;
-      delay(0.05);
-    }
+    waitForLoad(tab, args, () => tab.close());
 
     const stamped = args.key ? stampTab(tab, args.key) : false;
     const current = win.currentTab().index();
@@ -293,6 +342,84 @@ const ops = {
       isActive: index === current,
       stamped,
     };
+  },
+
+  // 활성화하지 않고 새 문서 창을 열어 사파리 창 순서 맨 뒤(보이는 창들 가운데)로 보내고, 페이지가 뜰 때까지 기다린다.
+  // 새 창은 만들기 전 창 id 목록과 비교해 찾는다. 앞 앱은 바꾸지 않는다(activate 를 부르지 않는다).
+  openWindow(args) {
+    const before = Safari.windows().map((w) => w.id());
+    Safari.make({ new: "document", withProperties: { url: args.url } });
+    const findNew = () => Safari.windows().filter((w) => before.indexOf(w.id()) < 0 && w.visible() !== false);
+    let created = findNew();
+    for (let i = 0; i < 100 && created.length === 0; i++) {
+      delay(0.1);
+      created = findNew();
+    }
+    if (created.length !== 1) throw new Error("새 창을 하나로 특정하지 못함: " + created.length);
+    const windowId = created[0].id();
+    const win = () => Safari.windows.byId(windowId);
+
+    // 맨 뒤로: 보이는 일반 창 가운데 가장 뒤에 있는 창의 순서로 보낸다(안 보이는 창이 더 뒤에 있어도 그 앞에 둔다).
+    const others = normalWindows().filter((w) => w.id() !== windowId);
+    if (others.length > 0) win().index = Math.max.apply(null, others.map((w) => w.index()));
+
+    for (let i = 0; i < 50 && win().tabs.length === 0; i++) delay(0.1);
+    const tab = () => win().tabs[0];
+    waitForLoad(tab(), args, () => win().close());
+
+    const stamped = args.key ? stampTab(tab(), args.key) : false;
+    return {
+      windowId,
+      windowIndex: win().index(),
+      tab: {
+        windowId,
+        index: 1,
+        title: str(tab().name()),
+        url: str(tab().url()),
+        isActive: win().currentTab().index() === 1,
+      },
+      stamped,
+    };
+  },
+
+  // 창 바깥 크기와 페이지 크기. 창이 없거나 닫혔으면 {gone:true}.
+  windowState(args) {
+    const w = aliveWindow(args.windowId);
+    return w ? windowState(w, args.measure) : { gone: true };
+  },
+
+  // 창 바깥 크기(와 자리)를 바꾸고 잠깐 기다린 뒤 지금 크기를 돌려준다. x · y 를 안 주면 자리는 그대로.
+  setBounds(args) {
+    const w = aliveWindow(args.windowId);
+    if (!w) return { gone: true };
+    const b = w.bounds();
+    w.bounds = {
+      x: args.x === undefined || args.x === null ? b.x : args.x,
+      y: args.y === undefined || args.y === null ? b.y : args.y,
+      width: args.width,
+      height: args.height,
+    };
+    delay(0.3);
+    return windowState(w);
+  },
+
+  // 창을 닫고, 목록에서 보이지 않게 될 때까지(최대 3초) 기다린다.
+  closeWindow(args) {
+    const w = aliveWindow(args.windowId);
+    if (!w) return { gone: true };
+    w.close();
+    for (let i = 0; i < 30 && aliveWindow(args.windowId); i++) delay(0.1);
+    return { gone: false };
+  },
+
+  // 이 앱에 화면 기록 권한이 있는가(사파리를 건드리지 않는다).
+  screenAccess() {
+    ObjC.import("CoreGraphics");
+    if (!screenFnBound) {
+      ObjC.bindFunction("CGPreflightScreenCaptureAccess", ["bool", []]);
+      screenFnBound = true;
+    }
+    return $.CGPreflightScreenCaptureAccess() === true;
   },
 
   // 자리의 탭이 args.key 의 탭일 때만 돈다. 아니면 {stale: true}(Node 쪽이 탭을 다시 찾는다).
@@ -337,7 +464,7 @@ function handle(line) {
     const op = ops[req.op];
     if (!op) throw new Error("모르는 op: " + req.op);
     // 꺼진 사파리를 JXA 가 켜 버리지 않도록, 사파리를 건드리는 op 는 먼저 실행 여부를 본다.
-    if (req.op !== "ping" && !Safari.running()) {
+    if (req.op !== "ping" && req.op !== "screenAccess" && !Safari.running()) {
       writeLine({ id: req.id, ok: false, error: { code: "SAFARI_NOT_RUNNING", message: "사파리가 꺼져 있음" } });
       return;
     }

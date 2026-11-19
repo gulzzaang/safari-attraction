@@ -1,8 +1,24 @@
+export interface WindowBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface WindowInfo {
   id: number;
+  /** 사파리 창 순서(1 이 맨 앞). */
   index: number;
   isPrivate: boolean;
   tabCount: number;
+  /** 사파리가 보이는 창이라고 하는가. listWindows 는 false 인 창(닫혔는데 목록에 남은 창)을 빼고 돌려준다. */
+  visible: boolean;
+  /** 창 바깥 크기와 자리(화면 점 단위). */
+  bounds: WindowBounds;
+  /** 현재 탭의 이름. 없으면 빈 글. */
+  title: string;
+  /** 이 드라이버가 openWindow 로 연 창인가. */
+  owned: boolean;
 }
 
 export interface TabInfo {
@@ -25,6 +41,8 @@ export type SafariErrorCode =
   | "AUTOMATION_DENIED"
   | "SAFARI_NOT_RUNNING"
   | "TIMEOUT"
+  | "SCREEN_CAPTURE_DENIED"
+  | "WINDOW_CLOSED"
   | "SAFARI_ERROR";
 
 export class SafariError extends Error {
@@ -56,7 +74,23 @@ export interface SafariDriver {
    * TAB_CLOSED(그때만 키를 지운다).
    */
   settleTab(tabKey: string): Promise<{ navigated: boolean; leaving: boolean; tab: TabInfo }>;
-  /** 이 드라이버가 연 탭을 모두 닫는다(사용자 탭은 그대로). 닫은 수를 돌려준다. */
+  /**
+   * 활성화 없이 새 창을 열고(앞 앱을 바꾸지 않는다), 크기를 맞추고, 사파리 창 순서 맨 뒤로 보내고, 페이지가 뜰 때까지 기다린다.
+   * 창과 그 탭은 우리 것(owned). width · height 는 창 안 페이지 크기(innerWidth · innerHeight)다.
+   */
+  openWindow(url: string, opts?: { width?: number; height?: number }): Promise<{ windowId: number; tab: TabInfo; frontAppChanged: boolean }>;
+  /**
+   * 우리가 연 창의 페이지 크기(innerWidth · innerHeight)를 요청과 같게 맞춘다. 창 바깥 크기를 한 번 재고 한 번 고친다.
+   * 사파리 최소 폭보다 좁거나 화면보다 크면 실제 값을 그대로 돌려준다(오류 아님). 우리 창이 아니면 SAFARI_ERROR, 닫힌 창이면 WINDOW_CLOSED.
+   */
+  setWindowSize(windowId: number, width: number, height: number): Promise<{ innerWidth: number; innerHeight: number }>;
+  /** 우리가 연 창만 닫는다. 그 밖의 창은 SAFARI_ERROR, 이미 닫힌 창은 WINDOW_CLOSED. */
+  closeWindow(windowId: number): Promise<void>;
+  /** 창을 PNG 로 찍는다(긴 변 1568px 이하). 화면 기록 권한이 없으면 SCREEN_CAPTURE_DENIED, 닫힌 창이면 WINDOW_CLOSED. */
+  captureWindow(windowId: number): Promise<Buffer>;
+  /** 이 앱에 화면 기록 권한이 있는가(CGPreflightScreenCaptureAccess). */
+  screenCaptureAllowed(): Promise<boolean>;
+  /** 이 드라이버가 연 창과 탭을 모두 닫는다(사용자 창 · 탭은 그대로). 닫은 수(우리 창 안의 탭은 따로 세지 않는다)를 돌려준다. */
   closeOwned(): Promise<number>;
   close(): Promise<void>;
 }

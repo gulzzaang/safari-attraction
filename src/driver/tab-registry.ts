@@ -325,6 +325,11 @@ export class TabRegistry {
     if (e) e.blocked = true;
   }
 
+  /** 창이 닫혔다 — 그 창 안 탭의 기록을 모두 뺀다. */
+  forgetWindow(windowId: number): void {
+    for (const [key, e] of this.entries) if (e.windowId === windowId) this.entries.delete(key);
+  }
+
   /** 탭이 닫혔다 — 기록과 우리 탭 목록에서 뺀다. */
   forget(key: string): void {
     this.entries.delete(key);

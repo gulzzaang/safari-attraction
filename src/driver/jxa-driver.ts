@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { captureWindowPng } from "./capture.js";
 import { HostError, HostTimeoutError, JxaHost } from "./jxa-host.js";
 import { TabRegistry, type Guarded, type Probe, type RawTab, type RebindResult, type SettleResult, type Spot } from "./tab-registry.js";
-import { SafariError, type SafariDriver, type TabInfo, type WindowInfo } from "./types.js";
+import { SafariError, type SafariDriver, type TabInfo, type WindowBounds, type WindowInfo } from "./types.js";
 
 export { SafariError } from "./types.js";
 export type { SafariDriver, TabInfo, WindowInfo } from "./types.js";
@@ -11,6 +12,8 @@ const execFileP = promisify(execFile);
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 const LAUNCH_WAIT_MS = 15_000;
+/** 새 창을 찾는 데(최대 10초)와 페이지가 뜨는 데(최대 15초)가 걸린다. */
+const OPEN_WINDOW_TIMEOUT_MS = 40_000;
 
 /** 맨 앞 앱을 가리키는 값(`lsappinfo front`). 앱이 바뀌면 값이 바뀐다. */
 async function frontAsn(): Promise<string> {
@@ -66,6 +69,16 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): Safar
     close: (spot, urlOnly, timeoutMs) => call<Guarded<null>>("closeTab", { ...guardArgs(spot), urlOnly }, timeoutMs),
   });
 
+  // 우리가 openWindow 로 연 창(창 번호). 이 안의 창만 setWindowSize · closeWindow 가 만진다.
+  const ownedWindows = new Set<number>();
+
+  type WindowState = { gone: true } | { gone: false; bounds: WindowBounds; inner: { innerWidth: number; innerHeight: number } | null };
+
+  const windowClosed = (id: number) => new SafariError("WINDOW_CLOSED", `창 ${id} 이(가) 이미 닫혔음`);
+  function requireOwnedWindow(id: number, what: string): void {
+    if (!ownedWindows.has(id)) throw new SafariError("SAFARI_ERROR", `Claude 가 연 창만 ${what}`);
+  }
+
   const toTab = (e: { raw: RawTab; key: string; owned: boolean }): TabInfo => ({ ...e.raw, key: e.key, owned: e.owned });
 
   async function launchSafari(): Promise<void> {
@@ -83,8 +96,48 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): Safar
     throw new SafariError("SAFARI_NOT_RUNNING", "사파리를 켰지만 뜨지 않음");
   }
 
+  /** 창 바깥 크기 · 페이지 크기. measure=false 면 페이지 크기는 재지 않는다. */
+  async function windowState(windowId: number, measure = true): Promise<WindowState> {
+    return call<WindowState>("windowState", { windowId, measure });
+  }
+
+  function liveState(windowId: number, s: WindowState): Extract<WindowState, { gone: false }> {
+    if (s.gone) throw windowClosed(windowId);
+    return s;
+  }
+
+  /**
+   * 페이지 크기(innerWidth · innerHeight)를 요청과 같게 만든다. 지금 창 바깥 크기와 페이지 크기의 차이(테두리 · 도구 막대)를
+   * 한 번 재서 바깥 크기를 맞추고, 그래도 어긋나면 남은 차이만큼 한 번 고친다. 최소 폭 · 화면 크기에 막히면 실제 값을 돌려준다.
+   */
+  async function resizeTo(windowId: number, width: number, height: number): Promise<{ innerWidth: number; innerHeight: number }> {
+    const cur = liveState(windowId, await windowState(windowId));
+    if (!cur.inner) throw new SafariError("SAFARI_ERROR", "창 안 페이지 크기를 잴 수 없음(이 페이지에서는 자바스크립트를 돌릴 수 없음)");
+    const chromeW = cur.bounds.width - cur.inner.innerWidth;
+    const chromeH = cur.bounds.height - cur.inner.innerHeight;
+    let r = liveState(windowId, await call<WindowState>("setBounds", { windowId, width: width + chromeW, height: height + chromeH }));
+    if (r.inner && (r.inner.innerWidth !== width || r.inner.innerHeight !== height)) {
+      const dw = width - r.inner.innerWidth;
+      const dh = height - r.inner.innerHeight;
+      r = liveState(windowId, await call<WindowState>("setBounds", { windowId, width: r.bounds.width + dw, height: r.bounds.height + dh }));
+    }
+    if (!r.inner) throw new SafariError("SAFARI_ERROR", "창 안 페이지 크기를 잴 수 없음");
+    return r.inner;
+  }
+
+  async function closeWindow(windowId: number): Promise<void> {
+    requireOwnedWindow(windowId, "닫아요");
+    const r = await call<{ gone: boolean }>("closeWindow", { windowId });
+    ownedWindows.delete(windowId);
+    registry.forgetWindow(windowId);
+    if (r.gone) throw windowClosed(windowId);
+  }
+
   return {
-    listWindows: () => call<WindowInfo[]>("listWindows"),
+    async listWindows() {
+      const raw = await call<Omit<WindowInfo, "owned">[]>("listWindows");
+      return raw.filter((w) => w.visible).map((w) => ({ ...w, owned: ownedWindows.has(w.id) }));
+    },
 
     async listTabs() {
       const raw = await call<RawTab[]>("listTabs");
@@ -110,6 +163,50 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): Safar
       return { tab, frontAppChanged: before !== after };
     },
 
+    async openWindow(url, o = {}) {
+      const before = await frontAsn();
+      const key = registry.nextKey();
+      const args = { url, key: registry.markerOf(key) };
+      type Opened = { windowId: number; tab: RawTab; stamped: boolean };
+      let raw: Opened;
+      try {
+        raw = await call<Opened>("openWindow", args, OPEN_WINDOW_TIMEOUT_MS);
+      } catch (e) {
+        if (!(e instanceof SafariError && e.code === "SAFARI_NOT_RUNNING")) throw e;
+        await launchSafari();
+        raw = await call<Opened>("openWindow", args, OPEN_WINDOW_TIMEOUT_MS);
+      }
+      ownedWindows.add(raw.windowId);
+      registry.register(key, raw.windowId, raw.tab.index, raw.tab.url, { owned: true, stamped: raw.stamped });
+      if (o.width !== undefined || o.height !== undefined) {
+        try {
+          const cur = liveState(raw.windowId, await windowState(raw.windowId));
+          await resizeTo(raw.windowId, o.width ?? cur.inner?.innerWidth ?? 0, o.height ?? cur.inner?.innerHeight ?? 0);
+        } catch (e) {
+          await closeWindow(raw.windowId).catch(() => undefined); // 크기를 못 맞추면 연 창을 치우고 알린다
+          throw e;
+        }
+      }
+      const after = await frontAsn();
+      return { windowId: raw.windowId, tab: toTab({ raw: raw.tab, key, owned: true }), frontAppChanged: before !== after };
+    },
+
+    async setWindowSize(windowId, width, height) {
+      requireOwnedWindow(windowId, "크기를 바꿔요");
+      return resizeTo(windowId, width, height);
+    },
+
+    closeWindow,
+
+    async captureWindow(windowId) {
+      if ((await windowState(windowId, false)).gone) throw windowClosed(windowId);
+      return captureWindowPng(windowId);
+    },
+
+    async screenCaptureAllowed() {
+      return (await call<boolean>("screenAccess")) === true;
+    },
+
     runJs(tabKey, source, o = {}) {
       return registry.withTab(tabKey, (s) => call<Guarded<string>>("runJs", { ...guardArgs(s), source }, o.timeoutMs));
     },
@@ -126,7 +223,27 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number } = {}): Safar
       return { navigated: r.navigated, leaving: r.leaving, tab: toTab({ raw: r.tab, key: tabKey, owned: registry.isOwned(tabKey) }) };
     },
 
-    closeOwned: () => registry.closeOwned(),
+    async closeOwned() {
+      // 우리 창부터(그 안의 탭도 함께 닫힌다), 남은 우리 탭을 닫는다. 창 안의 탭은 따로 세지 않는다.
+      let closed = 0;
+      let firstError: unknown;
+      for (const id of [...ownedWindows]) {
+        try {
+          await closeWindow(id);
+          closed++;
+        } catch (err) {
+          if (err instanceof SafariError && err.code === "WINDOW_CLOSED") continue; // 이미 없다
+          firstError ??= err;
+        }
+      }
+      try {
+        closed += await registry.closeOwned();
+      } catch (err) {
+        firstError ??= err;
+      }
+      if (firstError) throw firstError;
+      return closed;
+    },
 
     close: () => host.close(),
   };

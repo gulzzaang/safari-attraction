@@ -25,7 +25,7 @@ function insertAtFront(windowId: number, url: string): void {
 function closeDirectly(url: string): void {
   if (!url.includes(RUN)) throw new Error('꼬리표 없는 주소는 닫지 않는다');
   jxa(`const S = Application("Safari"); let n = 0;
-       S.windows().forEach((w) => { const urls = w.tabs.url();
+       S.windows().forEach((w) => { let urls; try { urls = w.tabs.url(); } catch (e) { return; } // 닫혔는데 목록에 남은 창은 탭을 못 읽는다
          for (let i = urls.length - 1; i >= 0; i--) if (String(urls[i]) === ${JSON.stringify(url)}) { w.tabs[i].close(); n++; } });
        String(n)`);
 }
