@@ -191,4 +191,18 @@ describe("REPL 세부", () => {
     const r2 = await s.run('await sleep(250); console.log("mine")');
     expect(r2).toEqual({ output: "mine" });
   });
+
+  test("드라이버 호출을 기다리던 늦은 코드의 출력도 다음 호출에 안 섞인다", async () => {
+    d.answer = () => new Promise((r) => setTimeout(() => r("1"), 150)) as Promise<string>;
+    await s.run('await openTab("http://a/")');
+    const r1 = await s.run('await page.evaluate("1"); console.log("zombie-driver")', { timeoutMs: 30 });
+    expect(r1.error).toMatch(/시간/);
+    const r2 = await s.run('await sleep(250); console.log("mine")');
+    expect(r2).toEqual({ output: "mine" });
+  });
+
+  test("호출 하나 안에서는 await · 타이머 뒤에도 자기 출력에 찍힌다", async () => {
+    const r = await s.run('setTimeout(() => console.log("t"), 10); await new Promise((r) => setTimeout(r, 40)); await Promise.resolve(); console.log("p")');
+    expect(r).toEqual({ output: "t\np" });
+  });
 });

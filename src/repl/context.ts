@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import vm from "node:vm";
 import { inspect } from "node:util";
 import { SafariError, type SafariDriver, type TabInfo } from "../driver/types.js";
@@ -45,50 +46,27 @@ const errorText = (e: unknown): string => {
 export function createReplSession(driver: SafariDriver): ReplSession {
   const store = new SnapshotStore();
   const owned = new Set<string>();
-  // 호출마다 출력 칸(slot)을 따로 둔다. 끝난 호출의 칸은 닫혀서, 시간 초과 뒤에 늦게 도는 코드가 찍어도 버려진다.
+  // 호출마다 출력 칸(slot)을 따로 둔다. AsyncLocalStorage 가 칸을 await · 타이머 · 드라이버 호출을 건너 따라가므로,
+  // 시간 초과로 끝난 호출의 코드가 나중에 찍어도 닫힌 칸에 찍혀 버려진다(다음 호출 출력에 섞이지 않는다).
   type Slot = { buf: OutputBuffer; closed: boolean };
-  let active: Slot | null = null; // 지금 도는 호출
-  let cur: Slot | null = null; // 지금 코드가 속한 호출(타이머 · sleep 이 깨울 때는 그것을 건 호출)
+  const slots = new AsyncLocalStorage<Slot>();
   let queue: Promise<unknown> = Promise.resolve();
 
-  /** 타이머 · sleep 이 코드를 깨울 때, 그 코드를 건 호출의 칸에 찍게 한다(이어지는 마이크로태스크가 다 돈 뒤 되돌린다). */
-  const runAs = (slot: Slot | null, f: () => void) => {
-    cur = slot;
-    try {
-      f();
-    } finally {
-      setImmediate(() => {
-        cur = active;
-      });
-    }
-  };
-  const wrapTimer = (timer: typeof setTimeout | typeof setInterval) =>
-    ((cb: unknown, ms?: number, ...args: unknown[]) => {
-      if (typeof cb !== "function") return timer(cb as never, ms);
-      const slot = cur;
-      return timer(() => runAs(slot, () => cb(...args)), ms);
-    }) as unknown;
-
-  const sleep = (ms: number) => {
-    const slot = cur;
-    return new Promise<void>((r) => setTimeout(() => runAs(slot, r), Number(ms) || 0));
-  };
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, Number(ms) || 0));
   const log = (...args: unknown[]) => {
-    if (cur && !cur.closed) cur.buf.log(...args);
+    const slot = slots.getStore();
+    if (slot && !slot.closed) slot.buf.log(...args);
   };
 
   const sandbox: Record<string, unknown> = {
     page: null,
     console: { log, info: log, warn: log, error: log, debug: log },
     sleep,
-    setTimeout: wrapTimer(setTimeout),
+    setTimeout,
     clearTimeout,
-    setInterval: wrapTimer(setInterval),
+    setInterval,
     clearInterval,
-    queueMicrotask: (cb: () => void) => {
-      const slot = cur;
-      queueMicrotask(() => runAs(slot, cb));
-    },
+    queueMicrotask,
     structuredClone,
     URL,
     URLSearchParams,
@@ -208,12 +186,11 @@ export function createReplSession(driver: SafariDriver): ReplSession {
   async function exec(code: string, timeoutMs: number): Promise<{ output: string; error?: string }> {
     const slot: Slot = { buf: new OutputBuffer(), closed: false };
     const buf = slot.buf;
-    active = cur = slot;
     let timer: NodeJS.Timeout | undefined;
     let error: string | undefined;
     try {
       const script = new vm.Script(hoistTopLevel(code), { filename: "repl.js" });
-      const done = script.runInContext(ctx, { timeout: timeoutMs }) as Promise<unknown>;
+      const done = slots.run(slot, () => script.runInContext(ctx, { timeout: timeoutMs }) as Promise<unknown>);
       done.catch(() => {}); // 시간 초과 뒤에 늦게 거부돼도 처리 안 된 거부로 남지 않게
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`시간 초과: ${Math.round(timeoutMs / 1000)}초 안에 끝나지 않음(코드는 계속 돌 수 있음)`)), timeoutMs);
@@ -224,7 +201,6 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     } finally {
       clearTimeout(timer);
       slot.closed = true;
-      active = cur = null;
     }
     return error === undefined ? { output: buf.text() } : { output: buf.text(), error };
   }
