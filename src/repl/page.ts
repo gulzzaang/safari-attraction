@@ -46,6 +46,11 @@ export class Page {
     readonly key: string,
   ) {}
 
+  /** console.log(page) 가 드라이버 안쪽까지 쏟아내지 않게. */
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return `Page { key: '${this.key}' }`;
+  }
+
   /** 이동한 뒤 새 문서가 다 뜰 때까지(waitForLoadState)까지 기다린다. */
   async goto(url: string): Promise<void> {
     await this.act("goto", { url });
