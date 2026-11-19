@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import vm from "node:vm";
 import { inspect } from "node:util";
-import { SafariError, type SafariDriver, type TabInfo } from "../driver/types.js";
+import { SafariError, type SafariDriver, type SafariErrorCode, type TabInfo } from "../driver/types.js";
 import { buildSnapshotSource, type SnapshotOptions } from "../snapshot/inpage.js";
 import { SnapshotStore } from "../snapshot/store.js";
 import { Page } from "./page.js";
@@ -9,7 +9,7 @@ import { OutputBuffer } from "./output.js";
 import { hoistTopLevel } from "./transform.js";
 
 export interface ReplSession {
-  run(code: string, opts?: { timeoutMs?: number }): Promise<{ output: string; error?: string }>;
+  run(code: string, opts?: { timeoutMs?: number }): Promise<{ output: string; error?: string; errorCode?: SafariErrorCode }>;
   /** 우리가 연 탭을 닫고 기억을 비운다. 드라이버 자체는 닫지 않는다(부른 쪽 몫). */
   dispose(): Promise<void>;
 }
@@ -183,11 +183,12 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     throw new Error("화면 찍기는 AI 전용 창 방식(계획 2)에서 됩니다");
   };
 
-  async function exec(code: string, timeoutMs: number): Promise<{ output: string; error?: string }> {
+  async function exec(code: string, timeoutMs: number): Promise<{ output: string; error?: string; errorCode?: SafariErrorCode }> {
     const slot: Slot = { buf: new OutputBuffer(), closed: false };
     const buf = slot.buf;
     let timer: NodeJS.Timeout | undefined;
     let error: string | undefined;
+    let errorCode: SafariErrorCode | undefined;
     try {
       const script = new vm.Script(hoistTopLevel(code), { filename: "repl.js" });
       const done = slots.run(slot, () => script.runInContext(ctx, { timeout: timeoutMs }) as Promise<unknown>);
@@ -197,12 +198,14 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       });
       await Promise.race([done, timeout]);
     } catch (e) {
+      if (e instanceof SafariError) errorCode = e.code;
       error = (e as { code?: string })?.code === "ERR_SCRIPT_EXECUTION_TIMEOUT" ? `시간 초과: ${Math.round(timeoutMs / 1000)}초 안에 끝나지 않음` : errorText(e);
     } finally {
       clearTimeout(timer);
       slot.closed = true;
     }
-    return error === undefined ? { output: buf.text() } : { output: buf.text(), error };
+    if (error === undefined) return { output: buf.text() };
+    return errorCode ? { output: buf.text(), error, errorCode } : { output: buf.text(), error };
   }
 
   return {
