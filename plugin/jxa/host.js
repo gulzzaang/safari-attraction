@@ -2,10 +2,35 @@
 // stdin 으로 한 줄에 요청 하나 `{id, op, args}` 를 받아
 // stdout 으로 한 줄에 답 하나 `{id, ok:true, value}` / `{id, ok:false, error:{message, number, code?}}` 를 쓴다.
 // Node 쪽은 한글 등을 \uXXXX 로 이스케이프해 보내므로 입력은 항상 ASCII 다(청크 경계에서 글자가 잘릴 일이 없다).
-// stdin 이 닫히면(길이 0) 끝낸다. 사파리를 켜는 일은 하지 않는다 — 꺼져 있으면 SAFARI_NOT_RUNNING 을 돌려준다.
+// stdin 이 닫히면(길이 0) 끝낸다. NSData 의 length 는 JS 숫자가 아니라서 `=== 0` 이 거짓이 된다 — 꼭 Number() 로 바꿔 비교한다.
+// 오래 기다리는 반복은 부모(Node 서버)가 사라졌는지도 본다(고아가 되면 PPID 가 바뀐다). 사파리를 켜는 일은 하지 않는다 — 꺼져 있으면 SAFARI_NOT_RUNNING 을 돌려준다.
 ObjC.import("Foundation");
+ObjC.import("unistd");
+ObjC.import("stdlib");
 
 const Safari = Application("Safari");
+const PARENT_PID = (() => {
+  try {
+    return Number($.getppid());
+  } catch (e) {
+    return 0;
+  }
+})();
+
+// 부모가 사라졌으면(고아) 곧바로 끝낸다. 못 알아내면 계속 돈다.
+function exitIfOrphaned() {
+  let orphan = false;
+  try {
+    orphan = PARENT_PID > 1 && Number($.getppid()) !== PARENT_PID;
+  } catch (e) {}
+  if (orphan) $.exit(0);
+}
+
+// delay 대신 쓴다 — 기다리기 전에 부모가 살아 있는지 본다.
+function nap(sec) {
+  exitIfOrphaned();
+  delay(sec);
+}
 const stdin = $.NSFileHandle.fileHandleWithStandardInput;
 const stdout = $.NSFileHandle.fileHandleWithStandardOutput;
 
@@ -98,14 +123,14 @@ function finishRebind(args, tab) {
         if (isJsOffError(e)) throw e;
       }
       if (ready || Date.now() - t1 > budget) break;
-      delay(0.05);
+      nap(0.05);
     }
     const again = probeTab(args.windowId, args.index);
     if (!again) return { status: "gone" };
     if (again.marker !== "" && again.marker !== args.key) return { status: "other" };
     stampTab(tab, args.key);
     if (readMarker(tab) === args.key) break;
-    delay(0.1);
+    nap(0.1);
   }
   const win = Safari.windows.byId(args.windowId);
   return {
@@ -143,11 +168,20 @@ function isMinimized(w) {
   }
 }
 
+// 탭을 읽을 수 있는가(닫힌 채 남은 창은 탭이 0 개이거나 읽다가 오류가 난다).
+function hasReadableTabs(w) {
+  try {
+    return w.tabs.length > 0;
+  } catch (e) {
+    return false;
+  }
+}
+
 // 닫힌 창인가. 닫은 창은 한참(몇 분) 사파리 창 목록에 남아 visible() 이 false 가 되고 탭이 없다.
-// visible() 이 false 여도 최소화한 창이면 닫힌 것이 아니다.
+// visible() 이 false 여도 최소화한 창이거나, 탭을 그대로 읽을 수 있는 창(사파리를 숨겼거나 — Cmd-H — 다른 Space · 전체 화면에 있는 창)이면 닫힌 것이 아니다.
 function isGone(w) {
   try {
-    return w.visible() === false && !isMinimized(w);
+    return w.visible() === false && !isMinimized(w) && !hasReadableTabs(w);
   } catch (e) {
     return true;
   }
@@ -227,7 +261,7 @@ function waitForLoad(tab, args, onJsOff) {
     const ready = state.slice(sp + 1) === "complete";
     if (ready && href !== "" && (blank || href !== "about:blank")) break;
     if (Date.now() - t0 > budget) break;
-    delay(0.05);
+    nap(0.05);
   }
 }
 
@@ -285,7 +319,7 @@ const ops = {
         if (m !== args.key) break;
         const waited = Date.now() - t0;
         if (waited > (u !== args.url ? 5000 : 1500)) break;
-        delay(0.05);
+        nap(0.05);
       }
     }
     return finishRebind(args, tab);
@@ -336,7 +370,7 @@ const ops = {
       const wins = normalWindows();
       if (wins.length === 0) {
         Safari.make({ new: "document", withProperties: { url: args.url } });
-        delay(0.3);
+        nap(0.3);
         const again = normalWindows();
         if (again.length === 0) throw new Error("새 창을 만들지 못함");
         win = again[0];
@@ -372,7 +406,7 @@ const ops = {
     const findNew = () => Safari.windows().filter((w) => before.indexOf(w.id()) < 0 && !isGone(w));
     let created = findNew();
     for (let i = 0; i < 100 && created.length === 0; i++) {
-      delay(0.1);
+      nap(0.1);
       created = findNew();
     }
     // 어느 창이 우리 것인지 모르면 아무것도 닫지 않는다(사용자 창을 닫을 수 있으니).
@@ -386,7 +420,7 @@ const ops = {
       const others = normalWindows().filter((w) => w.id() !== windowId);
       if (others.length > 0) win().index = Math.max.apply(null, others.map((w) => w.index()));
 
-      for (let i = 0; i < 50 && win().tabs.length === 0; i++) delay(0.1);
+      for (let i = 0; i < 50 && win().tabs.length === 0; i++) nap(0.1);
       const tab = () => win().tabs[0];
       // 만들자마자 표시를 한 번 적어 둔다(시간을 넘겨 치울 때 우리 창을 알아보는 단서. 새 문서가 뜨면 지워질 수 있다).
       if (args.key) stampTab(tab(), args.key);
@@ -460,7 +494,7 @@ const ops = {
       width: args.width,
       height: args.height,
     };
-    delay(0.3);
+    nap(0.3);
     return windowState(w);
   },
 
@@ -469,7 +503,7 @@ const ops = {
     const w = aliveWindow(args.windowId);
     if (!w) return { gone: true };
     w.close();
-    for (let i = 0; i < 30 && aliveWindow(args.windowId); i++) delay(0.1);
+    for (let i = 0; i < 30 && aliveWindow(args.windowId); i++) nap(0.1);
     return { gone: false, closed: aliveWindow(args.windowId) === null };
   },
 
@@ -551,7 +585,7 @@ function handle(line) {
 let buffer = "";
 for (;;) {
   const data = stdin.availableData;
-  if (data.length === 0) break; // stdin 닫힘
+  if (Number(data.length) === 0) break; // stdin 닫힘
   const chunk = ObjC.unwrap($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding));
   buffer += chunk;
   let nl;

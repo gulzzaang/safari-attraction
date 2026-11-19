@@ -1,6 +1,6 @@
 # 사파리-어트랙션
 
-Claude 가 박정욱의 실제 로그인된 사파리를 몰 수 있게 하는 로컬 TypeScript MCP 서버. 계속 떠 있는 `osascript -l JavaScript` 프로세스 하나로 사파리를 움직이고, Aside 브라우저의 `repl` 처럼 자바스크립트 한 덩어리로 열기 · 읽기 · 입력 · 클릭을 한다. 새 탭은 뒤쪽 탭으로 열려 사용자 화면을 가로채지 않는다. 서버가 끝나면 Claude 가 연 탭은 모두 닫힌다(사용자 탭은 건드리지 않는다).
+Claude 가 사용자의 실제 로그인된 사파리를 몰 수 있게 하는 로컬 TypeScript MCP 서버. 계속 떠 있는 `osascript -l JavaScript` 프로세스 하나로 사파리를 움직이고, Aside 브라우저의 `repl` 처럼 자바스크립트 한 덩어리로 열기 · 읽기 · 입력 · 클릭을 한다. 새 탭은 뒤쪽 탭으로 열려 사용자 화면을 가로채지 않는다. 서버가 끝나면 Claude 가 연 탭은 모두 닫힌다(사용자 탭은 건드리지 않는다).
 
 macOS 와 사파리가 필요하다. Node 는 플러그인 · 홈브루(자동으로 깔림) · 소스 빌드 때만 쓴다(플러그인 Node 18 이상, 소스에서 빌드 · 시험은 Node 20 이상). `.mcpb` 는 Claude 앱이 가진 Node 를 쓴다.
 
@@ -113,6 +113,7 @@ claude mcp add --scope user safari-attraction -- <node 절대경로> <저장소 
 - `await` 뒤에서 이벤트 루프를 막는 코드(예: `await x; while (true) {}`)는 서버를 멈출 수 있다. 쓰지 않는다.
 - 입력 · 클릭은 진짜 마우스 · 키보드가 아니라 페이지 안 이벤트로 보내진다.
 - 사파리 스크립트로는 개인정보 보호 창과 일반 창을 구별할 수 없어 맨 앞 창을 그대로 쓴다. 개인정보 보호 창이 맨 앞이면 거기에 탭이 열릴 수 있다.
+- 서버가 정리 단계를 거치기 전에 강제로 죽으면(SIGKILL 등) Claude 가 연 탭 · 창이 그대로 남을 수 있다. 그럴 땐 직접 닫는다.
 - AI 창 크기와 `innerWidth` 는 사파리 창 최소 폭(약 336px)과 화면 크기에 묶인다.
 
 ## 개발
@@ -133,5 +134,6 @@ SAFARI_IT=1 npx vitest run test/integration/tabs.it.test.ts   # 통합 시험(�
 1. `src/version.ts` 의 `VERSION` 을 올리고, `test/unit/version-sync.test.ts` 가 확인하는 자리를 모두 같은 값으로 맞춘다: `package.json` · `package-lock.json`(루트 두 곳) · `plugin/.claude-plugin/plugin.json` · `.claude-plugin/marketplace.json` · `mcpb/manifest.json` · `Formula/safari-attraction.rb`(`tag: "vX.Y.Z"`).
 2. `npm test` 로 버전 맞춤 시험을 포함한 단위 시험을 통과시킨다.
 3. `npm run build` (`plugin/server.mjs` 갱신) → `npm run pack:mcpb` (`out-mcpb/safari-attraction-X.Y.Z.mcpb` 생성).
-4. 커밋 → 태그 `vX.Y.Z` → `main` 과 태그 push.
-5. GitHub 릴리스를 만들고 `.mcpb` 파일을 붙인다.
+4. `npm run check:bundle` 로 커밋한 `plugin/server.mjs` · `plugin/jxa/host.js` 가 지금 `src/` 에서 다시 만든 것과 같은지 확인한다(다르면 3번을 다시 한다).
+5. 커밋 → 태그 `vX.Y.Z` → `main` 과 태그 push.
+6. GitHub 릴리스를 만들고 `.mcpb` 파일을 붙인다.

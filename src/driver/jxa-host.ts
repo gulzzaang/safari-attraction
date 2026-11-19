@@ -79,6 +79,14 @@ export class JxaHost {
       this.stderrTail = (this.stderrTail + d.toString()).slice(-2000);
     });
     child.stdin!.on("error", () => {});
+    // Node 가 어떤 길로 끝나든(process.exit 포함) 호스트가 고아로 남지 않게 동기로 죽인다. 호스트가 끝나면 이 귀를 뗀다.
+    const killOnExit = (): void => {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+    };
+    process.once("exit", killOnExit);
+    child.once("exit", () => process.removeListener("exit", killOnExit));
     child.on("error", (e) => this.onChildGone(child, `osascript 를 띄우지 못함: ${e.message}`));
     child.on("exit", (code, signal) =>
       this.onChildGone(child, `JXA 호스트가 끝남(code=${code}, signal=${signal}) ${this.stderrTail.trim()}`),

@@ -11,7 +11,8 @@
     "build": "tsc && mkdir -p dist/src/driver/jxa && cp src/driver/jxa/host.js dist/src/driver/jxa/host.js && npm run bundle",
     "test": "vitest run",
     "it": "SAFARI_IT=1 vitest run --config vitest.config.ts",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node18 --minify --keep-names --legal-comments=eof --banner:js=\"import { createRequire as __cr } from \\\"node:module\\\"; const require = __cr(import.meta.url);\" --outfile=plugin/server.mjs && mkdir -p plugin/jxa && cp src/driver/jxa/host.js plugin/jxa/host.js"
+    "bundle": "sh scripts/bundle.sh plugin/server.mjs && mkdir -p plugin/jxa && cp src/driver/jxa/host.js plugin/jxa/host.js",
+    "check:bundle": "sh scripts/check-bundle.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

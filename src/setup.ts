@@ -18,7 +18,8 @@ export interface SetupOptions {
   desktop: boolean;
   serverCommand: ServerCommand;
   home: string;
-  exec: (cmd: string, args: string[]) => Promise<ExecResult>;
+  /** timeoutMs 를 안 주면 기본 시간 제한을 쓴다. */
+  exec: (cmd: string, args: string[], timeoutMs?: number) => Promise<ExecResult>;
   now: () => Date;
   log: (s: string) => void;
   /** 끝에 붙일 점검 결과 글을 만든다(드라이버를 쓸 수 있을 때만 넘긴다). 미리 보기에서는 부르지 않는다. */
@@ -26,6 +27,9 @@ export interface SetupOptions {
 }
 
 const NAME = "safari-attraction";
+
+/** `claude mcp list` 가 기다려 줄 시간. 등록된 서버를 전부 건강 확인하므로 넉넉히 둔다. */
+export const MCP_LIST_TIMEOUT_MS = 120_000;
 
 /**
  * 등록할 명령. 홈브루 래퍼가 SAFARI_ATTRACTION_BIN 으로 버전이 안 들어간 경로를 넘기면 그것을 쓰고,
@@ -49,8 +53,10 @@ const sameCommand = (v: unknown, c: ServerCommand) =>
 /** @returns 실패하면 false */
 async function setupClaudeCode(o: SetupOptions): Promise<boolean> {
   let listing: ExecResult;
+  // `claude mcp list` 는 등록된 서버를 하나씩 살펴보느라 오래 걸릴 수 있다.
+  o.log("Claude Code 등록 상태를 확인하는 중이에요(최대 2분 걸릴 수 있어요)…");
   try {
-    listing = await o.exec("claude", ["mcp", "list"]);
+    listing = await o.exec("claude", ["mcp", "list"], MCP_LIST_TIMEOUT_MS);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") {
       o.log("Claude Code(claude 명령)를 찾지 못해 건너뜁니다");

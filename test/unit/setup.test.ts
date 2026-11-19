@@ -211,6 +211,20 @@ describe("setup — Claude Code", () => {
     expect(JSON.parse(readFileSync(cfgPath, "utf8")).mcpServers["safari-attraction"]).toEqual(CMD);
   });
 
+  test("claude mcp list 는 120초까지 기다리고, 확인 중이라는 안내를 먼저 한 줄 보여 준다", async () => {
+    mkdirSync(cfgDir, { recursive: true });
+    const timeouts: Array<number | undefined> = [];
+    const m = make(emptyList, {
+      exec: async (_c, args, timeoutMs) => {
+        if (args[1] === "list") timeouts.push(timeoutMs);
+        return args[1] === "list" ? emptyList : { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(await runSetup(m.opts)).toBe(0);
+    expect(timeouts).toEqual([120_000]);
+    expect(m.text()).toContain("Claude Code 등록 상태를 확인하는 중이에요(최대 2분 걸릴 수 있어요)…");
+  });
+
   test("claude mcp list 가 실패하면(0 이 아닌 코드) 「확인하지 못했어요」 + 직접 할 명령, add 는 안 부르고 1", async () => {
     const m = make({ code: 3, stdout: "", stderr: "Error: broken\nmore detail" });
     expect(await runSetup(m.opts)).toBe(1);
