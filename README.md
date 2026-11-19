@@ -47,18 +47,26 @@ claude mcp add --scope user safari-attraction -- <node 절대경로> <저장소 
 
 ## 도구 두 개
 
-- `repl` — 사파리를 자바스크립트로 조작한다. `openTab(url)`, `attachActiveBrowserTab()`, `snapshot()`, `page.locator(...).click()/.fill()`, `page.evaluate(...)`, `fetch(url)` 등. 최상위 `await` 가 되고 `const` · 함수는 다음 호출에도 남는다. 값은 `console.log` 로 찍어야 보인다. 자세한 사용법은 도구 설명에 들어 있다.
-- `status` — 사파리가 켜져 있는지, 창 수, 「Apple 이벤트의 JavaScript 허용」과 자동화 허락 상태를 알려 준다. 빈 탭을 잠깐 열었다 닫는다.
+- `repl` — 사파리를 자바스크립트로 조작한다. `openTab(url)`, `attachActiveBrowserTab()`, `snapshot()`, `page.locator(...).click()/.fill()`, `page.evaluate(...)`, `fetch(url)` 등. 최상위 `await` 가 되고 `const` · 함수는 다음 호출에도 남는다. 값은 `console.log` 로 찍어야 보인다. 자세한 사용법은 도구 설명에 들어 있다. 계획 2에서 아래 기능이 더해졌다.
+  - **AI 창** — `openAiWindow(url, {width, height})` 가 Claude 전용 사파리 창을 사용자 창 맨 뒤에 열고(앞 앱을 안 바꾼다) 그 안의 탭을 돌려준다. `page.setViewportSize({width, height})` 로 휴대폰 폭(390×844 등)을 맞춘다. 실제 크기를 돌려주고, 사파리 창은 약 336px 보다 좁게 못 줄이며 화면 높이가 작으면 높이는 그만큼만 나온다(이 개발 맥은 안쪽 높이가 약 795px 에서 멈춘다). 백그라운드 탭의 `innerWidth` 는 그 탭이 앞에 보일 때까지 늦게 바뀔 수 있다.
+  - **찍기** — `page.screenshot()` 이 AI 창 전체(주소창 포함)를 PNG(긴 변 1568px 이하)로 찍고, `display(buf)` 로 결과에 붙인다(한 호출 4장까지). `useAiWindow(id)` 로 지정한 창에서는 찍을 때 그 창의 보이는 탭이 찍는 페이지로 바뀌고 되돌리지 않는다. AI 창은 사용자 창 뒤에 있어 사파리가 그 페이지를 숨김으로 보고하므로, 찍을 때마다 그리기를 최대 1초쯤 기다린다(화면 기록 권한이 있는 맥에서 다시 확인할 것).
+  - **창 고르기** — `listWindows()` 가 열린 창(`id`, 현재 탭 제목, 탭 수, 크기, AI 창 · 작업 창 여부)을 보여 주고, `useWindow(id)` 로 `openTab` 이 열릴 창(그 창의 프로필을 따른다)을, `useAiWindow(id)` 로 이미 열어 둔 창을 AI 창으로 고른다. 사용자 창은 닫지 않는다.
+  - **깊은 읽기** — `snapshot()` 이 열린 shadow DOM 과 같은 사이트 iframe 안쪽까지 읽는다.
+- `status` — 빠진 준비를 한국어로 점검한다: 사파리 실행, 자동화 허락, 「Apple 이벤트의 JavaScript 허용」, 화면 기록(찍기용) 네 가지를 ✓ / ✗ / ? 로 보여 주고 고칠 곳을 알려 준다. 빈 탭을 잠깐 열었다 닫는다.
+
+## 화면 기록 권한(찍기용)
+
+`page.screenshot()` 은 macOS 의 화면 기록 권한이 있어야 한다. 시스템 설정 ▸ 개인정보 보호 및 보안 ▸ **화면 및 시스템 오디오 녹음** 에서 Claude 를 돌리는 앱(터미널 · Claude 앱 등)을 켜고, 그 앱을 다시 시작한다. 없으면 찍기가 `SCREEN_CAPTURE_DENIED` 안내 오류를 내고 다른 기능은 그대로 된다. 화면이 잠겨 있어도 찍지 못한다.
 
 ## 알려진 한계
 
-- `snapshot()` 은 iframe 안과 shadow DOM 안을 읽지 못한다.
+- `snapshot()` 은 닫힌 shadow root 와 다른 사이트(또는 sandbox 된) iframe 안쪽을 읽지 못한다. 그런 곳은 한 줄로만 보이고 안쪽은 읽지 않는다. 그 안에서 Enter 로 제출해 이동하는 것은 이동으로 감지되지 않을 수 있다.
 - `page.evaluate` 는 함수 하나나 식 하나만 받는다(여러 문장은 함수로 감싼다). 결과는 JSON 으로 오가서 DOM · 함수는 돌려받지 못하고, 바깥 변수는 못 쓰니 인자로 넘긴다.
 - `fetch` 는 현재 `page` 안에서 돌아 그 페이지의 쿠키로 나가고 CORS · CSP 를 따른다. 돌려주는 값은 `{status, ok, statusText, url, headers(보통 객체), text(), json()}` 모양이다.
 - `await` 뒤에서 이벤트 루프를 막는 코드(예: `await x; while (true) {}`)는 서버를 멈출 수 있다. 쓰지 않는다.
 - 입력 · 클릭은 진짜 마우스 · 키보드가 아니라 페이지 안 이벤트로 보내진다.
 - 사파리 스크립트로는 개인정보 보호 창과 일반 창을 구별할 수 없어 맨 앞 창을 그대로 쓴다. 개인정보 보호 창이 맨 앞이면 거기에 탭이 열릴 수 있다.
-- 화면 찍기 · `display()` 는 아직 없다(계획 2에서 AI 전용 창 방식으로 만든다).
+- AI 창 크기와 `innerWidth` 는 사파리 창 최소 폭(약 336px)과 화면 크기에 묶인다.
 
 ## 개발
 
@@ -68,5 +76,7 @@ SAFARI_IT=1 npx vitest run test/integration/tabs.it.test.ts   # 통합 시험(�
 ```
 
 `src/` 를 고치면 `npm run build` 로 `plugin/server.mjs` 도 다시 만들어 함께 커밋한다(플러그인은 설치할 때 빌드하지 않는다).
+
+측정은 `npm run build && node dist/scripts/bench.js`(진짜 사파리를 쓴다. 자기가 연 탭 · AI 창만 열고 끝에 닫는다).
 
 통합 시험은 자기가 연 탭에만 표시를 달아 열고 닫으며 사용자 탭은 건드리지 않는다. `spikes/` 에는 `.mcpb` 안에서 osascript 가 도는지 · 사파리 창 최소 폭을 재 보는 첫 시험이 들어 있다.

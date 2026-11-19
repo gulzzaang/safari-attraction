@@ -110,6 +110,29 @@ console.log(await w1.evaluate(() => { const m = document.body.innerText.match(/8
   const loggedIn = !gh.isError && ghUrl.startsWith("https://github.com/") && !/\/login/.test(ghUrl);
   mark("깃허브 뒤");
 
+  // 3-2. AI 전용 창(계획 2): 열기 · 휴대폰 폭 · 찍기. 화면 기록 권한이 없으면 찍기는 「권한 없음」으로 적는다.
+  const aiOpen = await repl("AI 창 열기", `const aiw = await openAiWindow(${JSON.stringify(WIKI_SEOUL)}, {width: 390, height: 844}); console.log(await aiw.title())`);
+  mark("AI 창 열기 뒤");
+  await repl("AI 창 안정 대기", "await sleep(1500)");
+  const aiSize = await repl(
+    "AI 창 휴대폰 폭",
+    `const aiSz = await aiw.setViewportSize({width: 390, height: 844});
+console.log(JSON.stringify(aiSz));
+console.log(JSON.stringify(await aiw.evaluate(() => ({w: window.innerWidth, h: window.innerHeight}))));`,
+  );
+  const aiShot = await repl(
+    "AI 창 찍기",
+    `const aiT0 = Date.now();
+try { const aiBuf = await aiw.screenshot(); display(aiBuf); console.log("OK " + (Date.now() - aiT0) + "ms " + aiBuf.length + "B"); }
+catch (e) { console.log("ERR " + (Date.now() - aiT0) + "ms " + String(e && e.message || e).slice(0, 300)); }`,
+  );
+  const aiWins = await repl("창 목록", "console.log(JSON.stringify((await listWindows()).map((w) => ({id: w.id, tabs: w.tabCount, w: w.width, h: w.height, ai: w.isAiWindow}))))");
+  mark("AI 창 찍기 뒤");
+  const aiClose = await repl("AI 창 탭 닫기", "await closeTab(aiw)");
+  const aiSizeLines = aiSize.text.trim().split("\n");
+  const aiShotOk = /^OK /m.test(aiShot.text);
+  const aiDenied = /SCREEN_CAPTURE_DENIED|화면 기록|권한/.test(aiShot.text);
+  
   // 4. 끝 정리
   const left = await repl("남은 탭 닫기", "for (const t of [...tabs]) await closeTab(t); console.log(tabs.length)");
   await client.close();
@@ -126,6 +149,9 @@ console.log(await w1.evaluate(() => { const m = document.body.innerText.match(/8
     ["1000픽셀 내린 뒤 읽기", "1.91초 · 861자", `${sec(scrolled.ms)} · 바뀐 곳 ${chars(scrolled)} (전체 ${full.text.trim()}자, ${sec(full.ms)})`, "참고"],
     ["에베레스트 검색 과제", "2번 호출 · 2.9초 · 첫 시도 성공", `${taskCalls}번 호출 · ${sec(taskMs)} · ${found ? "성공 " + found : "실패"}`, found && taskCalls <= 3 ? "통과(≤3호출 · 8,848.86 m)" : "못 맞춤"],
     ["깃허브 로그인", "(해당 없음)", loggedIn ? `로그인 그대로(${ghUrl})` : `/login 이거나 실패(${ghUrl || gh.text.slice(0, 80)})`, loggedIn ? "통과" : "못 맞춤"],
+    ["AI 창 열기(390×844)", "(계획 2 새 항목)", `${sec(aiOpen.ms)} · ${aiOpen.isError ? "오류: " + aiOpen.text.slice(0, 80) : "열림"}`, aiOpen.isError ? "못 맞춤" : "참고"],
+    ["AI 창 폭 390", "(계획 2 새 항목)", `setViewportSize ${aiSizeLines[0] ?? ""} · 페이지 안 ${aiSizeLines[1] ?? ""} (${sec(aiSize.ms)})`, /"w":390/.test(aiSizeLines[1] ?? "") ? "통과(폭 390)" : "못 맞춤"],
+    ["AI 창 찍기", "(계획 2 새 항목)", aiShotOk ? aiShot.text.trim().split("\n")[0]! : aiDenied ? "권한 없음(화면 기록)" : "실패: " + aiShot.text.slice(0, 120), aiShotOk ? "참고(시간)" : aiDenied ? "권한 없음으로 기록" : "못 맞춤"],
     ["앞 창", "안 가져감", frontSame ? `안 가져감(${frontStart} 그대로)` : "바뀜: " + fronts.join(" / "), frontSame ? "통과" : "못 맞춤"],
   ];
 
@@ -134,6 +160,8 @@ console.log(await w1.evaluate(() => { const m = document.body.innerText.match(/8
   console.log("\n검색 과제 시도 기록:\n" + attemptLog.map((l) => "- " + l).join("\n"));
   console.log(`\n검색 과제 도착 주소: ${landedUrl}`);
   console.log("앞 앱 기록: " + fronts.join(" / "));
+  console.log("AI 창 찍기 원문: " + aiShot.text.replace(/\n/g, " | ").slice(0, 400));
+  console.log("창 목록: " + aiWins.text.trim() + (aiClose.isError ? " (AI 탭 닫기 오류: " + aiClose.text.slice(0, 80) + ")" : ""));
   console.log(`정리: 남은 탭 ${left.text.trim()}개`);
   console.log("\n--- 처음 읽기 앞부분 ---\n" + first.text.slice(0, 400));
   console.log("\n--- 다시 읽기 ---\n" + again.text.slice(0, 200));
