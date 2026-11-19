@@ -90,6 +90,11 @@ export interface SafariDriver {
   closeWindow(windowId: number): Promise<void>;
   /** 창을 PNG 로 찍는다(긴 변 1568px 이하). 화면 기록 권한이 없으면 SCREEN_CAPTURE_DENIED, 닫힌 창이면 WINDOW_CLOSED. */
   captureWindow(windowId: number): Promise<Buffer>;
+  /**
+   * 우리가 연 창 안의 탭을 그 창의 현재 탭(화면에 보이는 탭)으로 만든다 — 찍기 전에 쓴다. 사파리를 앞으로 가져오지 않고, 우리 창이 아닌 곳의 탭이면
+   * SAFARI_ERROR(사용자 창은 건드리지 않는다). 탭이 없으면 TAB_CLOSED.
+   */
+  showTab(tabKey: string): Promise<void>;
   /** 이 앱에 화면 기록 권한이 있는가(CGPreflightScreenCaptureAccess). */
   screenCaptureAllowed(): Promise<boolean>;
   /** 이 드라이버가 연 창과 탭을 모두 닫는다(사용자 창 · 탭은 그대로). 닫은 수(우리 창 안의 탭은 따로 세지 않는다)를 돌려준다. */

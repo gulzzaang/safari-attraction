@@ -20,6 +20,13 @@ describe("toKorean(오류 → 한국어 안내)", () => {
     }
   });
 
+  test("화면 찍기 권한 · 닫힌 AI 창은 정해 둔 한국어 안내", () => {
+    expect(toKorean(new SafariError("SCREEN_CAPTURE_DENIED", "원문"))).toContain(
+      "화면 찍기 권한이 없어요. 시스템 설정 → 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 Claude 를 띄운 앱(터미널 · Claude 등)을 켜고, 그 앱을 다시 켜 주세요.",
+    );
+    expect(toKorean(new SafariError("WINDOW_CLOSED", "원문"))).toContain("AI 전용 창이 닫혔어요. openAiWindow() 로 다시 열 수 있어요.");
+  });
+
   test("사파리 오류가 아니면 메시지를 그대로", () => {
     expect(toKorean(new Error("앗"))).toBe("앗");
     expect(toKorean("그냥 글")).toBe("그냥 글");

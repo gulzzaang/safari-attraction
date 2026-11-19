@@ -9,6 +9,7 @@ export interface FakeCalls {
   setWindowSize: Array<{ windowId: number; width: number; height: number }>;
   closeWindow: number[];
   captureWindow: number[];
+  showTab: string[];
 }
 
 export interface FakeDriver extends SafariDriver {
@@ -32,7 +33,7 @@ export function createFakeDriver(): FakeDriver {
   const owned: TabInfo[] = [];
   let winSeq = 100;
   const ownedWindows: WindowInfo[] = [];
-  const calls: FakeCalls = { openTab: [], runJs: [], closeTab: [], settleTab: [], openWindow: [], setWindowSize: [], closeWindow: [], captureWindow: [] };
+  const calls: FakeCalls = { openTab: [], runJs: [], closeTab: [], settleTab: [], openWindow: [], setWindowSize: [], closeWindow: [], captureWindow: [], showTab: [] };
   const d: FakeDriver = {
     calls,
     userTabs: [],
@@ -49,7 +50,7 @@ export function createFakeDriver(): FakeDriver {
     },
     async openTab(url, opts) {
       calls.openTab.push({ url, windowId: opts?.windowId });
-      const tab: TabInfo = { key: `t${++seq}`, windowId: 1, index: 1 + owned.length, title: "", url, isActive: false, owned: true };
+      const tab: TabInfo = { key: `t${++seq}`, windowId: opts?.windowId ?? 1, index: 1 + owned.length, title: "", url, isActive: false, owned: true };
       owned.push(tab);
       return { tab, frontAppChanged: d.frontAppChanged };
     },
@@ -86,6 +87,12 @@ export function createFakeDriver(): FakeDriver {
       calls.captureWindow.push(windowId);
       if (!d.screenAllowed) throw new SafariError("SCREEN_CAPTURE_DENIED", "창을 찍지 못함");
       return d.png;
+    },
+    async showTab(key) {
+      calls.showTab.push(key);
+      const t = owned.find((x) => x.key === key);
+      if (!t) throw new SafariError("TAB_CLOSED", `모르는 탭 ${key}`);
+      if (!ownedWindows.some((w) => w.id === t.windowId)) throw new SafariError("SAFARI_ERROR", "Claude 가 연 창 안의 탭만 앞에 보여요");
     },
     async screenCaptureAllowed() {
       return d.screenAllowed;

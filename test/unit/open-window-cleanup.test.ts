@@ -76,3 +76,29 @@ describe("openWindow 가 시간을 넘겼을 때 새 창 치우기", () => {
     expect(calls.some((c) => c.op === "closeStamped")).toBe(false);
   });
 });
+
+describe("showTab", () => {
+  const tab = (windowId: number) => ({ windowId, index: 1, title: "", url: "http://x/", isActive: false, stamped: true });
+
+  test("우리가 연 창 안의 탭이면 호스트에 현재 탭으로 만들라고 시킨다", async () => {
+    const { calls, host } = stubHost({
+      windowIds: [1],
+      openWindow: { windowId: 5, tab: { windowId: 5, index: 1, title: "", url: "http://x/", isActive: true }, stamped: true },
+      runJs: { value: "1", url: "http://x/" },
+      showTab: { value: null },
+    });
+    const d = createJxaDriver({ host });
+    const { tab: t } = await d.openWindow("http://x/");
+    await d.showTab(t.key);
+    const call = calls.find((c) => c.op === "showTab")!;
+    expect(call.args).toMatchObject({ windowId: 5, index: 1 });
+  });
+
+  test("사용자 창(우리가 연 창이 아닌 곳)의 탭이면 호스트를 부르지 않고 SAFARI_ERROR", async () => {
+    const { calls, host } = stubHost({ openTab: tab(7), showTab: { value: null } });
+    const d = createJxaDriver({ host });
+    const { tab: t } = await d.openTab("http://x/", { windowId: 7 });
+    await expect(d.showTab(t.key)).rejects.toMatchObject({ code: "SAFARI_ERROR" });
+    expect(calls.some((c) => c.op === "showTab")).toBe(false);
+  });
+});

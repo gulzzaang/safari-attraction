@@ -4,12 +4,20 @@ import { inspect } from "node:util";
 import { SafariError, type SafariDriver, type SafariErrorCode, type TabInfo } from "../driver/types.js";
 import { buildSnapshotSource, type SnapshotOptions } from "../snapshot/inpage.js";
 import { SnapshotStore } from "../snapshot/store.js";
-import { Page } from "./page.js";
+import { Page, type AiWindowAccess } from "./page.js";
 import { OutputBuffer } from "./output.js";
 import { hoistTopLevel } from "./transform.js";
 
+/** 한 호출의 결과. images 는 display() 로 붙인 PNG(base64)이고 없으면 빠진다. */
+export interface ReplResult {
+  output: string;
+  error?: string;
+  errorCode?: SafariErrorCode;
+  images?: string[];
+}
+
 export interface ReplSession {
-  run(code: string, opts?: { timeoutMs?: number }): Promise<{ output: string; error?: string; errorCode?: SafariErrorCode }>;
+  run(code: string, opts?: { timeoutMs?: number }): Promise<ReplResult>;
   /**
    * 기다리지 않은 거부(Promise.reject · 늦게 던진 오류)나 타이머 · 콜백에서 난 오류가 프로세스 바깥까지 올라왔을 때 부른다.
    * 그 일이 REPL 호출 코드에서 비롯됐으면(AsyncLocalStorage 칸이 따라옴) 살아 있는 호출의 출력에 한국어 한 줄을 남기고 true 를 돌려준다.
@@ -58,6 +66,10 @@ export function createReplSession(driver: SafariDriver): ReplSession {
   const slots = new AsyncLocalStorage<Slot>();
   let queue: Promise<unknown> = Promise.resolve();
   let disposed = false;
+  // AI 전용 창은 세션에 하나. 번호가 이 값 하나라서, 나중에 이미 있는 창을 AI 창으로 삼는 호출도 이 값만 바꾸면 된다.
+  let aiWindowId: number | null = null;
+  // AI 창에서 연 탭 키. 창이 닫힌 뒤에도 그 옛 탭에서 부르면 「AI 창이 아니다」가 아니라 「닫혔다」로 알리려고 남겨 둔다.
+  const aiKeys = new Set<string>();
 
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, Number(ms) || 0));
   const log = (...args: unknown[]) => {
@@ -93,6 +105,34 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     if (!pg) throw new Error(`${what}: 열린 page 가 없습니다. 먼저 openTab(url) 이나 attachBrowserTab(key) 로 탭을 여세요`);
     return pg;
   };
+  // ---- AI 전용 창 ----
+  const guideOnlyAi = (what: string) => new Error(`${what}는 AI 전용 창에서만 돼요 — openAiWindow(url) 로 여세요`);
+  const aiClosed = () => new SafariError("WINDOW_CLOSED", `AI 전용 창(${aiWindowId ?? "?"}) 이(가) 닫혔음`);
+
+  /** AI 창이 아직 있는가. 목록에 없으면(사용자가 닫음) 상태를 비우고 false. */
+  const aiWindowAlive = async (): Promise<boolean> => {
+    if (aiWindowId === null) return false;
+    const id = aiWindowId;
+    if ((await driver.listWindows()).some((w) => w.id === id)) return true;
+    if (aiWindowId === id) aiWindowId = null;
+    return false;
+  };
+
+  const aiAccess: AiWindowAccess = {
+    async windowFor(tabKey, what) {
+      if (aiWindowId === null) throw aiKeys.has(tabKey) ? new SafariError("WINDOW_CLOSED", "AI 전용 창이 이미 닫혔음") : guideOnlyAi(what);
+      const id = aiWindowId;
+      if (!(await aiWindowAlive())) throw new SafariError("WINDOW_CLOSED", `AI 전용 창(${id}) 이(가) 닫혔음`);
+      const t = (await driver.listTabs()).find((x) => x.key === tabKey);
+      if (!t || t.windowId !== id) throw guideOnlyAi(what);
+      return id;
+    },
+    closed() {
+      aiWindowId = null;
+    },
+    note: (line) => log(line),
+  };
+
   const track = (p: Page) => {
     tabs.push(p);
     sandbox.page = p;
@@ -109,7 +149,45 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       throw new Error("openTab: 서버가 끝나는 중이라 탭을 열 수 없음");
     }
     owned.add(tab.key);
-    return track(new Page(driver, tab.key));
+    return track(new Page(driver, tab.key, aiAccess));
+  };
+
+  sandbox.openAiWindow = async (url: string = "about:blank", opts: { width?: number; height?: number } = {}): Promise<Page> => {
+    if (disposed) throw new Error("openAiWindow: 서버가 끝나는 중이라 창을 열 수 없음");
+    const explicit = opts?.width !== undefined || opts?.height !== undefined;
+    const width = opts?.width ?? 1280;
+    const height = opts?.height ?? 800;
+    for (const [n, v] of [["width", width], ["height", height]] as const) {
+      if (!(typeof v === "number" && Number.isFinite(v) && v > 0)) throw new Error(`openAiWindow: ${n} 는 0 보다 큰 숫자여야 합니다`);
+    }
+    if (aiWindowId !== null && !(await aiWindowAlive())) log("주의: 이전 AI 전용 창이 닫혀 있어서 새로 열었어요");
+    let key: string;
+    let front: boolean;
+    if (aiWindowId === null) {
+      const r = await driver.openWindow(String(url), { width: Math.round(width), height: Math.round(height) });
+      if (disposed) {
+        await driver.closeWindow(r.windowId).catch(() => {});
+        throw new Error("openAiWindow: 서버가 끝나는 중이라 창을 열 수 없음");
+      }
+      aiWindowId = r.windowId;
+      key = r.tab.key;
+      front = r.frontAppChanged;
+    } else {
+      const id = aiWindowId;
+      const r = await driver.openTab(String(url), { windowId: id });
+      if (disposed) {
+        await driver.closeTab(r.tab.key).catch(() => {});
+        throw new Error("openAiWindow: 서버가 끝나는 중이라 창을 열 수 없음");
+      }
+      key = r.tab.key;
+      front = r.frontAppChanged;
+      // 크기를 직접 정했으면 창 크기도 맞춘다(탭은 창 크기를 같이 쓴다).
+      if (explicit) await aiAccess.windowFor(key, "화면 크기 바꾸기").then((wid) => driver.setWindowSize(wid, Math.round(width), Math.round(height)));
+    }
+    if (front) log("주의: 사파리가 맨 앞으로 나왔어요");
+    owned.add(key);
+    aiKeys.add(key);
+    return track(new Page(driver, key, aiAccess));
   };
 
   sandbox.closeTab = async (p?: Page): Promise<void> => {
@@ -131,7 +209,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
 
   const attach = (key: string): Page => {
     const existing = tabs.find((t) => t.key === key);
-    const pg = existing ?? track(new Page(driver, key));
+    const pg = existing ?? track(new Page(driver, key, aiAccess));
     sandbox.page = pg;
     return pg;
   };
@@ -193,11 +271,14 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     };
   };
 
-  sandbox.display = () => {
-    throw new Error("화면 찍기는 AI 전용 창 방식(계획 2)에서 됩니다");
+  sandbox.display = (img: Buffer): void => {
+    const slot = slots.getStore();
+    if (!Buffer.isBuffer(img) && !ArrayBuffer.isView(img)) throw new Error("display(buf): page.screenshot() 이 돌려준 이미지(Buffer)만 붙일 수 있습니다");
+    if (!slot || slot.closed) return; // 시간 초과로 닫힌 호출은 버려진다
+    slot.buf.addImage(Buffer.isBuffer(img) ? img : Buffer.from((img as ArrayBufferView).buffer as ArrayBuffer, (img as ArrayBufferView).byteOffset, (img as ArrayBufferView).byteLength));
   };
 
-  async function exec(code: string, timeoutMs: number): Promise<{ output: string; error?: string; errorCode?: SafariErrorCode }> {
+  async function exec(code: string, timeoutMs: number): Promise<ReplResult> {
     const slot: Slot = { buf: new OutputBuffer(), closed: false };
     const buf = slot.buf;
     let timer: NodeJS.Timeout | undefined;
@@ -218,8 +299,11 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       clearTimeout(timer);
       slot.closed = true;
     }
-    if (error === undefined) return { output: buf.text() };
-    return errorCode ? { output: buf.text(), error, errorCode } : { output: buf.text(), error };
+    const result: ReplResult = { output: buf.text() };
+    if (error !== undefined) result.error = error;
+    if (errorCode) result.errorCode = errorCode;
+    if (buf.images.length > 0) result.images = buf.images.map((b) => b.toString("base64"));
+    return result;
   }
 
   return {
@@ -245,6 +329,8 @@ export function createReplSession(driver: SafariDriver): ReplSession {
         await driver.closeOwned();
       } finally {
         owned.clear();
+        aiWindowId = null;
+        aiKeys.clear();
         tabs.length = 0;
         sandbox.page = null;
       }

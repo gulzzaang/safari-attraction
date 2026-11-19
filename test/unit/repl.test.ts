@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { createReplSession, type ReplSession } from "../../src/repl/context.js";
 import { hoistTopLevel } from "../../src/repl/transform.js";
 import { SNAPSHOT_LIMIT_BYTES } from "../../src/snapshot/diff.js";
+import { SafariError } from "../../src/driver/types.js";
 import { createFakeDriver, type FakeDriver } from "../helpers/fake-driver.js";
 
 let d: FakeDriver;
@@ -101,10 +102,6 @@ describe("REPL 세부", () => {
   test("동기 무한 반복도 시간 초과로 끊는다", async () => {
     const r = await s.run("while (true) {}", { timeoutMs: 100 });
     expect(r.error).toMatch(/시간/);
-  });
-
-  test("display 는 계획 2 안내 오류", async () => {
-    expect((await s.run("display()")).error).toContain("AI 전용 창 방식(계획 2)");
   });
 
   test("호출이 겹쳐도 차례로 돈다", async () => {
@@ -244,5 +241,148 @@ describe("앞 창 알림", () => {
   test("바뀌지 않았으면 주의가 없다", async () => {
     const r = await s.run('await openTab("http://a/"); console.log("열림")');
     expect(r.output).toBe("열림");
+  });
+});
+
+describe("AI 전용 창", () => {
+  test("openAiWindow 는 처음엔 창을 열고 두 번째엔 같은 창에 탭을 연다", async () => {
+    const r = await s.run(
+      'const a1 = await openAiWindow("http://a/", {width: 390, height: 844}); const a2 = await openAiWindow("http://b/"); console.log(a1.key, a2.key, tabs.length, page === a2)',
+    );
+    expect(r.error).toBeUndefined();
+    expect(d.calls.openWindow).toEqual([{ url: "http://a/", width: 390, height: 844 }]);
+    expect(d.calls.openTab).toHaveLength(1);
+    expect(d.calls.openTab[0]!.windowId).toBe(101);
+    expect(d.calls.openTab[0]!.url).toBe("http://b/");
+    expect(r.output).toBe("t1 t2 2 true");
+  });
+
+  test("기본 크기는 1280×800 이고 주소는 about:blank", async () => {
+    await s.run("await openAiWindow()");
+    expect(d.calls.openWindow).toEqual([{ url: "about:blank", width: 1280, height: 800 }]);
+  });
+
+  test("이미 열린 창에 크기를 명시하면 그 창 크기를 바꾼다", async () => {
+    await s.run('await openAiWindow("http://a/"); await openAiWindow("http://b/", {width: 500, height: 600})');
+    expect(d.calls.setWindowSize).toEqual([{ windowId: 101, width: 500, height: 600 }]);
+  });
+
+  test("setViewportSize 는 실제 크기를 돌려주고, 최소 폭에 막히면 안내가 나온다", async () => {
+    d.setWindowSize = async (_id, w, h) => ({ innerWidth: Math.max(w, 336), innerHeight: h });
+    const r = await s.run('await openAiWindow("http://a/"); const v = await page.setViewportSize({width: 200, height: 500}); console.log(JSON.stringify(v))');
+    expect(r.output).toContain("사파리 창은 약 336px 보다 좁게 못 줄여요(지금 336 px)");
+    expect(r.output).toContain('{"width":336,"height":500}');
+  });
+
+  test("setViewportSize 가 요청 그대로면 안내가 없다", async () => {
+    const r = await s.run('await openAiWindow("http://a/"); const v = await page.setViewportSize({width: 390, height: 844}); console.log(JSON.stringify(v))');
+    expect(r.output).toBe('{"width":390,"height":844}');
+  });
+
+  test("뒤쪽 탭 page 에서 screenshot · setViewportSize 는 안내 오류", async () => {
+    await s.run('await openTab("http://a/")');
+    const r = await s.run("await page.screenshot()");
+    expect(r.error).toContain("AI 전용 창에서만 돼요 — openAiWindow(url) 로 여세요");
+    const r2 = await s.run("await page.setViewportSize({width: 390, height: 800})");
+    expect(r2.error).toContain("화면 크기 바꾸기는 AI 전용 창에서만 돼요 — openAiWindow(url) 로 여세요");
+    expect(d.calls.captureWindow).toHaveLength(0);
+    expect(d.calls.setWindowSize).toHaveLength(0);
+  });
+
+  test("screenshot 은 탭을 창의 현재 탭으로 만든 뒤 찍는다", async () => {
+    const r = await s.run('await openAiWindow("http://a/"); await openAiWindow("http://b/"); const buf = await page.screenshot(); console.log(buf.length)');
+    expect(r.error).toBeUndefined();
+    expect(r.output).toBe("8");
+    expect(d.calls.showTab).toEqual(["t2"]);
+    expect(d.calls.captureWindow).toEqual([101]);
+  });
+
+  test("display 한 이미지는 결과에 base64 로 붙는다", async () => {
+    const r = await s.run('await openAiWindow("http://a/"); display(await page.screenshot()); console.log("찍음")');
+    expect(r.output).toBe("찍음");
+    expect(r.images).toEqual([d.png.toString("base64")]);
+  });
+
+  test("이미지가 5장이면 4장만 붙고 안내 줄", async () => {
+    const r = await s.run('await openAiWindow("http://a/"); const b = await page.screenshot(); for (let i = 0; i < 5; i++) display(b)');
+    expect(r.images).toHaveLength(4);
+    expect(r.output).toContain("이미지는 한 번에 4장까지");
+  });
+
+  test("display 는 이미지가 아닌 것을 거절한다", async () => {
+    const r = await s.run('display("글")');
+    expect(r.error).toContain("display");
+  });
+
+  test("이미지가 없으면 결과에 images 가 없다", async () => {
+    expect(await s.run('console.log("x")')).toEqual({ output: "x" });
+  });
+
+  test("오류가 나도 그 전에 display 한 이미지는 남는다", async () => {
+    const r = await s.run('await openAiWindow("http://a/"); display(await page.screenshot()); throw new Error("앗")');
+    expect(r.error).toContain("앗");
+    expect(r.images).toHaveLength(1);
+  });
+
+  test("SCREEN_CAPTURE_DENIED 는 errorCode 로 온다", async () => {
+    d.screenAllowed = false;
+    const r = await s.run('await openAiWindow("http://a/"); await page.screenshot()');
+    expect(r.errorCode).toBe("SCREEN_CAPTURE_DENIED");
+  });
+
+  test("AI 창이 닫히면 WINDOW_CLOSED, 다시 openAiWindow 하면 새 창", async () => {
+    await s.run('await openAiWindow("http://a/")');
+    d.calls.openWindow.length = 0;
+    await d.closeWindow(101); // 사용자가 창을 닫음
+    const r = await s.run("await page.screenshot()");
+    expect(r.errorCode).toBe("WINDOW_CLOSED");
+    expect(d.calls.captureWindow).toHaveLength(0);
+    // 닫힌 창의 옛 탭에서 다시 해도 같은 오류(「AI 창이 아니다」가 아님)
+    expect((await s.run("await page.setViewportSize({width: 390, height: 800})")).errorCode).toBe("WINDOW_CLOSED");
+    const r2 = await s.run('const again = await openAiWindow("http://c/"); console.log(again.key)');
+    expect(r2.error).toBeUndefined();
+    expect(d.calls.openWindow).toHaveLength(1);
+    expect(d.calls.openTab).toHaveLength(0);
+    // 새 창에서는 다시 찍힌다
+    expect((await s.run("await page.screenshot()")).error).toBeUndefined();
+  });
+
+  test("openAiWindow 는 창이 이미 닫혀 있으면 막지 않고 새 창을 연다", async () => {
+    await s.run('await openAiWindow("http://a/")');
+    await d.closeWindow(101);
+    const r = await s.run('await openAiWindow("http://b/")');
+    expect(r.error).toBeUndefined();
+    expect(d.calls.openWindow).toHaveLength(2);
+    expect(r.output).toContain("AI 전용 창이 닫혀 있어서 새로 열었어요");
+  });
+
+  test("AI 창 탭을 닫아도 열린 창은 dispose 때 닫힌다", async () => {
+    await s.run('await openAiWindow("http://a/")');
+    await s.dispose();
+    expect(await d.listWindows()).toHaveLength(1); // 사용자 창만 남음
+  });
+
+  test("사파리가 앞으로 나왔으면 알린다", async () => {
+    d.frontAppChanged = true;
+    const r = await s.run('await openAiWindow("http://a/")');
+    expect(r.output).toContain("주의: 사파리가 맨 앞으로 나왔어요");
+  });
+
+  test("끝난 뒤에는 openAiWindow 가 거절된다", async () => {
+    await s.dispose();
+    const r = await s.run('await openAiWindow("http://a/")');
+    expect(r.error).toContain("끝나는 중");
+    expect(d.calls.openWindow).toHaveLength(0);
+  });
+
+  test("screenshot 중 드라이버가 WINDOW_CLOSED 를 던져도 상태를 비우고 알린다", async () => {
+    await s.run('await openAiWindow("http://a/")');
+    d.captureWindow = async () => {
+      throw new SafariError("WINDOW_CLOSED", "창 닫힘");
+    };
+    expect((await s.run("await page.screenshot()")).errorCode).toBe("WINDOW_CLOSED");
+    d.calls.openWindow.length = 0;
+    await s.run('await openAiWindow("http://x/")');
+    expect(d.calls.openWindow).toHaveLength(1);
   });
 });

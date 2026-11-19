@@ -8,6 +8,8 @@ import {
   type ActionOp,
 } from "./inpage-actions.js";
 
+/** 사파리 창이 줄어드는 최소 폭(대략). */
+const MIN_WINDOW_WIDTH_PX = 336;
 const LOAD_TIMEOUT_MS = 15000;
 /** 동작이 이동을 일으킬 것 같은데(expectNav) 문서를 떠나는 낌새(beforeunload)가 없을 때 더 기다리는 시간. */
 const EXPECT_NAV_GRACE_MS = 1500;
@@ -24,6 +26,16 @@ const NAVIGATING_SRC =
 
 let tokenSeq = 0;
 const newToken = () => `sa${Date.now().toString(36)}_${++tokenSeq}`;
+
+/** Page 가 AI 전용 창 일을 할 때 세션에 묻는 것(세션이 AI 창 번호를 하나 들고 있다). */
+export interface AiWindowAccess {
+  /** 이 탭이 AI 창 안에 있으면 그 창 번호. 아니면 `what` 을 AI 창에서만 된다고 알리는 오류. AI 창이 닫혔으면 WINDOW_CLOSED(상태를 비운다). */
+  windowFor(tabKey: string, what: string): Promise<number>;
+  /** 드라이버가 창이 닫혔다고 했을 때 세션 상태를 비운다. */
+  closed(): void;
+  /** 이 호출의 출력에 한 줄 남긴다. */
+  note(line: string): void;
+}
 
 export interface Locator {
   click(): Promise<void>;
@@ -44,6 +56,7 @@ export class Page {
   constructor(
     private readonly driver: SafariDriver,
     readonly key: string,
+    private readonly ai?: AiWindowAccess,
   ) {}
 
   /** console.log(page) 가 드라이버 안쪽까지 쏟아내지 않게. */
@@ -110,7 +123,51 @@ export class Page {
     type: async (text: string): Promise<void> => void (await this.act("type", { text })),
   };
 
+  /**
+   * 창 안 페이지 크기(innerWidth · innerHeight)를 맞추고 실제 크기를 돌려준다. AI 전용 창(openAiWindow)의 탭에서만 된다.
+   * 사파리 최소 폭보다 좁게 요청하면 실제 크기가 더 크고, 그때는 출력에 안내가 나온다.
+   */
+  async setViewportSize(size: { width: number; height: number }): Promise<{ width: number; height: number }> {
+    const width = Number(size?.width);
+    const height = Number(size?.height);
+    if (!(width > 0) || !(height > 0) || !Number.isFinite(width) || !Number.isFinite(height)) {
+      throw new Error("setViewportSize({width, height}): 폭과 높이는 0 보다 큰 숫자여야 합니다");
+    }
+    const id = await this.aiWindow("화면 크기 바꾸기");
+    const r = await this.guardClosed(() => this.driver.setWindowSize(id, Math.round(width), Math.round(height)));
+    if (r.innerWidth > Math.round(width)) this.ai!.note(`사파리 창은 약 ${MIN_WINDOW_WIDTH_PX}px 보다 좁게 못 줄여요(지금 ${r.innerWidth} px)`);
+    return { width: r.innerWidth, height: r.innerHeight };
+  }
+
+  /**
+   * 창을 PNG 로 찍는다(긴 변 1568px 이하) — 창 전체(주소창 포함). AI 전용 창의 탭에서만 되고, 찍기 전에 이 탭을 그 창의 현재 탭으로 만든다.
+   * 화면 기록 권한이 필요하다. 결과를 보려면 display(buf) 로 붙인다.
+   */
+  async screenshot(): Promise<Buffer> {
+    const id = await this.aiWindow("화면 찍기");
+    return this.guardClosed(async () => {
+      await this.driver.showTab(this.key);
+      return this.driver.captureWindow(id);
+    });
+  }
+
   // ---- 안쪽 ----
+
+  private aiWindow(what: string): Promise<number> {
+    if (!this.ai) return Promise.reject(new Error(`${what}는 AI 전용 창에서만 돼요 — openAiWindow(url) 로 여세요`));
+    return this.ai.windowFor(this.key, what);
+  }
+
+  /** 드라이버가 창이 닫혔다고 하면 세션이 AI 창을 잊게 한 뒤 그대로 올린다. */
+  private async guardClosed<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (e) {
+      if (e instanceof SafariError && e.code === "WINDOW_CLOSED") this.ai?.closed();
+      throw e;
+    }
+  }
+
 
   /** 페이지 안 동작 하나를 돌리고, 문서가 바뀌었으면 탭 키를 다시 붙인다. */
   private act(op: ActionOp, args: Record<string, unknown>) {

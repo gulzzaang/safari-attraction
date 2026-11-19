@@ -501,6 +501,15 @@ const ops = {
     return { value, url };
   },
 
+  // 자리의 탭을 그 창의 현재 탭으로 만든다(창을 앞으로 가져오지 않는다).
+  showTab(args) {
+    const g = guardTab(args);
+    if (!g) return { stale: true };
+    const w = Safari.windows.byId(args.windowId);
+    w.currentTab = g.tab;
+    return { value: null };
+  },
+
   closeTab(args) {
     const g = guardTab(args);
     if (!g) return { stale: true };

@@ -13,7 +13,12 @@ Read values with console.log (the last expression is NOT printed). Errors come b
 전역 / Globals:
 - openTab(url) → Page. 뒤쪽 탭을 열고 다 뜰 때까지 기다린다. 열린 탭은 \`page\`(현재)와 \`tabs\`(배열)에 들어간다.
 - attachActiveBrowserTab() → 사용자가 지금 보고 있는 맨 앞 창의 활성 탭. "내가 보고 있는 페이지" 라고 할 때 쓴다. attachBrowserTab(key) / listBrowserTabs() 로 다른 탭도 고른다. 사용자의 탭은 떼기만 하고 닫지 않는다.
-- closeTab(page?) — 우리가 연 탭만 닫는다. 서버가 끝나면 우리가 연 탭은 모두 닫힌다.
+- openAiWindow(url = "about:blank", {width = 1280, height = 800}) → Page. Claude 전용 사파리 창(사용자 창 맨 뒤, 앞 앱을 안 바꿈)을 열고 그 안의 탭을 돌려준다. 창은 세션에 하나라 다시 부르면 같은 창에 새 탭이 열린다. 사용자가 창을 닫았으면 WINDOW_CLOSED 안내가 나오고, openAiWindow() 를 다시 부르면 새 창이 열린다.
+- page.setViewportSize({width, height}) → {width, height}(실제 값) — 창 안 페이지 크기를 맞춘다(휴대폰 폭이면 390×844). 사파리 창은 약 336px 보다 좁게 못 줄인다. AI 창의 탭에서만.
+- page.screenshot() → Buffer(PNG, 긴 변 1568px 이하) — AI 창 전체(주소창 포함)를 찍는다. AI 창의 탭에서만(그 탭을 창의 현재 탭으로 만든 뒤 찍는다). 화면 기록 권한이 필요하다(시스템 설정 → 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음) — 없으면 오류 글에 안내가 나온다. 찍은 걸 보려면 display(buf) 로 붙인다.
+- display(buf) — 이 호출의 결과에 이미지를 붙인다. 한 호출에 4장까지.
+  Screenshots: openAiWindow() opens a Claude-only Safari window (behind the user's windows, never activates Safari); page.setViewportSize / page.screenshot work only on tabs in that window and need Screen Recording permission; display(buf) attaches a PNG to the result (max 4 per call).
+- closeTab(page?) — 우리가 연 탭만 닫는다. 서버가 끝나면 우리가 연 탭과 AI 창은 모두 닫힌다.
 - snapshot(page?, {interactive, selector, full}) — 페이지를 읽는다. console.log(await snapshot()) 로 찍으면 "지난번과 바뀐 곳만" 나오고, 처음이거나 같으면 전체 · 「변화 없음」이 나온다. 요소 앞의 e12 같은 ref 를 locator(ref) 에 쓴다. 16KB 를 넘으면 잘린다.
 - Page: goto(url), url(), title(), waitForLoadState(), evaluate(fn | 식, arg), locator(ref | CSS).click() / .fill(값) / .textContent(), keyboard.press("Enter") / keyboard.type(글).
 - fetch(url, init) → {status, ok, headers(보통 객체), text(), json()}. 현재 page 안에서 돌아 그 페이지의 쿠키로 나가고 CORS · CSP 를 따른다.
@@ -31,7 +36,6 @@ Read values with console.log (the last expression is NOT printed). Errors come b
 - evaluate 는 함수 하나나 식 하나만 받는다(여러 문장은 함수로 감싼다). 결과는 JSON 으로 오가 DOM · 함수는 못 받는다. 바깥 변수는 못 쓰고 arg 로 넘긴다.
 - await 뒤에서 이벤트 루프를 막는 코드(예: await x; while(true){})는 서버를 멈출 수 있다. 쓰지 말 것.
 - 사파리 스크립트는 개인정보 보호 창과 일반 창을 구별하지 못해, 맨 앞 창을 그대로 쓴다. 개인정보 보호 창이 앞에 있으면 거기에 열릴 수 있다.
-- 화면 찍기 · display() 는 아직 없다(계획 2). Screenshots and display() come in plan 2.
 - 처음 쓸 때 설정이 막히면 오류 글에 안내가 나온다. status 도구로 설정 상태를 볼 수 있다.`;
 
 export const STATUS_DESCRIPTION =
@@ -107,9 +111,11 @@ export function createSafariServer(driver: SafariDriver): SafariServer {
     },
     async ({ code }) => {
       const r = await session.run(code);
-      if (r.error === undefined) return { content: [{ type: "text", text: r.output }] };
+      // display() 로 붙인 이미지는 글 뒤에 붙는다(오류로 끝나도 그 전에 붙인 것은 남는다).
+      const images = (r.images ?? []).map((data) => ({ type: "image" as const, data, mimeType: "image/png" }));
+      if (r.error === undefined) return { content: [{ type: "text" as const, text: r.output }, ...images] };
       const err = toKorean(r.error, r.errorCode);
-      return { isError: true, content: [{ type: "text", text: r.output ? `${r.output}\n\n오류: ${err}` : `오류: ${err}` }] };
+      return { isError: true, content: [{ type: "text" as const, text: r.output ? `${r.output}\n\n오류: ${err}` : `오류: ${err}` }, ...images] };
     },
   );
 

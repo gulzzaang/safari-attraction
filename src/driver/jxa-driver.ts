@@ -233,6 +233,14 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
       return captureWindowPng(windowId);
     },
 
+    async showTab(tabKey) {
+      await registry.withTab(tabKey, async (s) => {
+        // 사용자 창의 현재 탭은 바꾸지 않는다. 우리가 연 창 안에서만.
+        if (!ownedWindows.has(s.windowId)) throw new SafariError("SAFARI_ERROR", "Claude 가 연 창 안의 탭만 앞에 보여요");
+        return call<Guarded<null>>("showTab", guardArgs(s));
+      });
+    },
+
     async screenCaptureAllowed() {
       return (await call<boolean>("screenAccess")) === true;
     },
