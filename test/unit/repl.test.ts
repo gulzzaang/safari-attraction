@@ -193,7 +193,8 @@ describe("REPL 세부", () => {
   });
 
   test("드라이버 호출을 기다리던 늦은 코드의 출력도 다음 호출에 안 섞인다", async () => {
-    d.answer = () => new Promise((r) => setTimeout(() => r("1"), 150)) as Promise<string>;
+    // 실제 프로토콜로 답해야 page.evaluate 가 성공해 늦은 console.log 까지 간다(150ms 뒤에 답한다).
+    d.answer = (_k, src) => new Promise((r) => setTimeout(() => r(src.includes("__saA") ? JSON.stringify({ ok: true, r: { s: "1" } }) : ""), 150)) as Promise<string>;
     await s.run('await openTab("http://a/")');
     const r1 = await s.run('await page.evaluate("1"); console.log("zombie-driver")', { timeoutMs: 30 });
     expect(r1.error).toMatch(/시간/);
