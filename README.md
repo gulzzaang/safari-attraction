@@ -2,16 +2,21 @@
 
 Claude 가 박정욱의 실제 로그인된 사파리를 몰 수 있게 하는 로컬 TypeScript MCP 서버. 계속 떠 있는 `osascript -l JavaScript` 프로세스 하나로 사파리를 움직이고, Aside 브라우저의 `repl` 처럼 자바스크립트 한 덩어리로 열기 · 읽기 · 입력 · 클릭을 한다. 새 탭은 뒤쪽 탭으로 열려 사용자 화면을 가로채지 않는다. 서버가 끝나면 Claude 가 연 탭은 모두 닫힌다(사용자 탭은 건드리지 않는다).
 
-## 필요한 것
+macOS 와 사파리가 필요하다. Node 는 플러그인 · 홈브루(자동으로 깔림) · 소스 빌드 때만 쓴다(플러그인 Node 18 이상, 소스에서 빌드 · 시험은 Node 20 이상). `.mcpb` 는 Claude 앱이 가진 Node 를 쓴다.
 
-- macOS, 사파리, Node 18 이상(플러그인으로 쓸 때). 소스에서 빌드 · 시험하려면 Node 20 이상.
-- 사파리 설정 두 가지(처음 한 번):
-  1. 사파리 ▸ 설정 ▸ 고급 ▸ **웹 개발자용 기능 보기** 켜기.
-  2. 메뉴 막대 **개발** ▸ **Apple 이벤트의 JavaScript 허용** 켜기.
-- 처음 쓸 때 macOS 가 「자동화」 허락을 묻는다(터미널이나 Claude 가 사파리를 제어해도 되는지). 허락해야 한다. 막혔다면 시스템 설정 ▸ 개인정보 보호 및 보안 ▸ 자동화에서 켠다.
-- 막혔을 때는 `status` 도구를 먼저 부르면 무엇이 꺼져 있는지 한국어로 알려 준다.
+## 설치
 
-## 설치 — Claude Code 플러그인(권장)
+내 쓰임에 맞는 길 하나만 고른다. 세 길 모두 같은 서버(`repl` · `status` 도구)를 깐다.
+
+| 이런 분께 | 길 |
+| --- | --- |
+| Claude Code 를 쓴다 | 플러그인(한 줄) |
+| 터미널은 쓸 줄 안다(Claude Code · Claude 앱 둘 다 연결하고 싶다) | 홈브루(세 줄) |
+| 터미널이 낯설다(Claude 앱만 쓴다) | `.mcpb` 파일(더블클릭) |
+
+저장소는 지금 비공개다. 플러그인과 홈브루 길은 그 맥의 git · GitHub 로그인이 `gulzzaang` 저장소에 접근할 수 있어야 한다. `.mcpb` 는 파일 하나라 그냥 전달하면 된다.
+
+### 길 1. Claude Code 플러그인
 
 Claude Code 안에서 한 줄:
 
@@ -26,16 +31,58 @@ Claude Code 안에서 한 줄:
 /plugin install safari-attraction@safari-attraction
 ```
 
-저장소가 비공개라 그 맥의 git 이 GitHub `gulzzaang` 으로 로그인돼 있어야 한다. 안 되면 저장소를 내려받은 폴더로 설치한다(GitHub 로그인 불필요):
+GitHub 로그인이 안 돼 있으면 저장소를 내려받은 폴더로 설치한다(GitHub 로그인 불필요):
 
 ```
 /plugin marketplace add ~/Documents/safari-attraction
 /plugin install safari-attraction@safari-attraction
 ```
 
-플러그인은 `plugin/server.mjs`(부품을 한 파일로 묶은 서버)를 그 맥의 `node` 로 띄운다. 설치 뒤 새 세션부터 도구가 보인다. 아래 「직접 등록」으로 이미 등록한 맥이라면 같은 도구가 두 개 생기니 `claude mcp remove --scope user safari-attraction` 으로 하나를 지운다.
+플러그인은 `plugin/server.mjs`(부품을 한 파일로 묶은 서버)를 그 맥의 `node` 로 띄운다(Node 18 이상). 설치 뒤 새 세션부터 도구가 보인다.
 
-## 설치 — 소스에서 직접 등록(개발용)
+### 길 2. 홈브루
+
+```sh
+brew tap gulzzaang/safari-attraction https://github.com/gulzzaang/safari-attraction
+brew install safari-attraction
+safari-attraction setup
+```
+
+`setup` 이 Claude Code 와 Claude 앱(데스크톱) 설정에 `safari-attraction` 을 등록한다. 설정 파일을 고치기 전에 같은 폴더에 `…bak-<날짜시각>` 사본을 남기고, 우리 항목 말고는 건드리지 않는다. 먼저 보고 싶으면 `safari-attraction setup --dry-run`(아무것도 쓰지 않고 할 일만 출력), 한쪽만 하려면 `--no-claude-code` 또는 `--no-desktop`. 플러그인이 이미 깔려 있으면 Claude Code 쪽은 건너뛴다. 등록 경로는 `$(brew --prefix)/opt/safari-attraction/bin/safari-attraction` 이라 `brew upgrade` 뒤에도 그대로 살아 있다. 등록한 뒤 Claude 를 새로 시작한다.
+
+### 길 3. Claude 앱 확장(`.mcpb`)
+
+1. 이 저장소의 GitHub 릴리스 페이지(v0.1.0)에서 `safari-attraction-0.1.0.mcpb` 를 받는다(받아서 전달받아도 된다).
+2. 파일을 더블클릭하면 Claude 앱이 열리며 설치 창이 뜬다. **「설치」** 를 누른다.
+3. Claude 앱을 새로 시작하면 도구가 보인다.
+
+### 공통 준비(처음 한 번)
+
+길과 상관없이 필요하다.
+
+1. 사파리 ▸ 설정 ▸ 고급 ▸ **웹 개발자용 기능 보기** 켜기.
+2. 메뉴 막대 **개발** ▸ **Apple 이벤트의 JavaScript 허용** 켜기.
+3. 처음 쓸 때 macOS 가 「자동화」 허락(터미널이나 Claude 가 사파리를 제어해도 되는지)을 묻는다. 허락해야 한다. 막혔다면 시스템 설정 ▸ 개인정보 보호 및 보안 ▸ 자동화에서 켠다.
+4. 화면 찍기(`page.screenshot()`)를 쓸 때만: 아래 「화면 기록 권한」.
+
+### 점검
+
+- Claude 에게 `status` 도구를 불러 보라고 하면 무엇이 꺼져 있는지 한국어로 알려 준다.
+- 터미널에서는 `safari-attraction doctor`(홈브루로 깐 경우). 모두 준비됐으면 0, 아니면 1 로 끝난다. 버전은 `safari-attraction --version`.
+
+### 같은 도구가 두 번 보일 때
+
+두 길 이상으로 깔면 `repl` · `status` 가 두 벌 보인다. 하나만 남기고 지운다.
+
+| 지울 것 | 방법 |
+| --- | --- |
+| `setup` 이나 직접 등록한 Claude Code 연결 | `claude mcp remove --scope user safari-attraction` |
+| 플러그인 | Claude Code 안에서 `/plugin uninstall safari-attraction` |
+| `.mcpb` 확장 | Claude 앱 ▸ 설정 ▸ 확장에서 사파리-어트랙션을 지운다 |
+
+`safari-attraction setup` 은 Claude Code 에 플러그인이 이미 있으면 등록하지 않는 식으로 겹침을 피하지만, 플러그인을 나중에 깔면 겹칠 수 있다. Claude 앱 설정에 `setup` 으로 등록한 항목과 `.mcpb` 가 겹칠 때는 `claude_desktop_config.json` 의 `safari-attraction` 항목을 지우거나 확장을 지운다.
+
+### 소스에서 직접 등록(개발용)
 
 ```sh
 npm install
@@ -80,3 +127,11 @@ SAFARI_IT=1 npx vitest run test/integration/tabs.it.test.ts   # 통합 시험(�
 측정은 `npm run build && node dist/scripts/bench.js`(진짜 사파리를 쓴다. 자기가 연 탭 · AI 창만 열고 끝에 닫는다).
 
 통합 시험은 자기가 연 탭에만 표시를 달아 열고 닫으며 사용자 탭은 건드리지 않는다. `spikes/` 에는 `.mcpb` 안에서 osascript 가 도는지 · 사파리 창 최소 폭을 재 보는 첫 시험이 들어 있다.
+
+## 새 버전 내기(관리자용)
+
+1. `src/version.ts` 의 `VERSION` 을 올리고, `test/unit/version-sync.test.ts` 가 확인하는 자리를 모두 같은 값으로 맞춘다: `package.json` · `package-lock.json`(루트 두 곳) · `plugin/.claude-plugin/plugin.json` · `.claude-plugin/marketplace.json` · `mcpb/manifest.json` · `Formula/safari-attraction.rb`(`tag: "vX.Y.Z"`).
+2. `npm test` 로 버전 맞춤 시험을 포함한 단위 시험을 통과시킨다.
+3. `npm run build` (`plugin/server.mjs` 갱신) → `npm run pack:mcpb` (`out-mcpb/safari-attraction-X.Y.Z.mcpb` 생성).
+4. 커밋 → 태그 `vX.Y.Z` → `main` 과 태그 push.
+5. GitHub 릴리스를 만들고 `.mcpb` 파일을 붙인다.
