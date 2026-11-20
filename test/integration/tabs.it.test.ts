@@ -116,7 +116,7 @@ describeIt('탭 키 · 우리 탭 정리', () => {
   test('예기치 못한 늦은 이동 뒤에도 키를 잃지 않고 일반 호출이 된다', async () => {
     const { tab } = await d.openTab(mine('basic.html'));
     const target = mine('alert.html');
-    await d.runJs(tab.key, `setTimeout(() => { location.href = ${JSON.stringify(target)} }, 400); 1`);
+    await d.runJs(tab.key, `setTimeout(() => { location.href = ${JSON.stringify(target)} }, 400) && 1`);
     await new Promise((r) => setTimeout(r, 2500)); // 이동이 끝나 표시가 사라질 때까지(rebind · settle 을 부르지 않는다)
     expect(await d.runJs(tab.key, 'document.title')).toBe('경고창 시험 페이지');
     expect((await d.listTabs()).find((t) => t.url === target)?.key).toBe(tab.key);
@@ -127,7 +127,7 @@ describeIt('탭 키 · 우리 탭 정리', () => {
     const { tab } = await d.openTab(mine('basic.html'));
     expect(await d.settleTab(tab.key)).toMatchObject({ navigated: false, leaving: false });
     const target = mine('alert.html');
-    await d.runJs(tab.key, `setTimeout(function(){ location.href = ${JSON.stringify(target)} }, 50); 1`);
+    await d.runJs(tab.key, `setTimeout(function(){ location.href = ${JSON.stringify(target)} }, 50) && 1`);
     await new Promise((r) => setTimeout(r, 600)); // 새 문서가 떠서 표시가 사라진 뒤 — runJs 였다면 키를 잃는 때
     const r = await d.settleTab(tab.key);
     expect(r.navigated).toBe(true);

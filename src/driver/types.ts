@@ -64,6 +64,11 @@ export interface SafariDriver {
    * frontAppChanged: 사파리가 맨 앞으로 나왔나(부르기 전엔 사파리가 아니었고 뒤엔 사파리일 때만 true — 다른 앱이 앞으로 나온 것은 false).
    */
   openTab(url: string, opts?: { windowId?: number; loadBudgetMs?: number }): Promise<{ tab: TabInfo; frontAppChanged: boolean }>;
+  /**
+   * 그 탭의 페이지 안에서 소스를 돌려 값을 글로 돌려준다. 소스는 **식 하나**(`(소스)` 로 끼워 돌린다 — 문장 · 선언은 즉시 실행 함수로 감싼다. 아니면 SAFARI_ERROR).
+   * 탭 확인(표시 읽기 · 필요하면 적기)과 소스 실행이 사파리 호출(doJavaScript) 한 번이다. 값은 글은 그대로, 숫자 · 불리언은 String, null · undefined 는 빈 글, 그 밖은 JSON.stringify.
+   * 소스가 던진 오류는 사파리가 오류로 올리지 않아 빈 글이 된다(소스 쪽에서 try/catch 로 JSON 을 돌려주는 게 좋다).
+   */
   runJs(tabKey: string, source: string, opts?: { timeoutMs?: number }): Promise<string>;
   /** 그 탭의 마지막으로 알려진 주소(동기). openTab · runJs · settleTab · rebindTab 이 새로 한다. 모르는 키(닫힘)면 undefined. */
   lastUrl(tabKey: string): string | undefined;

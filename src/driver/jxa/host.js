@@ -109,6 +109,37 @@ function guardTab(args) {
   return null;
 }
 
+// 탭 확인 · 표시 · 일을 한 번의 doJavaScript 로 한다(args.script = Node 쪽 buildGuardedSource 가 만든 글. 자리의 탭을 주소로 읽지 않는다).
+// 돌려주는 것:
+//   {kind: "ok", tab, value, url}  표시가 맞아 소스가 돌았다(url 은 문서 자신의 location.href).
+//   {kind: "threw", tab}           사파리가 null 을 돌려줬다 — 소스가 오류를 던졌거나(사파리는 던진 오류를 오류로 올리지 않는다) 문법이 틀렸다. 소스를 다시 돌리면 안 된다.
+//   {kind: "fallback"}             자리를 못 읽었거나 표시가 안 맞아 소스가 안 돌았다 — 느린 길(guardTab)로 다시 확인한다.
+// 「Apple 이벤트에서 JavaScript 허용」이 꺼진 오류는 그대로 올린다.
+function guardedRun(args) {
+  let tab;
+  try {
+    tab = tabOf(args);
+  } catch (e) {
+    return { kind: "fallback" };
+  }
+  let raw;
+  try {
+    raw = Safari.doJavaScript(args.script, { in: tab });
+  } catch (e) {
+    if (isJsOffError(e)) throw e;
+    return { kind: "fallback" }; // 탭 · 창이 없다(-1728 · -1719) 거나 JS 를 못 도는 문서 — 느린 길이 판단한다
+  }
+  if (typeof raw !== "string") return { kind: "threw", tab };
+  let r;
+  try {
+    r = JSON.parse(raw);
+  } catch (e) {
+    return { kind: "fallback" };
+  }
+  if (!r || r.ok !== true) return { kind: "fallback" };
+  return { kind: "ok", tab, value: typeof r.value === "string" ? r.value : "", url: typeof r.url === "string" ? r.url : undefined };
+}
+
 // 문서를 쓸 수 있는 때인가(Playwright 의 domcontentloaded 처럼): DOMContentLoaded 이벤트가 끝났고(navigation 기록의 domContentLoadedEventEnd > 0 —
 // defer · module 스크립트까지 돈 뒤다) body 가 있을 때. navigation 기록을 못 읽으면 readyState 가 complete 일 때로 본다.
 // 이미지 · async 스크립트 · 아이프레임이 다 오기 전의 load 이벤트는 기다리지 않는다.
@@ -556,13 +587,35 @@ const ops = {
     else value = JSON.stringify(res);
     let url;
     try {
-      url = str(g.tab.url()); // 이동했을 수 있으니 지금 주소도 돌려준다(Node 쪽 기록을 새로 한다)
+      // 이동했을 수 있으니 지금 주소도 돌려준다(Node 쪽 기록을 새로 한다). 문서 자신의 주소 — tab.url() 은 이동 중이면 가는 중인 목적지다.
+      url = str(Safari.doJavaScript("location.href", { in: g.tab }));
     } catch (e) {}
     return { value, url };
   },
 
-  // 자리의 탭을 그 창의 현재 탭으로 만든다(창을 앞으로 가져오지 않는다).
+  // runJs 의 빠른 길: 탭 확인 · 표시 · 일이 doJavaScript 한 번이다(args.script). 느린 길(runJs, 소스는 args 에 없다)로 가야 하면 {fallback: true}.
+  // 소스가 던진 오류로 사파리가 null 을 돌려준 때는 소스를 다시 돌리지 않는다 — 자리가 맞는지만 느린 길로 확인해, 맞으면 예전처럼 빈 값, 아니면 stale.
+  runJsFast(args) {
+    const f = guardedRun(args);
+    if (f.kind === "ok") return { value: f.value, url: f.url };
+    if (f.kind === "threw") {
+      const g = guardTab(args);
+      if (!g) return { stale: true };
+      if (g.marker !== args.key) stampTab(g.tab, args.key); // 문법 오류로 글이 안 돌았으면 표시도 안 적혔다
+      return { value: "" };
+    }
+    return { fallback: true };
+  },
+
+  // 자리의 탭을 그 창의 현재 탭으로 만든다(창을 앞으로 가져오지 않는다). args.script 가 있으면 확인은 doJavaScript 한 번(빠른 길)이고, 안 되면 예전 확인으로 돌아간다.
   showTab(args) {
+    if (args.script) {
+      const f = guardedRun(args);
+      if (f.kind === "ok") {
+        Safari.windows.byId(args.windowId).currentTab = f.tab;
+        return { value: null };
+      }
+    }
     const g = guardTab(args);
     if (!g) return { stale: true };
     const w = Safari.windows.byId(args.windowId);

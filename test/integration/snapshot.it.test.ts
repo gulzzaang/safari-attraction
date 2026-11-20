@@ -79,7 +79,7 @@ describeIt('페이지 읽기(snapshot)', () => {
     const text = await read(key);
     expect(text).toMatch(/- textbox "비밀번호" \[ref=e\d+\]\n/);
     expect(text).not.toContain('비밀값');
-    await d.runJs(key, `document.getElementById('pw').value = '또다른비밀'; 1`);
+    await d.runJs(key, `(document.getElementById('pw').value = '또다른비밀', 1)`);
     expect(await read(key)).not.toContain('또다른비밀');
   });
 
@@ -89,7 +89,7 @@ describeIt('페이지 읽기(snapshot)', () => {
     store.diff(key, {}, before);
     await d.runJs(
       key,
-      `var b = document.createElement('button'); b.textContent = '새 단추'; document.body.insertBefore(b, document.getElementById('save')); 1`,
+      `(function(){ var b = document.createElement('button'); b.textContent = '새 단추'; document.body.insertBefore(b, document.getElementById('save')); return 1 })()`,
     );
     const after = await read(key);
     const r = store.diff(key, {}, after);
@@ -102,7 +102,7 @@ describeIt('페이지 읽기(snapshot)', () => {
 
   test('입력한 값이 보이고 interactive 는 글 덩어리를 뺀다', async () => {
     const { key } = await open('basic.html');
-    await d.runJs(key, `document.getElementById('name').value = '홍길동'; 1`);
+    await d.runJs(key, `(document.getElementById('name').value = '홍길동', 1)`);
     const inter = await read(key, { interactive: true });
     expect(inter).toMatch(/- textbox "이름을 입력" \[ref=e\d+\] \[value="홍길동"\]/);
     expect(inter).not.toContain('- paragraph');
@@ -139,7 +139,7 @@ describeIt('페이지 읽기(snapshot)', () => {
     expect(first.text).toContain('위 단추');
     expect(first.text).not.toContain('#sa-meta');
     // 한 화면 넘게 내려 맨 아래가 보이게 한다
-    await d.runJs(key, 'window.scrollTo(0, document.body.scrollHeight); 0');
+    await d.runJs(key, '(window.scrollTo(0, document.body.scrollHeight), 0)');
     const down = store.diff(key, {}, await read(key));
     expect(down.mode).toBe('scroll');
     console.log(down.text);
@@ -148,14 +148,14 @@ describeIt('페이지 읽기(snapshot)', () => {
     expect(down.text).not.toContain('위 단추'); // 지나간 줄은 싣지 않는다
     expect(down.text).not.toContain('# 바뀐 곳만'); // +/- 비교가 아니다
     expect(down.text).not.toMatch(/^- - |^\+ /m); // 사라짐(- ) · 생김(+ ) 줄 없음
-    await d.runJs(key, 'window.scrollTo(0, 0); 0');
+    await d.runJs(key, '(window.scrollTo(0, 0), 0)');
     const up = store.diff(key, {}, await read(key));
     expect({ ...up, text: noHint(up.text) }).toEqual({ mode: 'scroll', text: '새로 보이는 곳 없음(이미 읽은 곳)' });
     // 같은 자리에서 다시 읽으면 변화 없음
     const same = store.diff(key, {}, await read(key));
     expect({ ...same, text: noHint(same.text) }).toEqual({ mode: 'none', text: '변화 없음' });
     // 새로고침이면 본 줄을 지운다
-    await d.runJs(key, 'location.reload(); 0');
+    await d.runJs(key, '(location.reload(), 0)');
     await new Promise((r) => setTimeout(r, 1500));
     expect(store.diff(key, {}, await read(key)).mode).not.toBe('scroll');
   });
@@ -167,14 +167,14 @@ describeIt('페이지 읽기(snapshot)', () => {
     expect(first.text).toContain('항목 1"');
     expect(await d.runJs(key, 'String(window.scrollY)')).toBe('0'); // 창은 안 움직인다
     const box = Number(await d.runJs(key, 'String(document.getElementById("box").clientHeight)'));
-    await d.runJs(key, `document.getElementById("box").scrollTop = ${box}; 0`);
+    await d.runJs(key, `(document.getElementById("box").scrollTop = ${box}, 0)`);
     const down = store.diff(key, {}, await read(key));
     console.log(down.text);
     expect(down.mode).toBe('scroll');
     expect(down.text.split('\n')[0]).toMatch(/^# 내린 뒤 새로 보이는 곳만 \(이미 본 줄 \d+개 · 화면 밖으로 지나간 줄 \d+개 생략\)$/);
     expect(down.text.split('\n').length).toBeGreaterThan(1);
     expect(down.text).not.toMatch(/^- - |^\+ /m);
-    await d.runJs(key, 'document.getElementById("box").scrollTop = 0; 0');
+    await d.runJs(key, '(document.getElementById("box").scrollTop = 0, 0)');
     const back = store.diff(key, {}, await read(key));
     expect({ ...back, text: noHint(back.text) }).toEqual({ mode: 'scroll', text: '새로 보이는 곳 없음(이미 읽은 곳)' });
   });
@@ -185,7 +185,7 @@ describeIt('페이지 읽기(snapshot)', () => {
     expect(first.text).toContain('사용자 1 번');
     const vh = Number(await d.runJs(key, 'String(window.innerHeight)'));
     const y = 40 * Math.floor(vh / 40); // 행 높이의 배수만큼 내려 맨 위 행이 온전하게
-    await d.runJs(key, `window.scrollTo(0, ${y}); 0`);
+    await d.runJs(key, `(window.scrollTo(0, ${y}), 0)`);
     const down = store.diff(key, {}, await read(key));
     expect(down.mode).toBe('scroll');
     const body = noHint(down.text).split('\n').slice(1);
@@ -201,7 +201,7 @@ describeIt('페이지 읽기(snapshot)', () => {
   test('같은 문서 안에서 주소가 바뀌면(pushState) 내린 뒤 읽기 맨 앞에 새 주소 줄이 나온다', async () => {
     const { key } = await open('scroll.html');
     store.diff(key, {}, await read(key));
-    await d.runJs(key, "history.pushState(null, '', '#다른곳'); window.scrollTo(0, document.body.scrollHeight); 0");
+    await d.runJs(key, "(history.pushState(null, '', '#다른곳'), window.scrollTo(0, document.body.scrollHeight), 0)");
     const r = store.diff(key, {}, await read(key));
     expect(r.mode).toBe('scroll');
     const lines = r.text.split('\n');
@@ -214,7 +214,7 @@ describeIt('페이지 읽기(snapshot)', () => {
     const first = store.diff(key, {}, await read(key));
     expect(first.mode).toBe('full');
     await new Promise((r) => setTimeout(r, 300)); // 캐러셀이 움직이게
-    await d.runJs(key, "var t = document.getElementById('ta'); t.value = Array(60).join('긴 줄\\n'); t.scrollTop = 50; document.getElementById('msg').textContent = '상태: 바뀜'; 0");
+    await d.runJs(key, "(function(){ var t = document.getElementById('ta'); t.value = Array(60).join('긴 줄\\n'); t.scrollTop = 50; document.getElementById('msg').textContent = '상태: 바뀜'; return 0 })()");
     const r = store.diff(key, {}, await read(key));
     expect(r.mode).toBe('diff');
     expect(r.text).toContain('- - paragraph "상태: 처음"');
@@ -234,7 +234,7 @@ describeIt('페이지 읽기(snapshot)', () => {
     expect(store.diff(key, { full: true }, await read(key, { full: true })).text).not.toContain('아래에 더 있음');
     // 안내 줄 수만 달라지는 일은 비교에 안 보인다: 다시 읽으면 변화 없음 + 안내
     expect(store.diff(key, {}, await read(key)).text).toBe('변화 없음\n' + /… 아래에 더 있음.*$/.exec(view.text)![0]);
-    await d.runJs(key, 'window.scrollTo(0, document.body.scrollHeight); 0');
+    await d.runJs(key, '(window.scrollTo(0, document.body.scrollHeight), 0)');
     const bottom = store.diff(key, {}, await read(key));
     expect(bottom.mode).toBe('scroll');
     expect(bottom.text).not.toContain('아래에 더 있음');

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { captureWindowPng } from "./capture.js";
+import { buildGuardedSource, expressionError } from "./guarded-source.js";
 import { HostError, HostTimeoutError, JxaHost } from "./jxa-host.js";
 import { TabRegistry, type Guarded, type Probe, type RawTab, type RebindResult, type SettleResult, type Spot } from "./tab-registry.js";
 import { SafariError, type SafariDriver, type TabInfo, type WindowBounds, type WindowInfo } from "./types.js";
@@ -60,11 +61,14 @@ async function frontBundleId(): Promise<string> {
   }
 }
 
+/** 페이지에서 소스를 돌리는 호스트 op(느린 길 runJs · 빠른 길 runJsFast)는 오류를 같게 가른다. */
+const isRunJs = (op: string): boolean => op === "runJs" || op === "runJsFast";
+
 /** 사파리 오류 문구(로케일에 따라 영어 · 한국어)와 오류 번호로 SafariError 코드를 정한다. */
 export function opError(op: string, e: unknown): SafariError {
   if (e instanceof SafariError) return e;
   if (e instanceof HostTimeoutError) {
-    return op === "runJs"
+    return isRunJs(op)
       ? new SafariError("ALERT_BLOCKED", "사파리가 답하지 않음 — 그 탭에 경고창이 떠 있을 수 있음(호스트를 다시 띄움)")
       : new SafariError("TIMEOUT", `${e.message} (호스트를 다시 띄움)`);
   }
@@ -73,7 +77,7 @@ export function opError(op: string, e: unknown): SafariError {
     if (e.code === "SAFARI_NOT_RUNNING") return new SafariError("SAFARI_NOT_RUNNING", msg);
     if (e.number === -1743 || /-1743/.test(msg)) return new SafariError("AUTOMATION_DENIED", msg);
     if (/Apple Events|Apple 이벤트/i.test(msg) && /JavaScript/i.test(msg)) return new SafariError("JS_FROM_APPLE_EVENTS_OFF", msg);
-    if ((op === "runJs" || op === "closeTab") && (e.number === -1728 || /Can't get|Invalid index|가져올 수 없/i.test(msg))) {
+    if ((isRunJs(op) || op === "closeTab") && (e.number === -1728 || /Can't get|Invalid index|가져올 수 없/i.test(msg))) {
       return new SafariError("TAB_CLOSED", msg);
     }
     return new SafariError("SAFARI_ERROR", msg);
@@ -98,6 +102,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
   }
 
   const guardArgs = (s: Spot) => ({ windowId: s.windowId, index: s.index, key: s.key, url: s.url, unstamped: s.unstamped, altUrl: s.altUrl });
+  const guardSpec = (s: Spot) => ({ key: s.key, unstamped: s.unstamped, url: s.url, altUrl: s.altUrl });
 
   // 탭 키(t1, t2 …)와 사파리 안 자리를 이어 주는 기록. 사용자가 탭을 옮겨도 같은 키가 같은 탭을 가리킨다.
   const registry = new TabRegistry({
@@ -286,7 +291,8 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
       await registry.withTab(tabKey, async (s) => {
         // 사용자 창의 현재 탭은 바꾸지 않는다. 우리가 연 창과 사용자가 AI 전용 창으로 고른 창 안에서만.
         if (!ownedWindows.has(s.windowId) && !adoptedWindows.has(s.windowId)) throw new SafariError("SAFARI_ERROR", "Claude 가 연 창(또는 AI 전용 창으로 고른 창) 안의 탭만 앞에 보여요");
-        return call<Guarded<null>>("showTab", guardArgs(s));
+        // 확인을 doJavaScript 한 번으로(빠른 길). 안 되면 호스트가 예전 확인으로 돌아간다.
+        return call<Guarded<null>>("showTab", { ...guardArgs(s), script: buildGuardedSource(guardSpec(s), "null") });
       });
     },
 
@@ -294,8 +300,16 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
       return (await call<boolean>("screenAccess")) === true;
     },
 
-    runJs(tabKey, source, o = {}) {
-      return registry.withTab(tabKey, (s) => call<Guarded<string>>("runJs", { ...guardArgs(s), source }, o.timeoutMs));
+    async runJs(tabKey, source, o = {}) {
+      // 소스는 식 하나여야 한다(탭 확인과 함께 한 스크립트에 `(소스)` 로 끼운다). 문장이면 사파리가 조용히 빈 값을 돌려주므로 미리 오류로 알린다.
+      const bad = expressionError(source);
+      if (bad !== null) throw new SafariError("SAFARI_ERROR", `runJs 소스는 식 하나여야 합니다(문장 · 선언은 즉시 실행 함수로 감싸세요): ${bad}`);
+      return registry.withTab(tabKey, async (s) => {
+        // 빠른 길: 탭 확인 · 표시 · 일이 doJavaScript 한 번. 자리를 못 읽었거나 표시가 안 맞으면 호스트가 {fallback}, 느린 길(runJs)이 예전처럼 확인한다.
+        const fast = await call<Guarded<string> | { fallback: true }>("runJsFast", { ...guardArgs(s), script: buildGuardedSource(guardSpec(s), source) }, o.timeoutMs);
+        if (!("fallback" in fast)) return fast;
+        return call<Guarded<string>>("runJs", { ...guardArgs(s), source }, o.timeoutMs);
+      });
     },
 
     lastUrl: (tabKey) => registry.urlOf(tabKey),
