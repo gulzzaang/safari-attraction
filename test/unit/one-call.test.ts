@@ -23,6 +23,7 @@ function runPage(script: string, page: { marker?: string; href?: string; noRoot?
     location: { href: page.href ?? "http://x/" },
     ...page.globals,
   });
+  (ctx as Record<string, unknown>).window = ctx;
   const out = vm.runInContext(script, ctx);
   return { reading: JSON.parse(out) as GuardedReading, dataset, ctx };
 }
@@ -31,7 +32,13 @@ const spec = (o: Partial<{ unstamped: boolean; url: string; altUrl: string }> = 
 describe("buildGuardedSource(탭 확인 + 일을 한 스크립트로)", () => {
   test("표시가 키와 같으면 소스를 돌리고 문서 자신의 주소를 돌려준다", () => {
     const { reading } = runPage(buildGuardedSource(spec(), "'안녕'"), { marker: KEY, href: "http://x/새" });
-    expect(reading).toEqual({ ok: true, type: "string", value: "안녕", url: "http://x/새" });
+    expect(reading).toEqual({ ok: true, type: "string", value: "안녕", url: "http://x/새", leaving: false });
+  });
+
+  test("떠나는 중 깃발(window.__saLeaving)을 같은 호출에서 함께 돌려준다", () => {
+    expect(runPage(buildGuardedSource(spec(), "1"), { marker: KEY }).reading).toMatchObject({ ok: true, leaving: false });
+    expect(runPage(buildGuardedSource(spec(), "1"), { marker: KEY, globals: { __saLeaving: true } }).reading).toMatchObject({ ok: true, leaving: true });
+    expect(runPage(buildGuardedSource(spec(), "(window.__saLeaving = true, 1)"), { marker: KEY }).reading).toMatchObject({ leaving: true }); // 소스가 세운 깃발도 돌아올 때 읽는다
   });
 
   test("표시가 다른 키면 소스를 돌리지 않고 어긋남을 알린다", () => {
@@ -168,7 +175,7 @@ describe("호스트 runJsFast · runJs · showTab (가짜 사파리, 이벤트 �
     const h = createHarness();
     h.addWindow(7, { url: "http://x/", marker: KEY });
     const r = h.ops.runJsFast!(args());
-    expect(r).toEqual({ value: "2", url: "http://x/" });
+    expect(r).toEqual({ value: "2", url: "http://x/", leaving: false });
     expect(jsEvents(h)).toBe(1);
     expect(urlEvents(h)).toBe(0);
   });
@@ -177,14 +184,14 @@ describe("호스트 runJsFast · runJs · showTab (가짜 사파리, 이벤트 �
     const h = createHarness();
     const [tab] = h.addWindow(7, { url: "http://x/old", marker: KEY });
     tab!.dest = "http://x/new";
-    expect(h.ops.runJsFast!(args({ url: "http://x/old" }))).toEqual({ value: "2", url: "http://x/old" });
+    expect(h.ops.runJsFast!(args({ url: "http://x/old" }))).toEqual({ value: "2", url: "http://x/old", leaving: false });
     expect(urlEvents(h)).toBe(0);
   });
 
   test("표시 안 한 탭이 주소로 알아봐지면 한 번에 표시를 적고 돈다", () => {
     const h = createHarness();
     const [tab] = h.addWindow(7, { url: "http://x/" });
-    expect(h.ops.runJsFast!(args({ unstamped: true }))).toEqual({ value: "2", url: "http://x/" });
+    expect(h.ops.runJsFast!(args({ unstamped: true }))).toEqual({ value: "2", url: "http://x/", leaving: false });
     expect(tab!.page.dataset.saTab).toBe(KEY);
     expect(jsEvents(h)).toBe(1);
   });
@@ -202,7 +209,7 @@ describe("호스트 runJsFast · runJs · showTab (가짜 사파리, 이벤트 �
     const [tab] = h.addWindow(7, { url: "http://x/" }); // 표시 없음
     tab!.dest = "http://x/";
     const r = h.ops.runJs!({ ...args({ unstamped: true }), source: "1 + 1" });
-    expect(r).toEqual({ value: "2", url: "http://x/" });
+    expect(r).toEqual({ value: "2", url: "http://x/" }); // 느린 길은 떠나는 중인지 모른다
     expect(tab!.page.dataset.saTab).toBe(KEY);
   });
 
@@ -275,6 +282,44 @@ describe("호스트 runJsFast · runJs · showTab (가짜 사파리, 이벤트 �
   });
 });
 
+describe("호스트 settle 빠른 길(같은 문서면 doJavaScript 한 번 + currentTab 한 번)", () => {
+  const sargs = (o: Record<string, unknown> = {}) => ({ windowId: 7, index: 1, key: KEY, url: "http://x/", ...o });
+  const count = (h: ReturnType<typeof createHarness>, kind: string) => h.events.filter((e) => e.kind === kind).length;
+
+  test("표시가 키면 Apple Event 둘(doJavaScript · currentTab)로 same 을 돌려준다 — tab.url() · tab.name() 없음", () => {
+    const h = createHarness();
+    const [tab] = h.addWindow(7, { url: "http://x/a", marker: KEY, globals: { __saLeaving: true } });
+    tab!.page.title = "제목";
+    tab!.dest = "http://x/목적지"; // 이동 중이라 tab.url() 은 목적지 — 쓰지 않는다
+    const r = h.ops.settle!(sargs());
+    expect(r).toEqual({ status: "same", leaving: true, tab: { windowId: 7, index: 1, title: "제목", url: "http://x/a", isActive: true } });
+    expect(count(h, "doJavaScript")).toBe(1);
+    expect(count(h, "currentTab")).toBe(1);
+    expect(count(h, "tabUrl")).toBe(0);
+  });
+
+  test("떠나는 중 깃발이 없으면 leaving false", () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://x/", marker: KEY });
+    expect(h.ops.settle!(sargs())).toMatchObject({ status: "same", leaving: false });
+  });
+
+  test("표시가 없으면(새 문서) 빠른 길은 물러나 예전 확인이 한다 — tab.url() 을 읽는다", () => {
+    const h = createHarness();
+    const [tab] = h.addWindow(7, { url: "http://x/", marker: "" });
+    (tab as unknown as { name: () => string }).name = () => "";
+    h.ops.settle!(sargs({ waitUntil: "commit" }));
+    expect(count(h, "tabUrl")).toBeGreaterThan(0);
+  });
+
+  test("다른 키의 표시 · 없는 탭은 예전처럼 other · gone", () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://x/", marker: "t9.other" });
+    expect(h.ops.settle!(sargs())).toEqual({ status: "other" });
+    expect(h.ops.settle!(sargs({ index: 4 }))).toEqual({ status: "gone" });
+  });
+});
+
 describe("드라이버 runJs: 빠른 길 → 안 되면 느린 길(가짜 호스트로 부름 순서를 본다)", () => {
   type Call = { op: string; args: Record<string, any> };
   function setup(script: (op: string, args: Record<string, any>) => unknown) {
@@ -302,6 +347,19 @@ describe("드라이버 runJs: 빠른 길 → 안 되면 느린 길(가짜 호스
     expect(fast).toMatchObject({ windowId: 5, index: 1, unstamped: false });
     expect(fast.script).toContain("1+1");
     expect(fast.source).toBeUndefined(); // 소스를 두 번 보내지 않는다
+  });
+
+  test("runJsDetailed: 값 · 문서 주소 · 떠나는 중 · 시키기 전 주소를 돌려준다(느린 길이면 떠나는 중은 모름)", async () => {
+    let n = 0;
+    const { d } = setup((op) => {
+      if (op === "runJsFast") return ++n === 1 ? { value: "a", url: "http://x/#h", leaving: false } : { fallback: true };
+      if (op === "runJs") return { value: "b", url: "http://x/" };
+      return undefined;
+    });
+    const { tab } = await d.openTab("http://x/");
+    expect(await d.runJsDetailed!(tab.key, "1")).toEqual({ value: "a", url: "http://x/#h", leaving: false, urlBefore: "http://x/" });
+    // 첫 호출이 주소를 #h 로 새로 했으니 다음 호출의 urlBefore 는 그 주소
+    expect(await d.runJsDetailed!(tab.key, "1")).toEqual({ value: "b", url: "http://x/", leaving: undefined, urlBefore: "http://x/#h" });
   });
 
   test("{fallback} 이면 느린 길 runJs 로 소스를 보낸다", async () => {

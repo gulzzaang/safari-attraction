@@ -85,7 +85,7 @@ describeIt("사파리 드라이버(JXA)", () => {
       code: 'ALERT_BLOCKED',
     });
     expect(await d.runJs(kb, '1+1')).toBe('2'); // 다른 탭에서 정상
-  });
+  }, 30_000); // 호스트를 죽이고 다시 띄우느라 기본 5초를 넘는다
 
   test('한글이 그대로 오간다', async () => {
     const { tab } = await d.openTab(mine('basic.html'));

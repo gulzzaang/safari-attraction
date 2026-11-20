@@ -56,6 +56,17 @@ export class SafariError extends Error {
   }
 }
 
+/** runJsDetailed 의 결과. */
+export interface RunJsDetail {
+  value: string;
+  /** 소스를 돌린 문서 자신의 주소(location.href). 모르면(느린 길 · 옛 호스트) undefined. */
+  url?: string;
+  /** 일을 시키기 전에 기록해 둔 그 탭의 주소. */
+  urlBefore: string;
+  /** 돌린 뒤 문서를 떠나는 중(beforeunload 깃발)인가. 빠른 길만 안다 — 모르면 undefined(이동 확인을 줄이지 말 것). */
+  leaving?: boolean;
+}
+
 export interface SafariDriver {
   listWindows(): Promise<WindowInfo[]>;
   listTabs(): Promise<TabInfo[]>;
@@ -70,6 +81,8 @@ export interface SafariDriver {
    * 소스가 던진 오류는 사파리가 오류로 올리지 않아 빈 글이 된다(소스 쪽에서 try/catch 로 JSON 을 돌려주는 게 좋다).
    */
   runJs(tabKey: string, source: string, opts?: { timeoutMs?: number }): Promise<string>;
+  /** runJs 와 같되 값 말고 주소 · 떠나는 중 깃발도 돌려준다(동작 뒤 이동 확인을 줄이는 데 쓴다). 없는 드라이버(가짜)는 줄이지 않고 늘 확인한다. */
+  runJsDetailed?(tabKey: string, source: string, opts?: { timeoutMs?: number }): Promise<RunJsDetail>;
   /** 그 탭의 마지막으로 알려진 주소(동기). openTab · runJs · settleTab · rebindTab 이 새로 한다. 모르는 키(닫힘)면 undefined. */
   lastUrl(tabKey: string): string | undefined;
   closeTab(tabKey: string): Promise<void>;

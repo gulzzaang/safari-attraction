@@ -137,7 +137,42 @@ function guardedRun(args) {
     return { kind: "fallback" };
   }
   if (!r || r.ok !== true) return { kind: "fallback" };
-  return { kind: "ok", tab, value: typeof r.value === "string" ? r.value : "", url: typeof r.url === "string" ? r.url : undefined };
+  return { kind: "ok", tab, value: typeof r.value === "string" ? r.value : "", url: typeof r.url === "string" ? r.url : undefined, leaving: r.leaving === true };
+}
+
+// settle 의 빠른 길: 표시 · 떠나는 중 깃발 · 문서 자신의 주소 · 제목을 doJavaScript 한 번으로 읽는다(예전에는 tab.url() · 표시 읽기 · 깃발 읽기 · tab.name() 이 따로였다).
+// 표시가 이 키일 때(= 아직 옛 문서, 상태 "same")만 여기서 답하고, 그 밖의 모든 경우(표시 없음 = 새 문서 · 다른 키 · 탭 없음 · 못 읽음)는 null 을 돌려줘 예전 확인이 그대로 한다.
+const SETTLE_PROBE =
+  "JSON.stringify({ m: String(document.documentElement.dataset.saTab || ''), lv: window.__saLeaving === true, href: location.href, t: document.title })";
+function settleFast(args) {
+  let tab;
+  let raw;
+  try {
+    tab = tabOf(args);
+    raw = Safari.doJavaScript(SETTLE_PROBE, { in: tab });
+  } catch (e) {
+    if (isJsOffError(e)) throw e;
+    return null;
+  }
+  if (typeof raw !== "string") return null;
+  let r;
+  try {
+    r = JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+  if (!r || r.m !== args.key || typeof r.href !== "string" || r.href === "") return null;
+  let isActive;
+  try {
+    isActive = args.index === Safari.windows.byId(args.windowId).currentTab().index();
+  } catch (e) {
+    return null;
+  }
+  return {
+    status: "same",
+    leaving: r.lv === true,
+    tab: { windowId: args.windowId, index: args.index, title: str(r.t), url: r.href, isActive },
+  };
 }
 
 // 문서를 쓸 수 있는 때인가(Playwright 의 domcontentloaded 처럼): DOMContentLoaded 이벤트가 끝났고(navigation 기록의 domContentLoadedEventEnd > 0 —
@@ -381,6 +416,8 @@ const ops = {
   // 쓸 수 있을 때까지(args.waitUntil 이 "commit" 이면 기다리지 않고) 기다려 표시를 다시 적고 {status:"navigated"}. 다른 키의 표시 → "other", 탭 없음 → "gone".
   // 읽기만 하고 아무것도 지우지 않는다(표시가 없다는 이유로 탭을 잃지 않게 하려는 확인용).
   settle(args) {
+    const quick = settleFast(args);
+    if (quick) return quick;
     const p0 = probeTab(args.windowId, args.index);
     if (!p0) return { status: "gone" };
     if (p0.marker !== "" && p0.marker !== args.key) return { status: "other" };
@@ -597,7 +634,7 @@ const ops = {
   // 소스가 던진 오류로 사파리가 null 을 돌려준 때는 소스를 다시 돌리지 않는다 — 자리가 맞는지만 느린 길로 확인해, 맞으면 예전처럼 빈 값, 아니면 stale.
   runJsFast(args) {
     const f = guardedRun(args);
-    if (f.kind === "ok") return { value: f.value, url: f.url };
+    if (f.kind === "ok") return { value: f.value, url: f.url, leaving: f.leaving };
     if (f.kind === "threw") {
       const g = guardTab(args);
       if (!g) return { stale: true };

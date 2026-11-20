@@ -4,7 +4,7 @@ import { captureWindowPng } from "./capture.js";
 import { buildGuardedSource, expressionError } from "./guarded-source.js";
 import { HostError, HostTimeoutError, JxaHost } from "./jxa-host.js";
 import { TabRegistry, type Guarded, type Probe, type RawTab, type RebindResult, type SettleResult, type Spot } from "./tab-registry.js";
-import { SafariError, type SafariDriver, type TabInfo, type WindowBounds, type WindowInfo } from "./types.js";
+import { SafariError, type RunJsDetail, type SafariDriver, type TabInfo, type WindowBounds, type WindowInfo } from "./types.js";
 
 export { SafariError } from "./types.js";
 export type { SafariDriver, TabInfo, WindowInfo } from "./types.js";
@@ -212,6 +212,19 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     if (r.gone) throw windowClosed(windowId);
   }
 
+  async function runJsDetailed(tabKey: string, source: string, o: { timeoutMs?: number } = {}): Promise<RunJsDetail> {
+    // 소스는 식 하나여야 한다(탭 확인과 함께 한 스크립트에 `(소스)` 로 끼운다). 문장이면 사파리가 조용히 빈 값을 돌려주므로 미리 오류로 알린다.
+    const bad = expressionError(source);
+    if (bad !== null) throw new SafariError("SAFARI_ERROR", `runJs 소스는 식 하나여야 합니다(문장 · 선언은 즉시 실행 함수로 감싸세요): ${bad}`);
+    const r = await registry.withTabDetail(tabKey, async (s) => {
+      // 빠른 길: 탭 확인 · 표시 · 일이 doJavaScript 한 번. 자리를 못 읽었거나 표시가 안 맞으면 호스트가 {fallback}, 느린 길(runJs)이 예전처럼 확인한다.
+      const fast = await call<Guarded<string> | { fallback: true }>("runJsFast", { ...guardArgs(s), script: buildGuardedSource(guardSpec(s), source) }, o.timeoutMs);
+      if (!("fallback" in fast)) return fast;
+      return call<Guarded<string>>("runJs", { ...guardArgs(s), source }, o.timeoutMs); // 느린 길은 떠나는 중인지 모른다(leaving 없음)
+    });
+    return { value: r.value, url: r.url, urlBefore: r.urlBefore, leaving: r.leaving };
+  }
+
   return {
     async listWindows() {
       const raw = await call<Omit<WindowInfo, "owned">[]>("listWindows");
@@ -300,17 +313,9 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
       return (await call<boolean>("screenAccess")) === true;
     },
 
-    async runJs(tabKey, source, o = {}) {
-      // 소스는 식 하나여야 한다(탭 확인과 함께 한 스크립트에 `(소스)` 로 끼운다). 문장이면 사파리가 조용히 빈 값을 돌려주므로 미리 오류로 알린다.
-      const bad = expressionError(source);
-      if (bad !== null) throw new SafariError("SAFARI_ERROR", `runJs 소스는 식 하나여야 합니다(문장 · 선언은 즉시 실행 함수로 감싸세요): ${bad}`);
-      return registry.withTab(tabKey, async (s) => {
-        // 빠른 길: 탭 확인 · 표시 · 일이 doJavaScript 한 번. 자리를 못 읽었거나 표시가 안 맞으면 호스트가 {fallback}, 느린 길(runJs)이 예전처럼 확인한다.
-        const fast = await call<Guarded<string> | { fallback: true }>("runJsFast", { ...guardArgs(s), script: buildGuardedSource(guardSpec(s), source) }, o.timeoutMs);
-        if (!("fallback" in fast)) return fast;
-        return call<Guarded<string>>("runJs", { ...guardArgs(s), source }, o.timeoutMs);
-      });
-    },
+    runJs: async (tabKey, source, o = {}) => (await runJsDetailed(tabKey, source, o)).value,
+
+    runJsDetailed,
 
     lastUrl: (tabKey) => registry.urlOf(tabKey),
 

@@ -276,3 +276,94 @@ describe('Page.url() 은 await 없이 마지막으로 알려진 주소를 돌려
     expect(page.url()).toBe('http://x/a');
   });
 });
+
+describe('Page: 이동 신호가 없을 때 settleTab 을 건너뛰는 동작(fill · hover · focus · scroll 만)', () => {
+  type Detail = { value: string; url?: string; urlBefore: string; leaving?: boolean };
+  /** runJsDetailed 가 있는 가짜 드라이버. detail 은 동작 결과(글)에 붙여 돌려줄 주소 · 깃발. */
+  function fakeDetailed(r: object, detail: Partial<Detail> = {}) {
+    const log = { settle: 0, detailed: 0, plain: 0 };
+    const tab: TabInfo = { key: 't1', windowId: 1, index: 1, title: '', url: 'http://x/', isActive: false, owned: true };
+    const d = {
+      async runJs() {
+        log.plain++;
+        return ok(r);
+      },
+      async runJsDetailed() {
+        log.detailed++;
+        return { value: ok(r), url: 'http://x/', urlBefore: 'http://x/', leaving: false, ...detail };
+      },
+      async settleTab() {
+        log.settle++;
+        return { navigated: false, leaving: false, tab };
+      },
+    } as unknown as SafariDriver;
+    return { page: new Page(d, 't1'), log };
+  }
+
+  test('fill: 신호가 없으면 settleTab 을 부르지 않는다', async () => {
+    const { page, log } = fakeDetailed({});
+    await page.locator('e1').fill('값');
+    expect(log).toEqual({ settle: 0, detailed: 1, plain: 0 });
+  });
+  test.each([
+    ['hover', (p: Page) => p.locator('e1').hover()],
+    ['focus', (p: Page) => p.locator('e1').focus()],
+    ['scroll', (p: Page) => p.locator('e1').scrollIntoViewIfNeeded()],
+  ])('%s 도 신호가 없으면 건너뛴다', async (_n, run) => {
+    const { page, log } = fakeDetailed({});
+    await run(page);
+    expect(log.settle).toBe(0);
+  });
+  test('해시만 바뀐 주소는 같은 문서 안 이동이라 건너뛴다', async () => {
+    const { page, log } = fakeDetailed({}, { url: 'http://x/#a' });
+    await page.locator('e1').fill('값');
+    expect(log.settle).toBe(0);
+  });
+  test('주소가 해시 밖에서 바뀌었으면(pushState 등) 확인한다', async () => {
+    const { page, log } = fakeDetailed({}, { url: 'http://x/other' });
+    await page.locator('e1').fill('값');
+    expect(log.settle).toBe(1);
+  });
+  test('떠나는 중 · 모름(느린 길) · 주소 모름이면 확인한다', async () => {
+    for (const detail of [{ leaving: true }, { leaving: undefined }, { url: undefined }]) {
+      const { page, log } = fakeDetailed({}, detail);
+      await page.locator('e1').fill('값');
+      expect(log.settle).toBe(1);
+    }
+  });
+  test('동작이 expectNav 를 알리거나 짧은 타이머를 잡았으면 확인한다', async () => {
+    const a = fakeDetailed({ expectNav: true });
+    await a.page.locator('e1').fill('값');
+    expect(a.log.settle).toBeGreaterThan(0);
+    const b = fakeDetailed({ timerMs: 0 });
+    await b.page.locator('e1').fill('값');
+    expect(b.log.settle).toBe(1);
+    const c = fakeDetailed({ timerMs: 5000 }); // 긴 타이머는 예전에도 기다리지 않고 한 번만 확인했다 — 건너뛴다
+    await c.page.locator('e1').fill('값');
+    expect(c.log.settle).toBe(0);
+  });
+  test('click · press · type · select · check · evaluate 는 신호가 없어도 늘 확인한다(runJsDetailed 도 안 쓴다)', async () => {
+    const runs: Array<(p: Page) => Promise<unknown>> = [
+      (p) => p.locator('e1').click(),
+      (p) => p.keyboard.press('Enter'),
+      (p) => p.keyboard.type('a'),
+      (p) => p.locator('e1').selectOption('x'),
+      (p) => p.locator('e1').check(),
+    ];
+    for (const run of runs) {
+      const { page, log } = fakeDetailed({});
+      await run(page);
+      expect(log.settle).toBe(1);
+      expect(log.detailed).toBe(0);
+    }
+    const { page, log } = fakeDetailed({ ok: true, r: {} });
+    log.settle = 0;
+    await page.evaluate(() => 1 + 1).catch(() => undefined);
+    expect(log.detailed).toBe(0);
+  });
+  test('runJsDetailed 가 없는 드라이버는 늘 확인한다', async () => {
+    const { page, log } = fake(() => ok({}), [same]);
+    await page.locator('e1').fill('값');
+    expect(log.settle).toBe(1);
+  });
+});

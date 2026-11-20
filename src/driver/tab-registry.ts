@@ -30,7 +30,10 @@ export interface Spot {
 }
 
 /** 호스트가 보낸 답 — 자리의 탭이 키와 맞지 않으면 stale. */
-export type Guarded<T> = { stale: true } | { value: T; /** 일을 마친 뒤의 탭 주소(알면). */ url?: string };
+export type Guarded<T> = { stale: true } | { value: T; /** 일을 마친 뒤의 탭 주소(알면). */ url?: string; /** 일을 마친 뒤 문서를 떠나는 중인가(beforeunload 깃발, 빠른 길만 안다). */ leaving?: boolean };
+
+/** withTabDetail 의 결과: 호스트가 돌려준 것과, 일을 시키기 전에 기록해 둔 주소. */
+export type Detailed<T> = { value: T; url?: string; leaving?: boolean; urlBefore: string };
 
 /** 호스트의 rebind 답. gone = 그 자리에 탭 없음, other = 그 자리에 다른 키의 표시가 있는 탭. */
 export type RebindResult = { status: "ok"; tab: RawTab; /** 표시가 실제로 적혔는가(안 주면 적힌 것으로 본다). */ stamped?: boolean } | { status: "gone" } | { status: "other" };
@@ -189,11 +192,18 @@ export class TabRegistry {
    * 탭을 다시 찾아 한 번 더 시킨다. 그래도 아니면 TAB_CLOSED.
    */
   async withTab<T>(key: string, run: (spot: Spot) => Promise<Guarded<T>>): Promise<T> {
+    return (await this.withTabDetail(key, run)).value;
+  }
+
+  /** withTab 과 같되, 호스트가 알려 준 주소 · 떠나는 중 깃발과 일을 시키기 전에 기록해 둔 주소(urlBefore)도 돌려준다. */
+  async withTabDetail<T>(key: string, run: (spot: Spot) => Promise<Guarded<T>>): Promise<Detailed<T>> {
     try {
-      let r = await run(this.spot(key));
+      let spot = this.spot(key);
+      let r = await run(spot);
       if ("stale" in r) {
         await this.relocate(key);
-        r = await run(this.spot(key));
+        spot = this.spot(key);
+        r = await run(spot);
         if ("stale" in r) {
           this.forget(key);
           throw tabClosed(key);
@@ -204,7 +214,7 @@ export class TabRegistry {
         const e = this.entries.get(key);
         if (e) e.url = r.url; // 같은 문서 안 이동(SPA)으로 바뀐 주소
       }
-      return r.value;
+      return { value: r.value, url: r.url, leaving: r.leaving, urlBefore: spot.url };
     } catch (err) {
       if (err instanceof SafariError && (err.code === "ALERT_BLOCKED" || err.code === "TIMEOUT")) this.markBlocked(key);
       throw err;

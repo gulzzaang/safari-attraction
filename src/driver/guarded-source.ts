@@ -6,7 +6,7 @@
  *   2) 표시가 키와 같으면 그대로, 표시가 없고 아직 표시를 안 한 탭(unstamped)이면서 문서 자신의 주소(location.href)가
  *      기록한 주소(url) 또는 대신 받아들일 주소(altUrl)와 같으면 표시를 적고 간다. 적지 못해도 간다(예전과 같다).
  *   3) 그 밖에는 소스를 돌리지 않고 `{ok:false}` 를 돌려준다(호스트가 느린 길로 다시 확인한다).
- *   4) 소스(식 하나)를 돌려 값을 글로 바꾸고 `{ok:true, type, value, url}` 을 돌려준다. url 은 문서 자신의 location.href 다 —
+ *   4) 소스(식 하나)를 돌려 값을 글로 바꾸고 `{ok:true, type, value, url, leaving}` 을 돌려준다(leaving = `window.__saLeaving === true`, 동작 뒤 이동 확인을 줄이는 데 쓴다). url 은 문서 자신의 location.href 다 —
  *      사파리의 tab.url() 은 이동이 진행 중일 때 가는 중인 목적지를 돌려주므로 쓰지 않는다.
  *
  * 값 바꾸기는 예전 호스트와 같다: 글은 그대로, 숫자 · 불리언은 String, null · undefined 는 빈 글, 그 밖은 JSON.stringify(없으면 빈 글).
@@ -31,7 +31,7 @@ export interface GuardSpec {
 export type ValueType = "string" | "number" | "boolean" | "null" | "object" | "function" | "symbol" | "bigint";
 
 /** 한 번의 doJavaScript 가 돌려주는 글(JSON)의 꼴. */
-export type GuardedReading = { ok: true; type: ValueType; value: string; url: string } | { ok: false; marker: string; url: string };
+export type GuardedReading = { ok: true; type: ValueType; value: string; url: string; /** 문서를 떠나는 중인가(`window.__saLeaving`, beforeunload 때 Page 의 동작 코드가 세운 깃발). */ leaving: boolean } | { ok: false; marker: string; url: string };
 
 export function buildGuardedSource(g: GuardSpec, source: string): string {
   const here = g.unstamped
@@ -48,7 +48,7 @@ var __saV = (${source}
 );
 var __saT = __saV === null || __saV === undefined ? 'null' : typeof __saV;
 var __saS = __saT === 'null' ? '' : __saT === 'string' ? __saV : __saT === 'number' || __saT === 'boolean' ? String(__saV) : JSON.stringify(__saV);
-return JSON.stringify({ ok: true, type: __saT, value: typeof __saS === 'string' ? __saS : '', url: location.href });
+return JSON.stringify({ ok: true, type: __saT, value: typeof __saS === 'string' ? __saS : '', url: location.href, leaving: window.__saLeaving === true });
 })(${JSON.stringify(g.key)})`;
 }
 

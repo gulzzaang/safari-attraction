@@ -70,6 +70,20 @@ const PAINT_SETTLE_MS = 120;
 const NAVIGATING_SRC =
   /\blocation\b(\s*\.\s*href)?\s*=(?!=)|\.\s*(assign|replace|reload|submit|click|requestSubmit)\s*\(|\bhistory\s*\.\s*(back|forward|go)\s*\(|\bwindow\s*\.\s*open\s*\(/;
 
+/**
+ * 동작 뒤 settleTab(탭이 이동했는지 확인, 약 35~100ms)을 건너뛸 수 있는 동작. 실제 사파리에서 동작이 돌아온 순간 이동 신호를 재 봤더니(시나리오마다 12번)
+ *   - 문서를 떠나는 중 깃발(beforeunload, `window.__saLeaving`)은 진짜 이동에서도 한 번도 서 있지 않았다 → 신호로 못 쓴다.
+ *   - 동작 코드의 expectNav 는 링크 클릭 · 폼 제출(엔터 · 단추) · 클릭 핸들러의 location.href= 에서는 12/12 로 알렸지만,
+ *     클릭 핸들러의 location.reload() 는 신호가 없었다(진짜 이동인데).
+ *   - evaluate 는 `() => go()` · `() => clicklink()` 처럼 식 밖에서 일으키는 이동이 신호가 전혀 없다(주소 · 깃발 · expectNav 모두).
+ * 그래서 이동을 일으키려고 하는 동작(click · press · type · select · check · evaluate · goto · nav)은 언제나 settleTab 을 한다.
+ * 값을 넣거나 보이게만 하는 동작(fill · hover · focus · scroll)만, 신호가 하나도 없을 때(떠나는 중 아님 · expectNav 아님 · 잡힌 짧은 타이머 없음 ·
+ * 돌려받은 문서 주소가 시키기 전 주소와 #해시 빼고 같음) 건너뛴다. 해시만 바뀐 건 같은 문서 안 이동이라 드라이버가 기록한 주소만 새로 한다.
+ */
+const SETTLE_FREE_OPS: ReadonlySet<ActionOp> = new Set<ActionOp>(["fill", "hover", "focus", "scroll"]);
+
+const withoutHash = (u: string): string => u.split("#")[0]!;
+
 let tokenSeq = 0;
 const newToken = () => `sa${Date.now().toString(36)}_${++tokenSeq}`;
 
@@ -369,7 +383,7 @@ export class Page {
   /** 페이지 안 동작 하나를 돌리고, 문서가 바뀌었으면 탭 키를 다시 붙인다. */
   private async act(op: ActionOp, args: Record<string, unknown>, nav?: NavWait) {
     this.checkAbort();
-    return this.run(buildActionSource(op, { ...args, tok: newToken() }), false, nav);
+    return this.run(buildActionSource(op, { ...args, tok: newToken() }), false, nav, SETTLE_FREE_OPS.has(op));
   }
 
   /** 읽기만 하는 동작 하나(이동을 일으키지 않으니 settleTab 확인은 하지 않는다). */
@@ -468,11 +482,17 @@ export class Page {
     if (this.ai?.aborted?.()) throw new Error("repl 호출이 이미 끝나서 기다림을 멈췄어요(이 코드는 더 이상 페이지에 아무것도 하지 않아요)");
   }
 
-  private async run(source: string, expectNav: boolean, nav?: NavWait) {
-    const raw = await this.driver.runJs(this.key, source);
+  private async run(source: string, expectNav: boolean, nav?: NavWait, maySkipSettle = false) {
+    // settleTab 을 건너뛸 수 있는 동작만 주소 · 깃발을 함께 받는다(SETTLE_FREE_OPS). 드라이버가 못 주면 늘 확인한다.
+    const detail = maySkipSettle && this.driver.runJsDetailed ? await this.driver.runJsDetailed(this.key, source) : undefined;
+    const raw = detail ? detail.value : await this.driver.runJs(this.key, source);
     const res = JSON.parse(raw) as ActionOk | ActionErr;
     if (!res.ok) throw new Error(res.err);
     if (res.r.notReady) return res.r; // 동작하지 않았으니 이동도 없다
+    if (detail && !nav && !expectNav && !res.r.expectNav && !(res.r.timerMs !== undefined && res.r.timerMs >= 0 && res.r.timerMs <= TIMER_WAIT_MAX_MS)) {
+      const sameDoc = detail.leaving === false && detail.url !== undefined && withoutHash(detail.url) === withoutHash(detail.urlBefore);
+      if (sameDoc) return res.r; // 이동 신호가 하나도 없다 — 확인을 건너뛴다(주소는 드라이버가 이미 새로 해 뒀다)
+    }
     await this.settle(expectNav || !!res.r.expectNav, res.r.timerMs ?? -1, nav);
     return res.r;
   }

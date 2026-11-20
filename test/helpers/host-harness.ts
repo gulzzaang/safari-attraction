@@ -15,6 +15,7 @@ export interface FakePage {
   href: string;
   /** 페이지 전역(소스가 읽을 수 있는 이름). */
   globals: Record<string, unknown>;
+  title?: string;
   /** 이 페이지에서 JS 를 못 돈다(null 을 돌려준다). */
   noJs?: boolean;
   /** 사파리가 오류를 올린다(「Apple 이벤트에서 JavaScript 허용」 꺼짐). */
@@ -31,7 +32,7 @@ export interface FakeTab {
   url(): string;
 }
 
-export type Event = { kind: "doJavaScript"; script: string } | { kind: "tabUrl" } | { kind: "setCurrentTab"; windowId: number };
+export type Event = { kind: "doJavaScript"; script: string } | { kind: "tabUrl" } | { kind: "setCurrentTab"; windowId: number } | { kind: "currentTab" };
 
 export interface Harness {
   ops: Record<string, (args: Record<string, unknown>) => any>;
@@ -66,6 +67,13 @@ export function createHarness(): Harness {
             events.push({ kind: "setCurrentTab", windowId: id });
             if (w) w.current = t;
           },
+          // win.currentTab() — 호출하면 현재 탭(없으면 첫 탭)의 {index()} 를 돌려준다. Apple Event 한 번으로 센다.
+          get currentTab() {
+            return () => {
+              events.push({ kind: "currentTab" });
+              return { index: () => (w ? Math.max(0, w.tabs.indexOf(w.current ?? w.tabs[0]!)) + 1 : 0) };
+            };
+          },
         };
       },
     },
@@ -78,6 +86,7 @@ export function createHarness(): Harness {
       if (p.noJs) return null;
       const ctx = vm.createContext({
         document: {
+          title: p.title ?? "",
           get documentElement() {
             if (p.noRoot) return null;
             return { dataset: p.dataset };
@@ -86,6 +95,7 @@ export function createHarness(): Harness {
         location: { href: p.href },
         ...p.globals,
       });
+      (ctx as Record<string, unknown>).window = ctx; // window.__saLeaving 처럼 전역을 window 로 읽는 코드용
       try {
         const v = vm.runInContext(script, ctx);
         return v === undefined ? null : v;
