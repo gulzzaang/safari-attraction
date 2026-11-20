@@ -263,6 +263,28 @@ describe("호스트 runJsFast · runJs · showTab (가짜 사파리, 이벤트 �
     expect(jsEvents(h)).toBe(1); // 느린 길 · 자리 확인을 하지 않았다
   });
 
+  test("[N1] 자리가 키의 탭이 아니고 문서가 JS 를 못 돌면(시작 페이지 · 특수 페이지) null 은 소스가 안 돈 것 — stale 로 돌려 탭을 다시 찾게 한다", () => {
+    const h = createHarness();
+    const [tab] = h.addWindow(7, { url: "http://x/", marker: "" }); // 표시를 한 탭(unstamped 아님)인데 표시도 없고 JS 도 못 돈다
+    tab!.page.noJs = true;
+    expect(h.ops.runJsFast!(args())).toEqual({ stale: true });
+  });
+
+  test("[N1] JS 를 돌 수 있는 문서에서 null(소스가 던짐)이면 자리가 안 맞아도 빈 값 — 다시 돌리지 않는다", () => {
+    const h = createHarness();
+    const [tab] = h.addWindow(7, { url: "http://x/", marker: KEY });
+    const throwing = "(function(){ window.runs = (window.runs || 0) + 1; document.documentElement.dataset.saTab = 'other'; throw new Error('boom') })()";
+    expect(h.ops.runJsFast!(args({}, throwing))).toEqual({ value: "" });
+    expect(tab!.page.ctx!.runs).toBe(1);
+  });
+
+  test("[N1] 표시 안 한 탭이 JS 를 못 돌아도 주소가 맞으면 예전처럼 빈 값", () => {
+    const h = createHarness();
+    const [tab] = h.addWindow(7, { url: "http://x/" });
+    tab!.page.noJs = true;
+    expect(h.ops.runJsFast!(args({ unstamped: true }))).toEqual({ value: "" });
+  });
+
   test("[I1] 변환 오류(-10000 등) · 알 수 없는 오류도 그대로 올린다", () => {
     const h = createHarness();
     const [tab] = h.addWindow(7, { url: "http://x/", marker: KEY });
@@ -332,6 +354,26 @@ describe("[M3] 주소 꼴 차이(끝 슬래시 · 퍼센트 인코딩)", () => {
     expect(sameUrl("about:blank", "about:blank")).toBe(true);
     expect(sameUrl(undefined, "http://a/")).toBe(false);
     expect(urlForms(["https://a.com", undefined, "https://a.com/"])).toEqual(["https://a.com", "https://a.com/"]);
+  });
+
+  test("[N2] 한글 경로: 기록은 인코딩, 사파리가 글자 그대로 · 소문자 %xx 로 보여도 Node · 스크립트 · 호스트가 같은 집합을 받아들인다", () => {
+    const enc = "https://ko.wikipedia.org/wiki/%EC%84%9C%EC%9A%B8?q=%ED%95%9C%20%EA%B8%80";
+    const lit = "https://ko.wikipedia.org/wiki/서울?q=한%20글";
+    const low = "https://ko.wikipedia.org/wiki/%ec%84%9c%ec%9a%b8?q=%ed%95%9c%20%ea%b8%80";
+    for (const [rec, obs] of [[enc, lit], [enc, low], [lit, enc], [low, enc], [lit, low], [enc, enc]] as const) {
+      expect(sameUrl(rec, obs), `${rec} ~ ${obs}`).toBe(true); // Node 규칙
+      expect(urlForms([rec]), `forms(${rec}) ∋ ${obs}`).toContain(obs); // 글자 비교만 하는 쪽 후보
+      // 스크립트
+      expect(runPage(buildGuardedSource(spec({ unstamped: true, url: rec }), "1"), { href: obs }).reading.ok).toBe(true);
+      // 호스트 guardTab
+      const h = createHarness();
+      h.addWindow(7, { url: obs });
+      expect(h.ops.runJs!({ windowId: 7, index: 1, key: KEY, url: rec, unstamped: true, urls: urlForms([rec]), source: "1" })).toMatchObject({ value: "1" });
+    }
+    // 다른 주소는 어느 쪽도 받아들이지 않는다
+    const other = "https://ko.wikipedia.org/wiki/%EB%B6%80%EC%82%B0";
+    expect(sameUrl(enc, other)).toBe(false);
+    expect(urlForms([enc])).not.toContain(other);
   });
 
   test("표시 안 한 탭: 기록한 주소와 문서 주소의 꼴이 달라도(끝 슬래시 · 한글 인코딩) 알아본다", () => {

@@ -646,14 +646,26 @@ const ops = {
   },
 
   // runJs 의 빠른 길: 탭 확인 · 표시 · 일이 doJavaScript 한 번이다(args.script). 소스가 안 돈 게 확실할 때만 {fallback: true}(느린 길 runJs 가 소스를 보낸다).
-  // 소스가 돌았을 수 있으면(null · 못 읽는 답) 다시 돌리지 않고 빈 값을 돌려준다 — 자리 확인(guardTab)은 표시를 안 적은 탭에 표시를 적기 위한 것뿐이고, 어긋나도 stale 로 되돌리지 않는다.
+  // 소스가 돌았을 수 있으면(null · 못 읽는 답) 다시 돌리지 않고 빈 값을 돌려준다 — 자리 확인(guardTab)은 표시를 안 적은 탭에 표시를 적기 위한 것이다.
+  // 자리 확인이 실패했을 때는 문서가 JS 를 못 도는지만 가린다(JS 를 못 도는 문서면 소스가 안 돈 것이니 stale).
   runJsFast(args) {
     const f = guardedRun(args);
     if (f.kind === "ok") return { value: f.value, url: f.url, leaving: f.leaving };
     if (f.kind === "ran") {
       const g = guardTab(args);
-      if (g && g.marker !== args.key) stampTab(g.tab, args.key); // 문법 오류로 글이 안 돌았으면 표시도 안 적혔다
-      return { value: "" };
+      if (g) {
+        if (g.marker !== args.key) stampTab(g.tab, args.key); // 문법 오류로 글이 안 돌았으면 표시도 안 적혔다
+        return { value: "" };
+      }
+      // 자리가 키의 탭이 아니다. 문서가 JS 를 못 돌면(시작 페이지 · 특수 페이지) null 은 소스가 돌지 않은 것이니 stale 로 돌려 Node 가 탭을 다시 찾게 한다.
+      // JS 를 돌 수 있는 문서면 소스는 돌았을 수 있으니 다시 돌리지 않게 빈 값.
+      let probe = null;
+      try {
+        probe = Safari.doJavaScript("1", { in: f.tab });
+      } catch (e) {
+        if (isJsOffError(e)) throw e;
+      }
+      return probe === null || probe === undefined ? { stale: true } : { value: "" };
     }
     return { fallback: true };
   },
