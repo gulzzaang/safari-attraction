@@ -395,4 +395,48 @@ describe('SnapshotStore — 내리며 읽기', () => {
     buf.text();
     expect(s.last('t', {})).toBeUndefined();
   });
+  // ---- 아래에 더 있음 안내 ----
+  const HINT = (n: number) => `… 아래에 더 있음(약 ${n}줄) — 내려서 다시 읽거나 snapshot(page, {full: true})`;
+  const withBelow = (sig: string, lines: string[], below: number, doc = 'd1') =>
+    [`#sa-meta scroll=${sig} doc=${doc}${below ? ` below=${below}` : ''}`, title, ...lines].join('\n');
+
+  test('아래: 처음 읽기(전체) · 변화 없음 · +/- · 내린 뒤 · 이미 읽은 곳 모두 끝에 안내 줄이 붙는다', () => {
+    const s = new SnapshotStore();
+    const base = [1, 2, 3, 4, 5, 6, 7, 8].map(para);
+    const first = s.diff('t', {}, withBelow('0,0', base, 12));
+    expect(first.mode).toBe('full');
+    expect(first.text).toBe(tree([1, 2, 3, 4, 5, 6, 7, 8]) + '\n' + HINT(12));
+    // 줄 수만 달라져도 비교에는 영향이 없다(변화 없음 + 안내)
+    expect(s.diff('t', {}, withBelow('0,0', base, 30))).toEqual({ mode: 'none', text: '변화 없음\n' + HINT(30) });
+    const diff = s.diff('t', {}, withBelow('0,0', [...base.slice(0, 7), para(9)], 30));
+    expect(diff.mode).toBe('diff');
+    expect(diff.text.endsWith('\n' + HINT(30))).toBe(true);
+    const down = s.diff('t', {}, withBelow('0,600', [para(1), para(2)], 5));
+    expect(down.mode).toBe('scroll');
+    expect(down.text.endsWith('\n' + HINT(5))).toBe(true);
+    expect(s.diff('t', {}, withBelow('0,0', [para(1), para(2)], 5)).text).toBe(NOTHING + '\n' + HINT(5));
+  });
+
+  test('아래: 0 이면 줄이 없고, 안내는 기억(마지막 글)에 들어가지 않는다', () => {
+    const s = new SnapshotStore();
+    const r = s.diff('t', {}, withBelow('0,0', [para(1)], 0));
+    expect(r.text).toBe(tree([1]));
+    s.diff('t', {}, withBelow('0,0', [para(1)], 9));
+    expect(s.last('t', {})).toBe(tree([1]));
+  });
+
+  test('아래: full · selector 읽기에는 붙지 않는다, interactive 는 붙는다', () => {
+    const s = new SnapshotStore();
+    expect(s.diff('t', { full: true }, withBelow('0,0', [para(1)], 7)).text).toBe(tree([1]));
+    expect(s.diff('t', { selector: '#x' }, withBelow('0,0', [para(1)], 7)).text).toBe(tree([1]));
+    expect(s.diff('t', { interactive: true }, withBelow('0,0', [para(1)], 7)).text.endsWith(HINT(7))).toBe(true);
+  });
+
+  test('아래: 결과가 16KB 를 넘어 잘릴 때는(자른 안내로 충분) 붙이지 않는다', () => {
+    const s = new SnapshotStore();
+    const many = Array.from({ length: 700 }, (_, i) => para(i + 1));
+    const r = s.diff('t', {}, withBelow('0,0', many, 40));
+    expect(Buffer.byteLength(r.text)).toBeGreaterThan(SNAPSHOT_LIMIT_BYTES);
+    expect(r.text).not.toContain('아래에 더 있음');
+  });
 });

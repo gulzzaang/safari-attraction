@@ -45,6 +45,8 @@ describeIt('페이지 읽기(snapshot)', () => {
     }
   });
 
+  /** 읽기 결과 끝의 「아래에 더 있음」 안내 줄을 뗀 글. */
+  const noHint = (t: string) => t.replace(/\n… 아래에 더 있음.*$/, '');
   const read = async (key: string, o: SnapshotOptions = {}) => d.runJs(key, buildSnapshotSource(o));
   const open = async (page: string) => {
     const { tab } = await d.openTab(mine(page));
@@ -148,9 +150,10 @@ describeIt('페이지 읽기(snapshot)', () => {
     expect(down.text).not.toMatch(/^- - |^\+ /m); // 사라짐(- ) · 생김(+ ) 줄 없음
     await d.runJs(key, 'window.scrollTo(0, 0); 0');
     const up = store.diff(key, {}, await read(key));
-    expect(up).toEqual({ mode: 'scroll', text: '새로 보이는 곳 없음(이미 읽은 곳)' });
+    expect({ ...up, text: noHint(up.text) }).toEqual({ mode: 'scroll', text: '새로 보이는 곳 없음(이미 읽은 곳)' });
     // 같은 자리에서 다시 읽으면 변화 없음
-    expect(store.diff(key, {}, await read(key))).toEqual({ mode: 'none', text: '변화 없음' });
+    const same = store.diff(key, {}, await read(key));
+    expect({ ...same, text: noHint(same.text) }).toEqual({ mode: 'none', text: '변화 없음' });
     // 새로고침이면 본 줄을 지운다
     await d.runJs(key, 'location.reload(); 0');
     await new Promise((r) => setTimeout(r, 1500));
@@ -172,7 +175,8 @@ describeIt('페이지 읽기(snapshot)', () => {
     expect(down.text.split('\n').length).toBeGreaterThan(1);
     expect(down.text).not.toMatch(/^- - |^\+ /m);
     await d.runJs(key, 'document.getElementById("box").scrollTop = 0; 0');
-    expect(store.diff(key, {}, await read(key))).toEqual({ mode: 'scroll', text: '새로 보이는 곳 없음(이미 읽은 곳)' });
+    const back = store.diff(key, {}, await read(key));
+    expect({ ...back, text: noHint(back.text) }).toEqual({ mode: 'scroll', text: '새로 보이는 곳 없음(이미 읽은 곳)' });
   });
 
   test('표: 같은 글의 칸(Active · 0원)이 반복돼도 내린 뒤 새 행의 칸이 모두 나온다', async () => {
@@ -184,7 +188,7 @@ describeIt('페이지 읽기(snapshot)', () => {
     await d.runJs(key, `window.scrollTo(0, ${y}); 0`);
     const down = store.diff(key, {}, await read(key));
     expect(down.mode).toBe('scroll');
-    const body = down.text.split('\n').slice(1);
+    const body = noHint(down.text).split('\n').slice(1);
     expect(body.length).toBeGreaterThanOrEqual(3);
     expect(body.length % 3).toBe(0);
     for (let i = 0; i < body.length; i += 3) {
@@ -216,6 +220,24 @@ describeIt('페이지 읽기(snapshot)', () => {
     expect(r.text).toContain('- - paragraph "상태: 처음"');
     expect(r.text).toContain('+ - paragraph "상태: 바뀜"');
     expect(r.text).not.toContain('내린 뒤');
+  });
+
+  test('화면 아래에 더 있으면 끝에 「아래에 더 있음(약 N줄)」 줄, full 이나 맨 아래에서는 없다', async () => {
+    const { key } = await open('scroll.html');
+    const view = store.diff(key, {}, await read(key));
+    const m = /\n… 아래에 더 있음\(약 (\d+)줄\) — 내려서 다시 읽거나 snapshot\(page, \{full: true\}\)$/.exec(view.text);
+    expect(m).not.toBeNull();
+    expect(Number(m![1])).toBe(2); // 「맨 아래」 제목 + 「아래 단추」
+    expect(view.text).not.toContain('아래 단추"');
+    const inter = store.diff(key, { interactive: true }, await read(key, { interactive: true }));
+    expect(inter.text).toMatch(/약 1줄\)/); // 대화형만 세면 단추 하나
+    expect(store.diff(key, { full: true }, await read(key, { full: true })).text).not.toContain('아래에 더 있음');
+    // 안내 줄 수만 달라지는 일은 비교에 안 보인다: 다시 읽으면 변화 없음 + 안내
+    expect(store.diff(key, {}, await read(key)).text).toBe('변화 없음\n' + /… 아래에 더 있음.*$/.exec(view.text)![0]);
+    await d.runJs(key, 'window.scrollTo(0, document.body.scrollHeight); 0');
+    const bottom = store.diff(key, {}, await read(key));
+    expect(bottom.mode).toBe('scroll');
+    expect(bottom.text).not.toContain('아래에 더 있음');
   });
 
   test('큰 페이지도 1초 · 16KB 안', async () => {

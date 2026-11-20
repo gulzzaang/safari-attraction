@@ -104,7 +104,7 @@ const PAGE_FN = String.raw`function (o) {
     return id;
   }
   function metaLine() {
-    return '#sa-meta scroll=' + Math.round(window.scrollX || 0) + ',' + Math.round(window.scrollY || 0) + (scrollers.length ? '|' + scrollers.join(';') : '') + ' doc=' + window.__saDoc;
+    return '#sa-meta scroll=' + Math.round(window.scrollX || 0) + ',' + Math.round(window.scrollY || 0) + (scrollers.length ? '|' + scrollers.join(';') : '') + ' doc=' + window.__saDoc + (belowN ? ' below=' + belowN : '');
   }
   var out = [metaLine(), '- title: ' + q(title) + ' [url=' + location.href + ']'];
 
@@ -128,14 +128,19 @@ const PAGE_FN = String.raw`function (o) {
 
   var vw = window.innerWidth || document.documentElement.clientWidth, vh = window.innerHeight || document.documentElement.clientHeight;
   // 화면에 보이는지. iframe 안 요소는 자기 창 안의 위치에 iframe 의 위치를 차례로 더해 맨 위 창 기준으로도 따진다.
+  // 화면 밖이 「아래」 때문이었으면(그 밖의 검사는 모두 통과) below 를 true 로 남긴다 — 읽기 끝에 「아래에 더 있음」 줄 수를 세려고.
+  var below = false, belowN = 0;
   function shown(el) {
+    below = false;
     var r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return false;
+    var pos = 1; // 1 화면 안 · 0 화면 밖(아래가 아님) · -1 아래
     if (!o.full) {
       var win = el.ownerDocument.defaultView, L = r.left, T = r.top, R = r.right, B = r.bottom;
       for (var depth = 0; win && depth < 10; depth++) {
         var wv = win === window ? vw : (win.innerWidth || 0), wh = win === window ? vh : (win.innerHeight || 0);
-        if (B <= 0 || R <= 0 || T >= wh || L >= wv) return false;
+        if (B <= 0 || R <= 0 || L >= wv) { pos = 0; break; }
+        if (T >= wh) { pos = -1; break; }
         if (win === window) break;
         var fe = null;
         try { fe = win.frameElement; } catch (x) {}
@@ -145,9 +150,11 @@ const PAGE_FN = String.raw`function (o) {
         win = win.parent;
       }
     }
+    if (pos === 0) return false;
     if (typeof el.checkVisibility === 'function') { if (!el.checkVisibility({ visibilityProperty: true })) return false; }
     else { var cs = el.ownerDocument.defaultView.getComputedStyle(el); if (cs.display === 'none' || cs.visibility === 'hidden') return false; }
     if (el.closest('[aria-hidden="true"]')) return false;
+    if (pos === -1) { below = true; return false; }
     return true;
   }
 
@@ -281,7 +288,7 @@ const PAGE_FN = String.raw`function (o) {
       scrollers.push(scrollerId(el) + ':' + Math.round(st) + ',' + Math.round(sl));
     }
     if (tag === 'IFRAME') {
-      if (!shown(el)) return;
+      if (!shown(el)) { if (below) belowN++; return; }
       var doc = null;
       try { doc = el.contentDocument; } catch (e) {}
       if (doc && (doc.body || doc.documentElement)) {
@@ -297,12 +304,14 @@ const PAGE_FN = String.raw`function (o) {
       }
       return;
     }
-    if (el.matches(sel2) && !(tag === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'hidden') && shown(el)) {
-      if (isInteractive(el)) push(depth, describe(el));
-      else {
-        var tx = ownText(el);
-        if (tx) push(depth, '- ' + BLOCK_ROLE[tag] + ' ' + q(tx));
-      }
+    if (el.matches(sel2) && !(tag === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'hidden')) {
+      if (shown(el)) {
+        if (isInteractive(el)) push(depth, describe(el));
+        else {
+          var tx = ownText(el);
+          if (tx) push(depth, '- ' + BLOCK_ROLE[tag] + ' ' + q(tx));
+        }
+      } else if (below && (isInteractive(el) || ownText(el))) belowN++; // 같은 읽기였다면 줄이 됐을 것(아래에 있어 빠진 것)
     }
     if (done) return;
     if (el.shadowRoot) { walkKids(el.shadowRoot.children, depth + 1); return; }

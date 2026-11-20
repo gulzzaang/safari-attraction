@@ -1,19 +1,23 @@
 import { createHash } from "node:crypto";
-import { capSnapshot, diffDetailed, scrollDiffSnapshot, type DiffMode } from "./diff.js";
+import { capSnapshot, diffDetailed, scrollDiffSnapshot, SNAPSHOT_LIMIT_BYTES, type DiffMode } from "./diff.js";
 import type { SnapshotOptions } from "./inpage.js";
 
 const META_PREFIX = "#sa-meta ";
 
 /** 페이지 안 읽기 코드가 맨 앞에 붙인 안내 줄(`#sa-meta scroll=표시 doc=아이디`)을 떼어 낸다. 없으면 그대로. */
-export function splitSnapshotMeta(raw: string): { tree: string; scroll?: string; doc?: string } {
+export function splitSnapshotMeta(raw: string): { tree: string; scroll?: string; doc?: string; below?: number } {
   if (!raw.startsWith(META_PREFIX)) return { tree: raw };
   const nl = raw.indexOf("\n");
   const line = nl < 0 ? raw : raw.slice(0, nl);
   const tree = nl < 0 ? "" : raw.slice(nl + 1);
   const scroll = /(?:^| )scroll=(\S+)/.exec(line)?.[1];
   const doc = /(?:^| )doc=(\S+)/.exec(line)?.[1];
-  return { tree, scroll, doc };
+  const b = /(?:^| )below=(\d+)/.exec(line)?.[1];
+  return { tree, scroll, doc, below: b ? Number(b) : undefined };
 }
+
+/** 화면 아래에 읽을 것이 더 있을 때 읽기 결과 맨 끝에 붙이는 안내 줄. 비교 · 기억에는 들어가지 않는다. */
+export const moreBelowHint = (n: number): string => `… 아래에 더 있음(약 ${n}줄) — 내려서 다시 읽거나 snapshot(page, {full: true})`;
 
 /** 한 읽기 범위에서 기억하는 「본 줄」의 최대 개수. 넘으면 오래된 것부터 잊는다. */
 export const MAX_SEEN = 50_000;
@@ -196,6 +200,12 @@ export class SnapshotStore {
       if (r.mode === "full") items = curLines.map((_, i) => i);
       else if (r.mode === "diff") items = [null, ...r.ops!.map((op) => (op.kind === "+" ? op.idx : null))];
       if (r.ops) removed = r.ops.filter((op) => op.kind === "-").map((op) => op.idx);
+    }
+
+    // 아래에 더 있다는 안내(화면 기준 읽기만). 결과가 이미 16KB 를 넘어 잘리거나 붙이면 넘으면 붙이지 않는다(자른 안내로 충분).
+    if (viewBased && cur.below) {
+      const withHint = text + "\n" + moreBelowHint(cur.below);
+      if (Buffer.byteLength(withHint, "utf8") <= SNAPSHOT_LIMIT_BYTES) text = withHint;
     }
 
     const apply = (undoAdd: (pos: number, f: () => void) => void, undoRest: (f: () => void) => void): void => {

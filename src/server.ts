@@ -25,8 +25,8 @@ Read values with console.log (the last expression is NOT printed). Errors come b
 - useAiWindow(id) — 사용자가 이미 열어 둔 창(예: 다른 프로필 창)을 AI 전용 창으로 쓴다. 이후 openAiWindow(url) 은 그 창에 새 탭을 열고, page.setViewportSize · page.screenshot 도 된다(setViewportSize 는 그 창 크기를 실제로 바꾼다). 이 창은 우리 창이 아니라서 끝나도 닫지 않고, 우리가 그 안에 연 탭만 닫는다.
   Windows: listWindows() lists Safari windows so the user can say "the second window"; useWindow(id) makes openTab open background tabs in that window (follows its profile), useWindow(null) goes back to the frontmost normal window; useAiWindow(id) uses an already-open window as the AI window (never closed by us; only tabs we opened in it are closed).
 - closeTab(page?) — 우리가 연 탭만 닫는다. 서버가 끝나면 우리가 연 탭과 AI 창은 모두 닫힌다.
-- snapshot(page?, {interactive, selector, full}) — 페이지를 읽는다. console.log(await snapshot()) 로 찍으면 "지난번과 바뀐 곳만" 나오고, 처음이거나 같으면 전체 · 「변화 없음」이 나온다. 내린(스크롤한) 뒤에는 새로 보이게 된 줄만 나온다(전부 보려면 {full: true}). 요소 앞의 e12 같은 ref 를 locator(ref) 에 쓴다. 16KB 를 넘으면 잘린다.
-  After scrolling, snapshot prints only the newly visible lines (use {full: true} for everything).
+- snapshot(page?, {interactive, selector, full}) — 페이지를 읽는다. console.log(await snapshot()) 로 찍으면 "지난번과 바뀐 곳만" 나오고, 처음이거나 같으면 전체 · 「변화 없음」이 나온다. 기본은 지금 화면에 보이는 곳만 읽고, 끝에 「… 아래에 더 있음(약 N줄)」 줄이 있으면 화면 아래에 더 있다는 뜻이다. 내린(스크롤한) 뒤에는 새로 보이게 된 줄만 나온다(전부 보려면 {full: true}). 요소 앞의 e12 같은 ref 를 locator(ref) 에 쓴다. 16KB 를 넘으면 잘린다.
+  By default only the visible screen is read; a final "… 아래에 더 있음(약 N줄)" line means there is more content below. After scrolling, snapshot prints only the newly visible lines (use {full: true} for everything).
 - Page: goto(url), url(), title(), waitForLoadState(), evaluate(fn | 식, arg), locator(ref | CSS).click() / .fill(값) / .textContent(), keyboard.press("Enter") / keyboard.type(글).
   url() 은 await 없이 바로 마지막으로 알려진 주소(글)를 돌려준다 — goto · 클릭 · evaluate 뒤에는 새 주소다. title() 은 페이지에 물어야 하므로 await 가 필요하다.
   Page.url() returns the last known address immediately (a string, no await; updated after goto / clicks / evaluate); title() is async and needs await.
