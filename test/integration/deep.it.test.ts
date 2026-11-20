@@ -69,6 +69,31 @@ describeIt('iframe · shadow DOM 안쪽', () => {
     expect(await page.evaluate(() => document.querySelector('#out')!.textContent)).toBe('눌림');
   });
 
+  test('이름이 slot 으로만 오는 shadow 단추는 슬롯 글을 이름으로 갖고, ref 로 누르면 눌린다', async () => {
+    const page = await open('shadow.html');
+    const ref = await refOf(page, /- button "보내기" \[ref=(e\d+)\]/);
+    await page.locator(ref).click();
+    expect(await page.evaluate(() => document.querySelector('#out2')!.textContent)).toBe('보내기 눌림');
+  });
+
+  test('안쪽 글이 없는 shadow 아이콘 단추는 호스트의 aria-label 을 이름으로 갖는다', async () => {
+    const page = await open('shadow.html');
+    const text = await read(page);
+    expect(text).toMatch(/- button "검색 열기" \[ref=e\d+\]/);
+    expect(text).not.toMatch(/- button "" \[ref=/);
+    const ref = await refOf(page, /- button "검색 열기" \[ref=(e\d+)\]/);
+    await page.locator(ref).click();
+    expect(await page.evaluate(() => document.querySelector('#out2')!.textContent)).toBe('검색 눌림');
+  });
+
+  test('selector 로 좁혀 읽어도 slot 단추의 이름이 나온다', async () => {
+    const page = await open('shadow.html');
+    const text = await d.runJs(page.key, buildSnapshotSource({ selector: '#slotbtn' }));
+    expect(text).toMatch(/- button "보내기" \[ref=e\d+\]/);
+    const inter = await d.runJs(page.key, buildSnapshotSource({ interactive: true }));
+    expect(inter).toMatch(/- button "보내기" \[ref=e\d+\]/);
+  });
+
   test('닫힌 shadow root 는 한 줄로 알린다', async () => {
     const page = await open('shadow.html');
     const text = await read(page);

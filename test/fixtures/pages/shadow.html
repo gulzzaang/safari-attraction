@@ -15,7 +15,11 @@
     <!-- 주석 -->
   </sa-closed-ws>
   <sa-wrap id="wrap"><button id="slotted">슬롯 단추</button></sa-wrap>
+  <!-- 이름이 slot 으로만 오는 단추 · 호스트의 aria-label 로만 이름이 있는 아이콘 단추 -->
+  <sa-slotbtn id="slotbtn">보내기</sa-slotbtn>
+  <sa-iconbtn id="iconbtn" aria-label="검색 열기"></sa-iconbtn>
   <p id="out">대기</p>
+  <p id="out2">대기</p>
   <script>
     // 열린 shadow root: 안쪽 단추 · 입력칸. 단추를 누르면 바깥 #out 이 바뀐다.
     customElements.define('sa-card', class extends HTMLElement {
@@ -45,6 +49,26 @@
       connectedCallback() {
         var r = this.attachShadow({ mode: 'open' });
         r.innerHTML = '<div><slot></slot></div>';
+      }
+    });
+    // 이름이 slot 으로만 오는 단추: 안쪽 button 의 innerText 에는 「보내기」가 없다. 누르면 바깥 #out2 가 바뀐다.
+    customElements.define('sa-slotbtn', class extends HTMLElement {
+      connectedCallback() {
+        var r = this.attachShadow({ mode: 'open' });
+        r.innerHTML = '<button><slot></slot></button>';
+        r.querySelector('button').addEventListener('click', function () {
+          document.getElementById('out2').textContent = '보내기 눌림';
+        });
+      }
+    });
+    // 아이콘 단추: 안쪽 글이 없고 이름은 호스트의 aria-label 에만 있다.
+    customElements.define('sa-iconbtn', class extends HTMLElement {
+      connectedCallback() {
+        var r = this.attachShadow({ mode: 'open' });
+        r.innerHTML = '<button style="min-width:28px;min-height:28px"><span aria-hidden="true">⌕</span></button>';
+        r.querySelector('button').addEventListener('click', function () {
+          document.getElementById('out2').textContent = '검색 눌림';
+        });
       }
     });
   </script>

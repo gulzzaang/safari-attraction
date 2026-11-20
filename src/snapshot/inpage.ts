@@ -154,7 +154,47 @@ const PAGE_FN = String.raw`function (o) {
     })(el);
     return clip(s, TEXT_MAX);
   }
-  function fullText(el) { return clip(el.innerText || el.textContent || '', NAME_MAX); }
+  // 평평한 트리의 글(innerText · textContent 는 사파리에서 slot 에 배정된 노드를 빼 먹는다):
+  // slot 은 배정된 노드(없으면 slot 안의 기본 내용), shadow 호스트는 shadow root 안, 숨은 것 · svg 등은 건너뛴다.
+  function flatText(root, limit) {
+    var s = '', cap = limit * 3;
+    function visit(c) {
+      if (s.length > cap) return;
+      if (c.nodeType === 3) { s += c.nodeValue; return; }
+      if (c.nodeType !== 1) return;
+      var tg = c.tagName;
+      if (SKIP_TAGS[tg] || c.getAttribute('aria-hidden') === 'true' || c.hidden) return;
+      var disp = 'inline';
+      if (tg !== 'SLOT') {
+        try { disp = c.ownerDocument.defaultView.getComputedStyle(c).display; } catch (x) {}
+        if (disp === 'none') return;
+      }
+      var pad = disp.indexOf('inline') !== 0 && disp !== 'contents';
+      if (pad) s += ' ';
+      if (tg === 'SLOT' && typeof c.assignedNodes === 'function') {
+        var an = c.assignedNodes({ flatten: true });
+        if (an.length) for (var i = 0; i < an.length; i++) visit(an[i]);
+        else kids(c);
+      } else if (c.shadowRoot) kids(c.shadowRoot);
+      else kids(c);
+      if (pad) s += ' ';
+    }
+    function kids(n) { for (var c = n.firstChild; c; c = c.nextSibling) { if (s.length > cap) return; visit(c); } }
+    if (root.nodeType === 11) kids(root); else visit(root);
+    return clip(s, limit);
+  }
+  function fullText(el) { return flatText(el, NAME_MAX); }
+  // 안쪽 조종 요소의 이름이 비었을 때, 그 shadow 호스트(들)의 aria-label · title · 평평한 글을 빌린다.
+  function hostName(el) {
+    var r = el.getRootNode && el.getRootNode(), h;
+    for (var depth = 0; r && r.host && depth < 5; depth++) {
+      h = r.host;
+      var n = clip(h.getAttribute('aria-label') || '', NAME_MAX) || clip(h.getAttribute('title') || '', NAME_MAX) || flatText(h, NAME_MAX);
+      if (n) return n;
+      r = h.getRootNode && h.getRootNode();
+    }
+    return '';
+  }
 
   function roleOf(el) {
     var r = el.getAttribute('role');
@@ -197,6 +237,7 @@ const PAGE_FN = String.raw`function (o) {
       || (isField ? '' : fullText(el))
       || (role === 'button' && !isPw ? clip(el.getAttribute('value') || '', NAME_MAX) : '')
       || clip(el.getAttribute('title') || el.getAttribute('alt') || '', NAME_MAX);
+    if (!name) name = hostName(el);
     if (!name && val && !isPw) { name = clip(val, NAME_MAX); val = ''; } // 이름이 없을 때만 값을 이름 자리에
     var line = '- ' + role + ' ' + q(name) + ' [ref=' + refOf(el) + ']';
     if (val && !(role === 'button')) line += ' [value=' + q(clip(val, 40)) + ']';
