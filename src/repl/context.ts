@@ -142,6 +142,8 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       if (aiWindowId === windowId) aiWindowId = null;
     },
     note: (line) => log(line),
+    // 호출이 끝났거나 시간 초과로 닫힌 뒤에도 돌고 있는 코드(AsyncLocalStorage 칸이 따라온다)는 기다림 · 재시도를 멈춘다.
+    aborted: () => slots.getStore()?.closed === true,
   };
 
   const track = (p: Page) => {

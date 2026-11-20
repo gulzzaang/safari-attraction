@@ -126,13 +126,21 @@ export const LOCATOR_SOURCE = String.raw`
     }
     return out;
   }
+  // 그려지지 않는가: 자기 자신이 visibility hidden 이거나, 자신 · 조상(shadow 호스트 · iframe 바깥은 올라가지 않음)이 display none.
+  function pwNoRender(el) {
+    var cs = el.ownerDocument.defaultView.getComputedStyle(el);
+    if (cs.visibility === 'hidden' || cs.visibility === 'collapse') return true;
+    for (var e = el, n = 0; e && n < 200; e = e.parentElement || (e.getRootNode && e.getRootNode().host) || null, n++) {
+      if (e.ownerDocument.defaultView.getComputedStyle(e).display === 'none') return true;
+    }
+    return false;
+  }
   // 보이는 것인가(Playwright 의 보임: 크기가 있고 visibility 가 hidden 이 아님). iframe 안이면 iframe 도 보여야 한다.
   function pwShown1(el) {
     var r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return false;
     if (typeof el.checkVisibility === 'function') return !!el.checkVisibility({ visibilityProperty: true });
-    var cs = el.ownerDocument.defaultView.getComputedStyle(el);
-    return cs.display !== 'none' && cs.visibility !== 'hidden';
+    return !pwNoRender(el);
   }
   function pwVis(el) {
     if (!pwShown1(el)) return false;
@@ -150,14 +158,14 @@ export const LOCATOR_SOURCE = String.raw`
   function pwHiddenA11y(el) {
     if (el.closest && el.closest('[aria-hidden="true"]')) return true;
     if (typeof el.checkVisibility === 'function') return !el.checkVisibility({ visibilityProperty: true });
-    var cs = el.ownerDocument.defaultView.getComputedStyle(el);
-    return cs.display === 'none' || cs.visibility === 'hidden';
+    return pwNoRender(el);
   }
   // 이름 후보: snapshot 줄의 이름 + 자르지 않은 글 + aria-label · 연결된 label · placeholder · title · alt · value.
   function pwNames(el, role) {
     var out = [nameInfo(el, roleOf(el)).name];
     var t = el.tagName;
-    if (t !== 'INPUT' && t !== 'TEXTAREA' && t !== 'SELECT') out.push(flatText(el, 100000));
+    // 평평한 글은 안 그려지는 요소 자신의 글을 비우므로(includeHidden 로 찾는 숨은 단추), 날것 textContent 도 후보에 둔다.
+    if (t !== 'INPUT' && t !== 'TEXTAREA' && t !== 'SELECT') { out.push(flatText(el, 100000)); out.push(el.textContent || ''); }
     var a = el.getAttribute('aria-label'); if (a) out.push(a);
     var lt = pwLabels(el); for (var i = 0; i < lt.length; i++) out.push(lt[i]);
     var p = el.getAttribute('placeholder'); if (p) out.push(p);
@@ -180,12 +188,41 @@ export const LOCATOR_SOURCE = String.raw`
     try { if (el.labels) for (var j = 0; j < el.labels.length; j++) out.push(el.labels[j].textContent || ''); } catch (e) {}
     return out;
   }
+  // 체크 상태: true · false · 'mixed', 상태가 없는 요소는 null.
+  function pwChecked(el) {
+    if (el.tagName === 'INPUT' && /^(checkbox|radio)$/i.test(el.type)) return el.type === 'checkbox' && el.indeterminate ? 'mixed' : !!el.checked;
+    return pwAria(el, 'aria-checked');
+  }
+  function pwAria(el, name) { var a = el.getAttribute(name); return a === 'true' ? true : a === 'false' ? false : a === 'mixed' ? 'mixed' : null; }
+  function pwLevel(el) {
+    var m = /^H([1-6])$/.exec(el.tagName);
+    if (m) return +m[1];
+    var l = parseInt(el.getAttribute('aria-level') || '', 10);
+    return isNaN(l) ? null : l;
+  }
+  function pwExpanded(el) {
+    var a = pwAria(el, 'aria-expanded');
+    if (a !== null) return a;
+    if (el.tagName === 'SUMMARY' && el.parentElement && el.parentElement.tagName === 'DETAILS') return !!el.parentElement.open;
+    return null;
+  }
+  function pwSelected(el) { return el.tagName === 'OPTION' ? !!el.selected : pwAria(el, 'aria-selected'); }
+  // getByRole 의 상태 옵션(level · checked · pressed · expanded · selected)에 맞는가.
+  function pwStateOk(el, st) {
+    if (st.level !== undefined && pwLevel(el) !== st.level) return false;
+    if (st.checked !== undefined && pwChecked(el) !== st.checked) return false;
+    if (st.pressed !== undefined && pwAria(el, 'aria-pressed') !== st.pressed) return false;
+    if (st.expanded !== undefined && pwExpanded(el) !== st.expanded) return false;
+    if (st.selected !== undefined && pwSelected(el) !== st.selected) return false;
+    return true;
+  }
   function pwByRole(scope, st) {
     var test = st.name ? pwMake(st.name, st.exact) : null, uni = pwUniverse(scope), out = [];
     for (var i = 0; i < uni.length; i++) {
       var el = uni[i];
       if (pwRoles(el).indexOf(st.role) < 0) continue;
-      if (pwHiddenA11y(el)) continue;
+      if (!st.includeHidden && pwHiddenA11y(el)) continue;
+      if (!pwStateOk(el, st)) continue;
       if (test) {
         var names = pwNames(el, st.role), hit = false;
         for (var j = 0; j < names.length && !hit; j++) hit = test(names[j]);
@@ -230,8 +267,8 @@ export const LOCATOR_SOURCE = String.raw`
           break;
         }
         case 'hasText': {
-          var t = pwMake(st.m, false);
-          cur = cur.filter(function (el) { return t(pwText(el)); });
+          var t = pwMake(st.m, !!st.exact), neg = !!st.not;
+          cur = cur.filter(function (el) { return t(pwText(el)) !== neg; });
           break;
         }
         default: fail('알 수 없는 찾기 단계: ' + st.k);

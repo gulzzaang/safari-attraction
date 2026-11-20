@@ -7,7 +7,7 @@ import {
   type ActionOk,
   type ActionOp,
 } from "./inpage-actions.js";
-import { LocatorImpl, globToRegExp, isRegExp, parseSelector, toMatcher, type ActOpts, type Locator, type LocatorHost, type Step, type WaitCond, type WaitState } from "./locator.js";
+import { DEFAULT_ACTION_WAIT_MS, LocatorImpl, globToRegExp, isRegExp, normTimeout, parseSelector, roleStep, textStep, toMatcher, type ActOpts, type Locator, type LocatorHost, type RoleOpts, type Step, type WaitCond, type WaitState } from "./locator.js";
 
 export type { Locator } from "./locator.js";
 
@@ -49,6 +49,8 @@ export interface AiWindowAccess {
   closed(windowId: number): void;
   /** 이 호출의 출력에 한 줄 남긴다. */
   note(line: string): void;
+  /** 이 코드가 도는 repl 호출이 끝났거나 시간 초과로 닫혔나. 그러면 기다림 · 재시도는 더 이상 페이지에 아무것도 하지 않고 멈춘다. */
+  aborted?(): boolean;
 }
 
 /**
@@ -84,6 +86,7 @@ export class Page {
   async waitForLoadState(timeoutMs = LOAD_TIMEOUT_MS): Promise<void> {
     const t0 = Date.now();
     for (;;) {
+      this.checkAbort();
       if ((await this.driver.runJs(this.key, "document.readyState")) === "complete") return;
       if (Date.now() - t0 > timeoutMs) throw new SafariError("TIMEOUT", `페이지가 ${timeoutMs}ms 안에 다 뜨지 않음`);
       await sleep(100);
@@ -123,21 +126,24 @@ export class Page {
     return (s === undefined ? undefined : JSON.parse(s)) as Awaited<T>;
   }
 
-  /** ref(`e12`, snapshot 에서 본 것) 또는 CSS 선택자(`text=글` 도 된다)로 요소를 가리킨다. 요소는 동작할 때 찾는다. */
+  /**
+   * ref(`e12`) · CSS · Playwright 식 선택자(`text=글` · `text=/정규식/i` · `role=button[name="저장"]` · `css=…` · `button:has-text("저장")` · `a >> nth=0`, `>>` 로 이어 좁힘)로
+   * 요소를 가리킨다. 요소는 동작할 때 찾는다. xpath 는 지원하지 않는다.
+   */
   locator(selector: string): Locator {
-    return this.rootLocator(parseSelector(selector));
+    return new LocatorImpl(this.host, parseSelector(selector, true));
   }
-  getByRole(role: string, opts: { name?: string | RegExp; exact?: boolean } = {}): Locator {
-    return this.rootLocator({ k: "role", role: String(role).toLowerCase(), name: opts?.name === undefined ? undefined : toMatcher(opts.name), exact: !!opts?.exact });
+  getByRole(role: string, opts: RoleOpts = {}): Locator {
+    return this.rootLocator(roleStep(role, opts));
   }
   getByText(text: string | RegExp, opts: { exact?: boolean } = {}): Locator {
-    return this.rootLocator({ k: "text", m: toMatcher(text), exact: !!opts?.exact });
+    return this.rootLocator(textStep("getByText", "text", text, opts));
   }
   getByLabel(text: string | RegExp, opts: { exact?: boolean } = {}): Locator {
-    return this.rootLocator({ k: "label", m: toMatcher(text), exact: !!opts?.exact });
+    return this.rootLocator(textStep("getByLabel", "label", text, opts));
   }
   getByPlaceholder(text: string | RegExp, opts: { exact?: boolean } = {}): Locator {
-    return this.rootLocator({ k: "placeholder", m: toMatcher(text), exact: !!opts?.exact });
+    return this.rootLocator(textStep("getByPlaceholder", "placeholder", text, opts));
   }
   getByTestId(id: string | RegExp): Locator {
     return this.rootLocator({ k: "testid", m: toMatcher(id) });
@@ -174,13 +180,14 @@ export class Page {
    */
   async waitForURL(url: string | RegExp | ((u: URL) => boolean), opts: { timeout?: number } = {}): Promise<void> {
     const test = urlTester(url);
-    const timeoutMs = opts?.timeout ?? DEFAULT_WAIT_MS;
+    const timeoutMs = normTimeout(opts?.timeout, DEFAULT_WAIT_MS);
     const t0 = Date.now();
     for (;;) {
+      this.checkAbort();
       const cur = (await this.driver.settleTab(this.key)).tab.url;
       this.knownUrl = cur;
       if (test(cur)) break;
-      if (timeoutMs !== 0 && Date.now() - t0 > timeoutMs) {
+      if (Date.now() - t0 > timeoutMs) {
         const what = typeof url === "function" ? "함수 조건" : String(url);
         throw new Error(`${showSeconds(timeoutMs)}초 안에 주소가 ${what} 와(과) 맞지 않았어요 (지금 주소: ${cur})`);
       }
@@ -281,12 +288,14 @@ export class Page {
   }
 
   /** 페이지 안 동작 하나를 돌리고, 문서가 바뀌었으면 탭 키를 다시 붙인다. */
-  private act(op: ActionOp, args: Record<string, unknown>) {
+  private async act(op: ActionOp, args: Record<string, unknown>) {
+    this.checkAbort();
     return this.run(buildActionSource(op, { ...args, tok: newToken() }), false);
   }
 
   /** 읽기만 하는 동작 하나(이동을 일으키지 않으니 settleTab 확인은 하지 않는다). */
   private async read(op: ActionOp, args: Record<string, unknown>) {
+    this.checkAbort();
     const res = JSON.parse(await this.driver.runJs(this.key, buildActionSource(op, { ...args, tok: newToken() }))) as ActionOk | ActionErr;
     if (!res.ok) throw new Error(res.err);
     return res.r;
@@ -306,14 +315,15 @@ export class Page {
    * 동작 하나를 대상이 준비될 때까지(없음 · 안 보임 · 비활성이 아닐 때까지) 다시 시도한다. 한 번 시도 = 페이지 안에서 찾고 되면 동작하는 runJs 하나,
    * 준비 전이면 동작 없이 「아직 아님」만 돌려받아 150ms 뒤 Node 쪽에서 다시 부른다. 이미 준비돼 있으면 정확히 한 번으로 끝난다.
    */
-  private async until(kind: "act" | "read", op: ActionOp, args: Record<string, unknown>, cond: WaitCond, desc: string, timeoutMs: number) {
+  private async until(kind: "act" | "read", op: ActionOp, args: Record<string, unknown>, cond: WaitCond, desc: string, timeout: number | undefined) {
+    const timeoutMs = normTimeout(timeout, DEFAULT_ACTION_WAIT_MS);
     const full = { ...args, wait: { visible: cond.visible, enabled: cond.enabled } };
     const t0 = Date.now();
     for (;;) {
-      const r = await (kind === "act" ? this.act(op, full) : this.read(op, full));
+      const r = await (kind === "act" ? this.act(op, full) : this.read(op, full)); // act · read 가 호출이 끝났는지 먼저 본다
       if (!r.notReady) return r;
-      if (timeoutMs !== 0 && Date.now() - t0 >= timeoutMs) {
-        const why = { missing: "아직 없음", hidden: "있지만 안 보임", disabled: "있지만 비활성" }[r.notReady];
+      if (Date.now() - t0 >= timeoutMs) {
+        const why = { missing: "아직 없음", hidden: "있지만 안 보임", disabled: "있지만 비활성", option: "고를 선택지가 아직 없음" }[r.notReady];
         const chain = args.chain as Step[] | undefined;
         const hint =
           r.notReady !== "missing" ? "" : chain?.length === 1 && chain[0]!.k === "ref" ? " — 페이지가 바뀌었을 수 있으니 snapshot 을 다시 찍어 새 ref 를 쓰세요" : " — snapshot 으로 지금 화면을 확인하세요";
@@ -328,10 +338,12 @@ export class Page {
    * 주소가 바뀌었는지도 함께 본다. 갈 곳이 없으면(뒤로 갈 이력이 없음) 잠깐 기다린 뒤 그대로 끝낸다.
    */
   private async navigate(dir: "reload" | "back" | "forward"): Promise<void> {
-    const before = this.driver.lastUrl?.(this.key) ?? this.knownUrl;
-    await this.read("nav", { dir });
+    // 이동하기 전 주소는 이동을 시키는 그 runJs 가 알려 준다(캐시가 한 박자 늦을 수 있다).
+    const sent = await this.read("nav", { dir });
+    const before = typeof sent.v === "string" ? sent.v : (this.driver.lastUrl?.(this.key) ?? this.knownUrl);
     const t0 = Date.now();
     for (;;) {
+      this.checkAbort();
       const r = await this.driver.settleTab(this.key);
       this.knownUrl = r.tab.url;
       if (r.navigated || (dir !== "reload" && r.tab.url !== before && !r.leaving)) break;
@@ -345,21 +357,28 @@ export class Page {
    * 요소 상태가 될 때까지 다시 확인한다. 한 번 확인할 때마다 settleTab 으로 이동을 먼저 확인한다(이동 중에도 키를 지킨다).
    * hidden · detached 는 요소가 아예 없어도 된 것으로 친다.
    */
-  private async waitState(chain: Step[], desc: string, state: WaitState, timeoutMs: number): Promise<void> {
+  private async waitState(chain: Step[], desc: string, state: WaitState, timeout: number | undefined): Promise<void> {
+    const timeoutMs = normTimeout(timeout, DEFAULT_WAIT_MS);
     const t0 = Date.now();
     for (;;) {
+      this.checkAbort();
       await this.driver.settleTab(this.key);
       const v = (await this.read("state", { chain, desc })).v as { n: number; vis: boolean } | undefined;
       const n = v?.n ?? 0;
       const vis = !!v?.vis;
       const done = state === "visible" ? vis : state === "attached" ? n > 0 : state === "hidden" ? !vis : n === 0;
       if (done) return;
-      if (timeoutMs !== 0 && Date.now() - t0 > timeoutMs) {
+      if (Date.now() - t0 > timeoutMs) {
         const ko = { visible: "보이게", hidden: "숨겨지게", attached: "나타나게", detached: "없어지게" }[state];
         throw new Error(`${showSeconds(timeoutMs)}초 안에 ${desc} 가 ${ko} 되지 않았어요`);
       }
       await sleep(WAIT_POLL_MS);
     }
+  }
+
+  /** 이 코드가 도는 repl 호출이 이미 끝났으면(시간 초과 포함) 더 이상 페이지에 아무것도 하지 않도록 멈춘다. */
+  private checkAbort(): void {
+    if (this.ai?.aborted?.()) throw new Error("repl 호출이 이미 끝나서 기다림을 멈췄어요(이 코드는 더 이상 페이지에 아무것도 하지 않아요)");
   }
 
   private async run(source: string, expectNav: boolean) {
@@ -379,6 +398,7 @@ export class Page {
     if (timerMs >= 0 && timerMs <= TIMER_WAIT_MAX_MS) await sleep(timerMs + 80);
     const t0 = Date.now();
     for (;;) {
+      this.checkAbort();
       const r = await this.driver.settleTab(this.key);
       if (r.navigated) return;
       const waited = Date.now() - t0;
@@ -390,6 +410,7 @@ export class Page {
   private async awaitPending(id: string): Promise<string | undefined> {
     const t0 = Date.now();
     for (;;) {
+      this.checkAbort();
       // 읽기 전에 이동을 확인한다 — 약속을 기다리는 동안 페이지가 이동했으면 runJs 가 탭 키를 지울 수 있다.
       if ((await this.driver.settleTab(this.key)).navigated) throw new Error("evaluate 의 약속이 끝나기 전에 페이지가 이동해 결과를 받을 수 없음(탭 키는 그대로)");
       const p = JSON.parse(await this.driver.runJs(this.key, buildPendingReadSource(id))) as {

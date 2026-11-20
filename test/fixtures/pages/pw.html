@@ -31,6 +31,16 @@
   <button id="spawn" type="button">단추 만들기</button>
   <button id="enable" type="button">입력칸 풀기</button>
   <input id="slow-in" placeholder="느린 입력" disabled>
+  <h2>제목 둘</h2>
+  <h3>제목 셋</h3>
+  <button id="tog" type="button" aria-pressed="true">토글 단추</button>
+  <button id="exp" type="button" aria-expanded="false">펼치기 단추</button>
+  <button type="button" style="display:none">숨은 단추</button>
+  <div role="tab" aria-selected="true">탭 하나</div>
+  <div role="tab" aria-selected="false">탭 둘</div>
+  <!-- 연쇄 드롭다운: 선택지가 나중에 생긴다 -->
+  <select id="dep" aria-label="연쇄"><option value="">고르세요</option></select>
+  <button id="loadopts" type="button">선택지 불러오기</button>
   <p id="log2">0</p>
   <p id="log">0</p>
   <p id="evlog"></p>
@@ -61,6 +71,9 @@
     });
     document.getElementById('enable').addEventListener('click', function () {
       realST(function () { document.getElementById('slow-in').disabled = false; }, 500);
+    });
+    document.getElementById('loadopts').addEventListener('click', function () {
+      realST(function () { var o = document.createElement('option'); o.value = 'x'; o.textContent = '나중 선택지'; document.getElementById('dep').appendChild(o); }, 600);
     });
     document.getElementById('navsel').addEventListener('change', function () {
       if (this.value !== 'go') return;

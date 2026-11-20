@@ -141,7 +141,7 @@ describeIt('Playwright 식 이름(Locator · Page)', () => {
     expect(await page.locator('#color').selectOption({ index: 1 })).toEqual(['g']);
     expect(await page.getByLabel('여럿').selectOption(['r', 'b'])).toEqual(['r', 'b']);
     expect(await page.selectOption('#multi', ['g'])).toEqual(['g']);
-    await expect(page.locator('#color').selectOption('없는 값')).rejects.toThrow(/고를 선택지가 없음/);
+    await expect(page.locator('#color').selectOption('없는 값', { timeout: 300 })).rejects.toThrow(/고를 선택지가 아직 없음/);
     await expect(page.locator('#nm').selectOption('x')).rejects.toThrow(/select/);
   });
 
@@ -288,7 +288,7 @@ describeIt('Playwright 식 이름(Locator · Page)', () => {
     expect(await page.locator('#later-btn').count()).toBe(0); // 아직 없다
     const t0 = Date.now();
     await page.getByRole('button', { name: '나중 단추' }).click(); // 따로 waitFor 없이
-    expect(Date.now() - t0).toBeGreaterThan(300);
+    expect(Date.now() - t0).toBeLessThan(5000); // 700ms 뒤에 생기는 것을 기다려서 눌렀다(앞의 호출 시간이 달라 하한은 두지 않는다)
     expect(await text(page, '#log2')).toBe('나중 단추 눌림');
 
     await page.locator('#enable').click();
@@ -304,6 +304,62 @@ describeIt('Playwright 식 이름(Locator · Page)', () => {
     await expect(page.locator('.dup').first().click({ timeout: 400 })).rejects.toThrow(/0\.4초 기다렸지만 누를 수 있는 요소가 없어요: locator\('\.dup'\)\.first\(\) \(마지막 확인: 있지만 안 보임\)/);
     // 비활성 단추
     await expect(page.getByRole('button', { name: '취소' }).click({ timeout: 400 })).rejects.toThrow(/마지막 확인: 있지만 비활성/);
+  });
+
+  test('getByRole 의 상태 옵션(level · checked · pressed · expanded · selected · includeHidden)과 filter({hasNotText})', async () => {
+    const page = await open('pw.html');
+    expect(await page.getByRole('heading', { level: 2 }).textContent()).toBe('제목 둘');
+    expect(await page.getByRole('heading', { level: 1 }).count()).toBe(1);
+    expect(await page.getByRole('heading').count()).toBe(3);
+    expect(await page.getByRole('checkbox', { checked: true }).count()).toBe(1); // 소식 받기만
+    expect(await page.getByRole('checkbox', { checked: false }).count()).toBe(1); // 약관
+    expect(await page.getByRole('button', { pressed: true }).textContent()).toBe('토글 단추');
+    expect(await page.getByRole('button', { expanded: false }).textContent()).toBe('펼치기 단추');
+    expect(await page.getByRole('tab', { selected: true }).textContent()).toBe('탭 하나');
+    expect(await page.getByRole('button', { name: '숨은 단추' }).count()).toBe(0);
+    expect(await page.getByRole('button', { name: '숨은 단추', includeHidden: true }).count()).toBe(1);
+    expect(await page.locator('li').filter({ hasNotText: '둘째' }).count()).toBe(2);
+    expect(() => page.getByRole('button', { disabled: true } as never)).toThrow('getByRole 이 모르는 옵션이에요: disabled');
+    expect(() => page.locator('li').filter({ has: page.locator('b') } as never)).toThrow(/has 는 아직 지원하지 않아요/);
+  });
+
+  test('Playwright 식 선택자: button:has-text · role=button[name] · css= · text=/re/ · >>', async () => {
+    const page = await open('pw.html');
+    await page.locator('button:has-text("보내기")').click();
+    expect(await page.locator('button:has-text("보내기")').count()).toBe(1);
+    expect(await page.locator('role=button[name="보내기"]').count()).toBe(1);
+    expect(await page.locator('role=button[name=/^취소$/]').isEnabled()).toBe(false);
+    expect(await page.locator('role=heading[level=2]').textContent()).toBe('제목 둘');
+    expect(await page.locator('css=#send').count()).toBe(1);
+    expect(await page.locator('text=/반갑/').count()).toBe(1);
+    expect(await page.locator('text="안녕"').count()).toBe(1);
+    expect(await page.locator('li >> nth=1').textContent()).toBe('둘째 항목');
+    expect(await page.locator('nav >> a:has-text("소개")').getAttribute('href')).toBe('#b');
+    expect(await page.locator('nav >> role=link[name="홈"]').count()).toBe(1);
+    expect(await page.locator('ul').locator('li:has-text("셋째")').count()).toBe(1);
+    expect(() => page.locator('xpath=//a')).toThrow(/xpath.*getByRole/);
+  });
+
+  test('연쇄 드롭다운: 600ms 뒤에 생기는 선택지를 selectOption 이 기다린다 · {value,label} 은 모두 맞아야 한다', async () => {
+    const page = await open('pw.html');
+    await page.locator('#loadopts').click();
+    expect(await page.locator('#dep option').count()).toBe(1);
+    const t0 = Date.now();
+    expect(await page.locator('#dep').selectOption('x')).toEqual(['x']);
+    expect(Date.now() - t0).toBeGreaterThan(150);
+    await expect(page.locator('#color').selectOption('없는 선택지', { timeout: 300 })).rejects.toThrow(/0\.3초 기다렸지만 고를 수 있는 요소가 없어요: locator\('#color'\) \(마지막 확인: 고를 선택지가 아직 없음\)/);
+    await expect(page.locator('#color').selectOption({ value: 'g', label: '빨강' }, { timeout: 300 })).rejects.toThrow(/고를 선택지가 아직 없음/); // 값과 글이 서로 다르면 AND 라 안 맞는다
+    expect(await page.locator('#color').selectOption({ value: 'g', label: '초록' })).toEqual(['g']);
+  });
+
+  test('inputValue · isChecked 는 label 을 그 입력칸으로 보고, 체크 상태가 없는 요소는 한국어 오류', async () => {
+    const page = await open('pw.html');
+    await page.locator('#nm').fill('라벨 시험');
+    expect(await page.locator('label[for="nm"]').inputValue()).toBe('라벨 시험');
+    expect(await page.locator('label:has-text("약관에 동의")').isChecked()).toBe(false);
+    await page.locator('#agree').check();
+    expect(await page.locator('label:has-text("약관에 동의")').isChecked()).toBe(true);
+    await expect(page.locator('#send').isChecked()).rejects.toThrow(/체크 상태가 없는 요소예요/);
   });
 
   test('content() 는 문서 전체 HTML 글이다', async () => {

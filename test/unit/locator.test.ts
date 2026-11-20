@@ -1,9 +1,9 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { SafariDriver, TabInfo } from '../../src/driver/types.js';
 import { Page } from '../../src/repl/page.js';
 import { createReplSession } from '../../src/repl/context.js';
 import { ACTION_OPS, buildActionSource } from '../../src/repl/inpage-actions.js';
-import { describeChain, globToRegExp, parseSelector, type Step } from '../../src/repl/locator.js';
+import { describeChain, globToRegExp, normTimeout, parseSelector, type Step } from '../../src/repl/locator.js';
 import { REPL_DESCRIPTION } from '../../src/server.js';
 import { createFakeDriver } from '../helpers/fake-driver.js';
 
@@ -61,10 +61,54 @@ describe('chain 만들기(직렬화)', () => {
   });
 
   test('ref(e12) 와 CSS 는 구분되고, text= 앞머리는 getByText 로 풀린다', () => {
-    expect(parseSelector('e12')).toEqual({ k: 'ref', s: 'e12' });
-    expect(parseSelector('#a > b')).toEqual({ k: 'css', s: '#a > b' });
-    expect(parseSelector('text=로그인')).toEqual({ k: 'text', m: { s: '로그인' }, exact: false });
-    expect(parseSelector('text="로그인"')).toEqual({ k: 'text', m: { s: '로그인' }, exact: true });
+    expect(parseSelector('e12')).toEqual([{ k: 'ref', s: 'e12' }]);
+    expect(parseSelector('#a > b')).toEqual([{ k: 'css', s: '#a > b' }]);
+    expect(parseSelector('#a', false)).toEqual([{ k: 'sub', s: '#a' }]);
+    expect(parseSelector('text=로그인')).toEqual([{ k: 'text', m: { s: '로그인' }, exact: false }]);
+    expect(parseSelector('text="로그인"')).toEqual([{ k: 'text', m: { s: '로그인' }, exact: true }]);
+  });
+
+  test('Playwright 식 선택자: css= · text=/re/ · :has-text · role= · nth= · >> 이음', () => {
+    expect(parseSelector('css=button.primary')).toEqual([{ k: 'css', s: 'button.primary' }]);
+    expect(parseSelector('text=/로그.n/i')).toEqual([{ k: 'text', m: { re: '로그.n', fl: 'i' }, exact: false }]);
+    expect(parseSelector('button:has-text("저장")')).toEqual([{ k: 'css', s: 'button' }, { k: 'hasText', m: { s: '저장' }, exact: false }]);
+    expect(parseSelector("li:text-is('둘째')")).toEqual([{ k: 'css', s: 'li' }, { k: 'hasText', m: { s: '둘째' }, exact: true }]);
+    expect(parseSelector('a:text("홈"):has-text(/x/i)')).toEqual([{ k: 'css', s: 'a' }, { k: 'hasText', m: { s: '홈' }, exact: false }, { k: 'hasText', m: { re: 'x', fl: 'i' }, exact: false }]);
+    expect(parseSelector(':has-text("x")')[0]).toEqual({ k: 'css', s: '*' });
+    expect(parseSelector('role=button[name="저장"]')).toEqual([{ k: 'role', role: 'button', name: { s: '저장' }, exact: false }]);
+    expect(parseSelector('role=button[name="저장"s]')).toEqual([{ k: 'role', role: 'button', name: { s: '저장' }, exact: true }]);
+    expect(parseSelector('role=link[name=/홈|home/i]')).toEqual([{ k: 'role', role: 'link', name: { re: '홈|home', fl: 'i' }, exact: false }]);
+    expect(parseSelector('role=heading[level=2]')).toEqual([{ k: 'role', role: 'heading', exact: false, level: 2, name: undefined }]);
+    expect(parseSelector('role=checkbox[checked][name="약관"]')[0]).toMatchObject({ role: 'checkbox', checked: true, name: { s: '약관' } });
+    expect(parseSelector('role=button[pressed=false]')[0]).toMatchObject({ pressed: false });
+    expect(parseSelector('li >> nth=1')).toEqual([{ k: 'css', s: 'li' }, { k: 'nth', i: 1 }]);
+    expect(parseSelector('nav >> a:has-text("소개") >> nth=-1')).toEqual([{ k: 'css', s: 'nav' }, { k: 'sub', s: 'a' }, { k: 'hasText', m: { s: '소개' }, exact: false }, { k: 'nth', i: -1 }]);
+    expect(parseSelector('css=ul >> role=button[name="x"]').map((x) => x.k)).toEqual(['css', 'role']);
+    expect(parseSelector('a[href="x>>y"] >> b').map((x) => (x as { s?: string }).s)).toEqual(['a[href="x>>y"]', 'b']); // 따옴표 안의 >> 는 나누지 않는다
+    expect(parseSelector('id=nm')).toEqual([{ k: 'css', s: '[id="nm"]' }]);
+    expect(parseSelector('data-testid=go')).toEqual([{ k: 'testid', m: { s: 'go' } }]);
+  });
+
+  test('지원하지 않는 선택자는 한국어 오류로 알린다', () => {
+    expect(() => parseSelector('xpath=//a')).toThrow(/xpath.*getByRole/);
+    expect(() => parseSelector('//div/a')).toThrow(/xpath/);
+    expect(() => parseSelector('role=button[disabled]')).toThrow(/모르는 속성이에요: disabled/);
+    expect(() => parseSelector('div:has-text("x") > b')).toThrow(/끝에서만/);
+    expect(() => parseSelector('a >> ')).toThrow(/빈 조각/);
+  });
+
+  test('getByRole 의 상태 옵션을 chain 에 싣고, 모르는 옵션 · filter 의 has 는 한국어 오류', () => {
+    const f = fake(() => ok());
+    const r = f.page.getByRole('heading', { name: '제목', level: 2, expanded: true, includeHidden: true, checked: 'mixed', pressed: false, selected: true });
+    expect(describeChain((r as unknown as { chain: Step[] }).chain)).toBe("getByRole('heading', {name: '제목', level: 2, checked: \"mixed\", pressed: false, expanded: true, selected: true, includeHidden: true})");
+    expect(() => f.page.getByRole('button', { disabled: true } as never)).toThrow('getByRole 이 모르는 옵션이에요: disabled');
+    expect(() => f.page.getByText('x', { nope: 1 } as never)).toThrow(/getByText 이 모르는 옵션이에요: nope/);
+    const l = f.page.locator('li');
+    expect(() => l.filter({ has: l } as never)).toThrow(/filter 의 has 는 아직 지원하지 않아요.*locator\(하위 선택자\)/);
+    expect(() => l.filter({ hasNot: l } as never)).toThrow(/filter 의 hasNot/);
+    expect(() => l.filter({ foo: 1 } as never)).toThrow('filter 가 모르는 옵션이에요: foo');
+    expect(() => l.filter({})).toThrow(/hasText/);
+    expect(describeChain((l.filter({ hasNotText: '둘' }) as unknown as { chain: Step[] }).chain)).toBe("locator('li').filter({hasNotText: '둘'})");
   });
 
   test('describeChain 은 Playwright 꼴 글을 만든다(오류 글에 쓴다)', () => {
@@ -85,6 +129,10 @@ describe('waitForURL 글 패턴', () => {
     expect(re('http://x/?').test('http://x/a')).toBe(true);
     expect(re('http://x/a.html').test('http://x/aXhtml')).toBe(false); // . 은 글자 그대로
     expect(re('http://x/{a,b}/c').test('http://x/b/c')).toBe(true);
+    expect(re('http://x/**/b.html').test('http://x/b.html')).toBe(true); // /**/ 는 디렉터리 0개 이상
+    expect(re('http://x/**/b.html').test('http://x/a/c/b.html')).toBe(true);
+    expect(re('**/b.html').test('http://x/b.html')).toBe(true);
+    expect(re('http://x/**/b.html').test('http://y/b.html')).toBe(false);
   });
   test('처음부터 끝까지 맞아야 한다', () => {
     expect(re('http://x/a').test('http://x/a/b')).toBe(false);
@@ -301,6 +349,107 @@ describe('동작은 대상이 준비될 때까지 기다린다(시도 하나 = r
       const { page } = fake(() => notReady('missing'));
       await expect(run(page)).rejects.toThrow(/0\.1초 기다렸지만 .* 요소가 없어요: locator\('#a'\)/);
     }
+  });
+});
+
+describe('기다림의 한도와 호출 끝(좀비 방지)', () => {
+  afterEach(() => vi.useRealTimers());
+
+  test('normTimeout: 안 주면 기본값, 양수는 110초까지, 0 · NaN · 음수 · 글자는 110초', () => {
+    expect(normTimeout(undefined, 10000)).toBe(10000);
+    expect(normTimeout(300, 10000)).toBe(300);
+    expect(normTimeout(1e9, 10000)).toBe(110000);
+    expect(normTimeout(0, 10000)).toBe(110000);
+    expect(normTimeout(Number.NaN, 10000)).toBe(110000);
+    expect(normTimeout(-5, 10000)).toBe(110000);
+    expect(normTimeout('abc', 10000)).toBe(110000);
+    expect(normTimeout(Infinity, 10000)).toBe(110000);
+  });
+
+  test.each([0, Number.NaN, -1, 1e9, Infinity])('timeout %s 은 끝없이 기다리지 않고 110초 뒤에 한국어 오류(동작 · waitFor · waitForURL)', async (t) => {
+    vi.useFakeTimers();
+    const never = fake(() => ok({ notReady: 'missing', v: { n: 0, vis: false } }));
+    const urls = new Page(
+      { settleTab: async () => ({ navigated: false, leaving: false, tab: { ...tab, url: 'http://x/' } }), runJs: async () => 'complete', lastUrl: () => 'http://x/' } as unknown as SafariDriver,
+      't1',
+    );
+    const results = [
+      never.page.locator('#a').click({ timeout: t }),
+      never.page.locator('#a').waitFor({ timeout: t }),
+      urls.waitForURL('http://x/never', { timeout: t }),
+    ].map((p) => p.then(() => 'ok', (e: Error) => e.message));
+    await vi.advanceTimersByTimeAsync(109_000);
+    expect(await Promise.race([Promise.all(results), Promise.resolve('아직')])).toBe('아직'); // 109초까지는 안 끝난다
+    await vi.advanceTimersByTimeAsync(2_000);
+    const [a, b, c] = await Promise.all(results);
+    expect(a).toMatch(/^110초 기다렸지만 누를 수 있는 요소가 없어요/);
+    expect(b).toMatch(/^110초 안에 locator\('#a'\) 가 보이게 되지 않았어요/);
+    expect(c).toMatch(/^110초 안에 주소가 http:\/\/x\/never/);
+  });
+
+  test('호출이 시간 초과로 끝나면 돌던 기다림은 더 이상 runJs 를 하지 않는다', async () => {
+    const d = createFakeDriver();
+    d.answer = () => ok({ notReady: 'missing', v: { n: 0, vis: false } });
+    const session = createReplSession(d);
+    const r = await session.run(`const p = await openTab('http://x/'); await p.locator('#a').click({ timeout: 60000 })`, { timeoutMs: 400 });
+    expect(r.error).toMatch(/시간 초과/);
+    await new Promise((res) => setTimeout(res, 200)); // 이미 나간 시도 하나는 끝나게 둔다
+    const n1 = d.calls.runJs.length;
+    expect(n1).toBeGreaterThan(1);
+    await new Promise((res) => setTimeout(res, 700));
+    expect(d.calls.runJs.length).toBe(n1); // 그 뒤로는 하나도 늘지 않는다
+    const r2 = await session.run(`await page.locator('#b').waitFor({ timeout: 60000 })`, { timeoutMs: 400 });
+    expect(r2.error).toMatch(/시간 초과/);
+    await new Promise((res) => setTimeout(res, 200));
+    const n2 = d.calls.runJs.length;
+    const s2 = d.calls.settleTab.length;
+    await new Promise((res) => setTimeout(res, 700));
+    expect(d.calls.runJs.length).toBe(n2);
+    expect(d.calls.settleTab.length).toBe(s2);
+    await session.dispose();
+  });
+
+  test('호출이 끝난 뒤에는 재시도가 준비돼도 동작하지 않는다(늦은 클릭 방지)', async () => {
+    const d = createFakeDriver();
+    let ready = false;
+    let acted = 0;
+    d.answer = (_k, s) => {
+      if (!ready) return ok({ notReady: 'missing' });
+      if (s.includes('"op":"click"')) acted++;
+      return ok();
+    };
+    const session = createReplSession(d);
+    await session.run(`const p = await openTab('http://x/'); await p.getByRole('button').click({ timeout: 60000 })`, { timeoutMs: 300 });
+    ready = true; // 호출은 이미 끝났다
+    await new Promise((res) => setTimeout(res, 700));
+    expect(acted).toBe(0);
+    await session.dispose();
+  });
+});
+
+describe('selectOption 의 선택지 기다림 · 이동 전 주소', () => {
+  test('선택지가 아직 없으면(notReady option) 다시 시도하고, 끝내 없으면 마지막 상태를 알린다', async () => {
+    const a = fake((_s, n) => (n <= 2 ? ok({ notReady: 'option' }) : ok({ v: ['x'] })));
+    expect(await a.page.locator('select').selectOption('x')).toEqual(['x']);
+    expect(a.log.runJs).toHaveLength(3);
+    const b = fake(() => ok({ notReady: 'option' }));
+    await expect(b.page.locator('select').selectOption('x', { timeout: 200 })).rejects.toThrow(/0\.2초 기다렸지만 고를 수 있는 요소가 없어요: locator\('select'\) \(마지막 확인: 고를 선택지가 아직 없음\)/);
+  });
+
+  test('goBack 은 이동 전 주소를 nav runJs 의 값(v)에서 받는다 — 캐시가 늦어도 주소 변화를 알아본다', async () => {
+    const t2 = { ...tab, url: 'http://x/b' };
+    const d = {
+      async runJs(_k: string, s: string) {
+        return s.includes('readyState') ? 'complete' : ok({ expectNav: true, v: 'http://x/a' });
+      },
+      async settleTab() {
+        return { navigated: false, leaving: false, tab: t2 };
+      },
+      lastUrl: () => 'http://x/b', // 캐시는 이미 이동 후 주소(한 박자 빠름/늦음)
+    } as unknown as SafariDriver;
+    const t0 = Date.now();
+    await new Page(d, 't1').goBack();
+    expect(Date.now() - t0).toBeLessThan(800); // 주소가 달라졌으니 바로 끝난다(갈 곳 없음으로 2초 기다리지 않는다)
   });
 });
 

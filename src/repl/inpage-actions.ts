@@ -27,7 +27,7 @@ export interface ActionOk {
     expectNav?: boolean;
     text?: string;
     /** 기다리는 동작(args.wait)에서 대상이 아직 준비되지 않았다(missing · hidden · disabled). 동작은 하지 않았다. */
-    notReady?: "missing" | "hidden" | "disabled";
+    notReady?: "missing" | "hidden" | "disabled" | "option";
     /** 값을 돌려주는 동작(prop · count · state · select)의 결과(JSON). */
     v?: unknown;
     /** 동작 중 페이지가 setTimeout 으로 잡아 둔 가장 긴 지연(ms). 없으면 -1. 늦게 일어나는 이동(타이머 리다이렉트)을 기다릴지 정한다. */
@@ -130,15 +130,22 @@ const PRELUDE = String.raw`
     if (!e.defaultPrevented && (!tg || tg === '_self') && !(f && f.method && f.method.toLowerCase() === 'dialog')) sub.nav = true;
   }
   window.addEventListener('submit', onSubmit);
-  // 동작 동안 이 문서를 떠나는 이동(Navigation API 의 navigate 이벤트)이 시작됐나. 핸들러가 곧바로 location.href 를 바꾸는 경우도 잡는다.
-  // 같은 문서 안 이동(해시 · pushState) · 내려받기는 뺀다. Navigation API 가 없는 사파리에서는 이 신호 없이 예전처럼 돈다.
-  var navFired = false;
-  function onNavigate(e) {
-    if (e.hashChange || e.downloadRequest || (e.destination && e.destination.sameDocument)) return;
-    navFired = true;
-  }
+  // 동작 동안 일어난 Navigation API 의 navigate 이벤트를 모아 두고, 끝에 「이 문서를 떠나는 이동이 시작됐나」를 판단한다
+  // (핸들러가 곧바로 location.href 를 바꾸는 경우도 잡는다). 같은 문서 안 이동(해시 · pushState) · 내려받기(download="" 포함) ·
+  // 막힌 것(defaultPrevented) · 페이지가 intercept 로 가로챈 것(transition 이 진행 중)은 뺀다. Navigation API 가 없는 사파리는 이 신호 없이 예전처럼 돈다.
+  var navEvs = [];
+  function onNavigate(e) { navEvs.push(e); }
   var navApi = window.navigation && typeof window.navigation.addEventListener === 'function' ? window.navigation : null;
   if (navApi) navApi.addEventListener('navigate', onNavigate);
+  function navHappened() {
+    for (var i = 0; i < navEvs.length; i++) {
+      var e = navEvs[i];
+      if (e.hashChange || e.downloadRequest != null || e.defaultPrevented || (e.destination && e.destination.sameDocument)) continue;
+      if (e.canIntercept && navApi && navApi.transition) continue;
+      return true;
+    }
+    return false;
+  }
 
   function mouse(type, el, x, y, buttons) {
     var W = winOf(el);
@@ -358,13 +365,16 @@ const BODY = String.raw`
         var el = locOne();
         if (A.what === 'innerText') r.v = pwInnerText(el);
         else if (A.what === 'inputValue') {
+          if (el.tagName === 'LABEL' && el.control) el = el.control;
           if (!('value' in el)) fail('입력칸이 아니라 값을 읽을 수 없음(' + el.tagName.toLowerCase() + ') — ' + A.desc);
           r.v = String(el.value);
         }
         else if (A.what === 'attr') r.v = el.getAttribute(A.name);
         else if (A.what === 'isChecked') {
           if (el.tagName === 'LABEL' && el.control) el = el.control;
-          r.v = pwOn(el);
+          var cst = pwChecked(el);
+          if (cst === null && !(el.tagName === 'INPUT' && /^(checkbox|radio)$/i.test(el.type))) fail('체크 상태가 없는 요소예요(체크박스 · 라디오 · aria-checked 가 있는 요소만 돼요): ' + A.desc);
+          r.v = cst === true;
         }
         else if (A.what === 'isEnabled') r.v = pwEnabled(el);
         else fail('알 수 없는 읽기: ' + A.what);
@@ -392,10 +402,15 @@ const BODY = String.raw`
           var spec = A.sel[oi], found = -1;
           for (var oj = 0; oj < opts.length && found < 0; oj++) {
             var o1 = opts[oj];
-            if (spec.any !== undefined ? (o1.value === spec.any || o1.label === spec.any || pwNorm(o1.textContent) === pwNorm(spec.any)) :
-                (spec.value !== undefined && o1.value === spec.value) || (spec.label !== undefined && (o1.label === spec.label || pwNorm(o1.textContent) === pwNorm(spec.label))) || (spec.index !== undefined && spec.index === oj)) found = oj;
+            if (spec.any !== undefined) { if (o1.value === spec.any || o1.label === spec.any || pwNorm(o1.textContent) === pwNorm(spec.any)) found = oj; }
+            else if (spec.value === undefined && spec.label === undefined && spec.index === undefined) fail('selectOption 에 value · label · index 중 하나는 필요해요');
+            // 준 항목은 모두 맞아야 한다(AND).
+            else if ((spec.value === undefined || o1.value === spec.value) && (spec.label === undefined || o1.label === spec.label || pwNorm(o1.textContent) === pwNorm(spec.label)) && (spec.index === undefined || spec.index === oj)) found = oj;
           }
-          if (found < 0) fail('고를 선택지가 없음: ' + JSON.stringify(spec.any !== undefined ? spec.any : spec) + ' — ' + A.desc);
+          if (found < 0) {
+            if (A.wait) notReady('option'); // 연쇄 드롭다운처럼 선택지가 나중에 생길 수 있다 — 기다린다
+            fail('고를 선택지가 없음: ' + JSON.stringify(spec.any !== undefined ? spec.any : spec) + ' — ' + A.desc);
+          }
           chosen.push(found);
         }
         if (!chosen.length) fail('고를 선택지를 하나 이상 넘기세요');
@@ -446,6 +461,7 @@ const BODY = String.raw`
         break;
       }
       case 'nav': {
+        r.v = location.href; // 이동하기 전 주소(뒤로 · 앞으로 가기가 끝났는지 주소 변화로 알아보려고)
         r.expectNav = true;
         if (A.dir === 'reload') location.reload();
         else if (A.dir === 'back') history.back();
@@ -471,7 +487,7 @@ const BODY = String.raw`
       }
       default: fail('알 수 없는 동작: ' + A.op);
     }
-    if (navFired) r.expectNav = true;
+    if (navHappened()) r.expectNav = true;
     r.timerMs = __saTimers();
     return JSON.stringify({ ok: true, r: r });
   } catch (e) {
