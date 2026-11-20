@@ -362,6 +362,27 @@ describeIt('Playwright 식 이름(Locator · Page)', () => {
     await expect(page.locator('#send').isChecked()).rejects.toThrow(/체크 상태가 없는 요소예요/);
   });
 
+  test('이름 후보에 안 보이는 글이 섞이지 않는다: 보이는 「저장」 단추는 숨은 「계정 삭제」로 안 찾아진다', async () => {
+    const page = await open('pw.html');
+    expect(await page.getByRole('button', { name: '저장' }).count()).toBe(1);
+    expect(await page.getByRole('button', { name: '계정 삭제' }).count()).toBe(0);
+    expect(await page.getByRole('button', { name: '숨은 스크립트' }).count()).toBe(0);
+    expect(await page.getByRole('button', { name: '숨은 단추', includeHidden: true }).count()).toBe(1); // 자신이 숨은 단추는 여전히 이름으로 찾는다
+  });
+
+  test('앞 선택자 없는 :has-text · :text 는 가장 깊은 요소 하나(html · body 를 누르지 않는다)', async () => {
+    const page = await open('pw.html');
+    expect(await page.locator(':has-text("나중 선택지 없음 글")').count()).toBe(0);
+    expect(await page.locator(':has-text("보내기")').count()).toBe(1); // button#send 만
+    expect(await page.locator(':has-text("보내기")').getAttribute('id')).toBe('send');
+    expect(await page.locator('button:text("취소")').count()).toBe(1);
+    expect(await page.locator('li:text-is("둘째 항목")').count()).toBe(1);
+    expect(await page.locator('[data-testid="name-input"]').count()).toBe(1);
+    expect(await page.locator('id="nm"').count()).toBe(1);
+    expect(await page.locator('text="HELLO WORLD"i').count()).toBe(1); // 대소문자 무시 exact
+    await expect(page.click('xpath=//a')).rejects.toThrow(/xpath/);
+  });
+
   test('content() 는 문서 전체 HTML 글이다', async () => {
     const page = await open('pw.html');
     const html = await page.content();

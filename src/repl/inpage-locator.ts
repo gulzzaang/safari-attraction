@@ -164,8 +164,12 @@ export const LOCATOR_SOURCE = String.raw`
   function pwNames(el, role) {
     var out = [nameInfo(el, roleOf(el)).name];
     var t = el.tagName;
-    // 평평한 글은 안 그려지는 요소 자신의 글을 비우므로(includeHidden 로 찾는 숨은 단추), 날것 textContent 도 후보에 둔다.
-    if (t !== 'INPUT' && t !== 'TEXTAREA' && t !== 'SELECT') { out.push(flatText(el, 100000)); out.push(el.textContent || ''); }
+    if (t !== 'INPUT' && t !== 'TEXTAREA' && t !== 'SELECT') {
+      out.push(flatText(el, 100000));
+      // 평평한 글은 안 그려지는 요소 자신의 글을 비운다 — 요소 자신이 숨은 경우(includeHidden 로 찾는 숨은 단추)에만 날것 textContent 를 후보로 둔다.
+      // (보이는 요소에 날것 글을 쓰면 안쪽에 숨은 글 · script · style 의 글이 이름으로 잡힌다.)
+      if (pwHiddenA11y(el)) out.push(el.textContent || '');
+    }
     var a = el.getAttribute('aria-label'); if (a) out.push(a);
     var lt = pwLabels(el); for (var i = 0; i < lt.length; i++) out.push(lt[i]);
     var p = el.getAttribute('placeholder'); if (p) out.push(p);
@@ -269,6 +273,15 @@ export const LOCATOR_SOURCE = String.raw`
         case 'hasText': {
           var t = pwMake(st.m, !!st.exact), neg = !!st.not;
           cur = cur.filter(function (el) { return t(pwText(el)) !== neg; });
+          if (st.deep) {
+            // 가장 깊은(작은) 것만: 맞는 자손이 있는 요소는 뺀다(html · body 같은 바깥 요소를 누르지 않게).
+            var hitSet = new Set(cur);
+            cur = cur.filter(function (el) {
+              var ds = pwFlat(el, false, []);
+              for (var di = 0; di < ds.length; di++) if (hitSet.has(ds[di])) return false;
+              return true;
+            });
+          }
           break;
         }
         default: fail('알 수 없는 찾기 단계: ' + st.k);

@@ -14,7 +14,7 @@ export type Step =
   | { k: "text" | "label" | "placeholder"; m: Matcher; exact: boolean }
   | { k: "testid"; m: Matcher }
   | { k: "nth"; i: number }
-  | { k: "hasText"; m: Matcher; not?: boolean; exact?: boolean };
+  | { k: "hasText"; m: Matcher; not?: boolean; exact?: boolean; deep?: boolean };
 
 /** getByRole 의 선택. */
 export interface RoleOpts {
@@ -193,14 +193,30 @@ function readRegex(s: string): { re: string; fl: string } | null {
   return m ? { re: m[1]!, fl: m[2]! } : null;
 }
 
-/** 글 값 하나: `/정규식/i` 는 정규식, 따옴표로 싸면 exact, 아니면 부분 일치. */
+const escapeRe = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * 글 값 하나: `/정규식/i` 는 정규식, 따옴표로 싸면 exact(`"글"i` 는 대소문자 무시 exact, `"글"s` 는 구분), 아니면 부분 일치.
+ */
 function textValue(raw: string): { m: Matcher; exact: boolean } {
   const v = raw.trim();
   const re = readRegex(v);
   if (re) return { m: re, exact: false };
   const q = readQuoted(v, 0);
-  if (q && q.end === v.length) return { m: { s: q.value }, exact: true };
+  if (q) {
+    const flag = v.slice(q.end).trim();
+    if (flag === "") return { m: { s: q.value }, exact: true };
+    if (flag === "s") return { m: { s: q.value }, exact: true };
+    if (flag === "i") return { m: { re: `^\\s*${escapeRe(q.value.trim()).replace(/\s+/g, "\\s+")}\\s*$`, fl: "i" }, exact: false };
+  }
   return { m: { s: v }, exact: false };
+}
+
+/** `id=`/`data-testid=` 의 값: 따옴표로 싸면 벗긴다. */
+function plainValue(raw: string): string {
+  const v = raw.trim();
+  const q = readQuoted(v, 0);
+  return q && q.end === v.length ? q.value : v;
 }
 
 const ROLE_BOOLS = ["checked", "pressed", "expanded", "selected"] as const;
@@ -242,8 +258,15 @@ function parseRoleEngine(body: string): Step {
       const re = opts["__quoted_name"] ? null : readRegex(value);
       opts.name = re ? new RegExp(re.re, re.fl) : value;
       if (flag === "s") opts.exact = true;
-    } else if (key === "level") opts.level = Number(value);
-    else if ((ROLE_BOOLS as readonly string[]).includes(key)) opts[key] = value === null || value === "true" ? true : value === "false" ? false : value === "mixed" ? "mixed" : value;
+    } else if (key === "level") {
+      if (value === null || !/^\d+$/.test(value)) throw new Error(`role= 선택자의 level 은 정수여야 해요: ${value ?? "(값 없음)"}`);
+      opts.level = Number(value);
+    }
+    else if ((ROLE_BOOLS as readonly string[]).includes(key)) {
+      const ok = key === "checked" || key === "pressed" ? ["true", "false", "mixed"] : ["true", "false"];
+      if (value !== null && !ok.includes(value)) throw new Error(`role= 선택자의 ${key} 값이 잘못됐어요: ${value} (${ok.join(" · ")} 중 하나)`);
+      opts[key] = value === null || value === "true" ? true : value === "false" ? false : "mixed";
+    }
     else if (key === "include-hidden") opts.includeHidden = value === null || value === "true";
     else throw new Error(`role= 선택자가 모르는 속성이에요: ${key} (name · level · checked · pressed · expanded · selected · include-hidden 만 돼요)`);
   }
@@ -251,14 +274,31 @@ function parseRoleEngine(body: string): Step {
   return roleStep(head[1]!, opts as RoleOpts);
 }
 
-/** CSS 선택자 끝의 `:has-text("글")` · `:text("글")` · `:text-is("글")` 을 떼어 hasText 단계로 바꾼다(끝에서만 쓸 수 있다). */
+/** 따옴표 밖에서 처음 나오는 `:has-text(` · `:text(` · `:text-is(` 의 자리(없으면 -1). `[data-x="a:text(b)"]` 같은 속성 값 안은 건너뛴다. */
+function findTextPseudo(part: string): number {
+  let q = "";
+  for (let i = 0; i < part.length; i++) {
+    const c = part[i]!;
+    if (q) {
+      if (c === "\\") i++;
+      else if (c === q) q = "";
+    } else if (c === '"' || c === "'") q = c;
+    else if (c === ":" && part[i - 1] !== ":" && /^:(has-text|text-is|text)\(/.test(part.slice(i))) return i;
+  }
+  return -1;
+}
+
+/**
+ * CSS 선택자 끝의 `:has-text("글")` · `:text("글")` · `:text-is("글")` 을 떼어 hasText 단계로 바꾼다(끝에서만 쓸 수 있다).
+ * `:text` · `:text-is` 는 맞는 가장 깊은(작은) 요소만 고르고(`div:text("x")` = 그 글을 가진 가장 깊은 div), 앞에 선택자가 없는 `:has-text("x")` 도 같다 — html · body 를 고르지 않게.
+ * 앞에 선택자가 있는 `:has-text` 는 Playwright 처럼 그 글을 품은 모든 해당 요소다.
+ */
 function parseCss(part: string, kind: "css" | "sub"): Step[] {
-  const re = /(?<!:):(has-text|text-is|text)\(/g;
-  const first = re.exec(part);
-  const base = (first ? part.slice(0, first.index) : part).trim();
+  const at0 = findTextPseudo(part);
+  const base = (at0 >= 0 ? part.slice(0, at0) : part).trim();
   const steps: Step[] = [{ k: kind, s: base || "*" }];
-  if (!first) return steps;
-  let at = first.index;
+  if (at0 < 0) return steps;
+  let at = at0;
   while (at < part.length) {
     const m = /^:(has-text|text-is|text)\(\s*/.exec(part.slice(at));
     if (!m) throw new Error(`:has-text · :text 는 선택자 끝에서만 쓸 수 있어요 — >> 로 나눠 쓰세요: ${part}`);
@@ -279,7 +319,9 @@ function parseCss(part: string, kind: "css" | "sub"): Step[] {
     at = i + tail[0].length;
     const re2 = q ? null : readRegex(raw);
     const mm: Matcher = re2 ?? { s: q ? q.value : raw };
-    steps.push({ k: "hasText", m: mm, exact: m[1] === "text-is" });
+    const step: Step = { k: "hasText", m: mm, exact: m[1] === "text-is" };
+    if (m[1] !== "has-text" || base === "") step.deep = true;
+    steps.push(step);
   }
   return steps;
 }
@@ -311,8 +353,8 @@ export function parseSelector(sel: string, first = true): Step[] {
       if (!Number.isInteger(i)) throw new Error(`nth= 에는 정수가 필요해요: ${part}`);
       return void out.push({ k: "nth", i });
     }
-    if (eng && name === "id") return void out.push({ k: kind, s: `[id=${JSON.stringify(eng[2]!.trim())}]` });
-    if (eng && (name === "data-testid" || name === "testid")) return void out.push({ k: "testid", m: { s: eng[2]!.trim() } });
+    if (eng && name === "id") return void out.push({ k: kind, s: `[id=${JSON.stringify(plainValue(eng[2]!))}]` });
+    if (eng && (name === "data-testid" || name === "testid")) return void out.push({ k: "testid", m: { s: plainValue(eng[2]!) } });
     out.push(...parseCss(part, kind));
   });
   return out;

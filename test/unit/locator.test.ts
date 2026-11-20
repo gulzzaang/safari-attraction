@@ -72,9 +72,20 @@ describe('chain 만들기(직렬화)', () => {
     expect(parseSelector('css=button.primary')).toEqual([{ k: 'css', s: 'button.primary' }]);
     expect(parseSelector('text=/로그.n/i')).toEqual([{ k: 'text', m: { re: '로그.n', fl: 'i' }, exact: false }]);
     expect(parseSelector('button:has-text("저장")')).toEqual([{ k: 'css', s: 'button' }, { k: 'hasText', m: { s: '저장' }, exact: false }]);
-    expect(parseSelector("li:text-is('둘째')")).toEqual([{ k: 'css', s: 'li' }, { k: 'hasText', m: { s: '둘째' }, exact: true }]);
-    expect(parseSelector('a:text("홈"):has-text(/x/i)')).toEqual([{ k: 'css', s: 'a' }, { k: 'hasText', m: { s: '홈' }, exact: false }, { k: 'hasText', m: { re: 'x', fl: 'i' }, exact: false }]);
-    expect(parseSelector(':has-text("x")')[0]).toEqual({ k: 'css', s: '*' });
+    expect(parseSelector("li:text-is('둘째')")).toEqual([{ k: 'css', s: 'li' }, { k: 'hasText', m: { s: '둘째' }, exact: true, deep: true }]);
+    expect(parseSelector('a:text("홈"):has-text(/x/i)')).toEqual([{ k: 'css', s: 'a' }, { k: 'hasText', m: { s: '홈' }, exact: false, deep: true }, { k: 'hasText', m: { re: 'x', fl: 'i' }, exact: false }]);
+    // 앞 선택자가 없는 :has-text · :text 는 가장 깊은(작은) 요소 — html · body 를 고르지 않는다. 앞 선택자가 있는 :has-text 는 품은 모든 요소
+    expect(parseSelector(':has-text("x")')).toEqual([{ k: 'css', s: '*' }, { k: 'hasText', m: { s: 'x' }, exact: false, deep: true }]);
+    expect(parseSelector('div:has-text("x")')[1]).not.toHaveProperty('deep');
+    expect(parseSelector('div:text("x")')[1]).toMatchObject({ deep: true });
+    // 속성 값 안의 :text( 는 CSS 그대로
+    expect(parseSelector('[data-x="a:text(b)"]')).toEqual([{ k: 'css', s: '[data-x="a:text(b)"]' }]);
+    expect(parseSelector("a[title='x:has-text(y)']:has-text('z')")).toEqual([{ k: 'css', s: "a[title='x:has-text(y)']" }, { k: 'hasText', m: { s: 'z' }, exact: false }]);
+    // 값의 따옴표 벗기기 · text="…"i
+    expect(parseSelector('id="main"')).toEqual([{ k: 'css', s: '[id="main"]' }]);
+    expect(parseSelector("data-testid='go'")).toEqual([{ k: 'testid', m: { s: 'go' } }]);
+    expect(parseSelector('text="foo"i')).toEqual([{ k: 'text', m: { re: '^\\s*foo\\s*$', fl: 'i' }, exact: false }]);
+    expect(parseSelector('text="a.b"s')).toEqual([{ k: 'text', m: { s: 'a.b' }, exact: true }]);
     expect(parseSelector('role=button[name="저장"]')).toEqual([{ k: 'role', role: 'button', name: { s: '저장' }, exact: false }]);
     expect(parseSelector('role=button[name="저장"s]')).toEqual([{ k: 'role', role: 'button', name: { s: '저장' }, exact: true }]);
     expect(parseSelector('role=link[name=/홈|home/i]')).toEqual([{ k: 'role', role: 'link', name: { re: '홈|home', fl: 'i' }, exact: false }]);
@@ -95,6 +106,9 @@ describe('chain 만들기(직렬화)', () => {
     expect(() => parseSelector('role=button[disabled]')).toThrow(/모르는 속성이에요: disabled/);
     expect(() => parseSelector('div:has-text("x") > b')).toThrow(/끝에서만/);
     expect(() => parseSelector('a >> ')).toThrow(/빈 조각/);
+    expect(() => parseSelector('role=checkbox[checked=foo]')).toThrow(/checked 값이 잘못됐어요: foo/);
+    expect(() => parseSelector('role=button[expanded=mixed]')).toThrow(/expanded 값이 잘못됐어요/);
+    expect(() => parseSelector('role=heading[level=x]')).toThrow(/level 은 정수/);
   });
 
   test('getByRole 의 상태 옵션을 chain 에 싣고, 모르는 옵션 · filter 의 has 는 한국어 오류', () => {
@@ -116,6 +130,17 @@ describe('chain 만들기(직렬화)', () => {
     expect(describeChain([{ k: 'role', role: 'link', name: { re: 'a', fl: 'i' }, exact: true }])).toBe("getByRole('link', {name: /a/i, exact: true})");
     expect(describeChain([{ k: 'css', s: '#a' }, { k: 'sub', s: 'b' }, { k: 'nth', i: 0 }, { k: 'nth', i: -1 }, { k: 'nth', i: 3 }])).toBe("locator('#a').locator('b').first().last().nth(3)");
     expect(describeChain([{ k: 'text', m: { s: "it's" }, exact: false }, { k: 'hasText', m: { s: 'x' } }])).toBe("getByText('it\\'s').filter({hasText: 'x'})");
+  });
+});
+
+describe('Page 줄임 동작은 선택자가 잘못돼도 던지지 않고 거부된 약속을 돌려준다', () => {
+  test('page.click · fill · textContent … 에 xpath 를 주면 동기 throw 가 아니라 reject', async () => {
+    const { page } = fake(() => ok());
+    for (const run of [() => page.click('xpath=//a'), () => page.fill('//a', 'v'), () => page.textContent('role=button[disabled]'), () => page.isVisible('xpath=//a'), () => page.getAttribute('xpath=//a', 'x')]) {
+      let p: Promise<unknown> | undefined;
+      expect(() => (p = run())).not.toThrow();
+      await expect(p).rejects.toThrow(/xpath|모르는 속성/);
+    }
   });
 });
 
@@ -406,6 +431,20 @@ describe('기다림의 한도와 호출 끝(좀비 방지)', () => {
     await new Promise((res) => setTimeout(res, 700));
     expect(d.calls.runJs.length).toBe(n2);
     expect(d.calls.settleTab.length).toBe(s2);
+    await session.dispose();
+  });
+
+  test('await 없이 던져 둔 동작은 호출이 끝나면 첫 시도 뒤 멈춘다', async () => {
+    const d = createFakeDriver();
+    d.answer = () => ok({ notReady: 'missing' });
+    const session = createReplSession(d);
+    const r = await session.run(`const p = await openTab('http://x/'); p.locator('#a').click({ timeout: 60000 }).catch(() => {}); await sleep(30)`);
+    expect(r.error).toBeUndefined();
+    await new Promise((res) => setTimeout(res, 100));
+    const n = d.calls.runJs.length;
+    expect(n).toBe(1); // 첫 시도만
+    await new Promise((res) => setTimeout(res, 600));
+    expect(d.calls.runJs.length).toBe(n);
     await session.dispose();
   });
 

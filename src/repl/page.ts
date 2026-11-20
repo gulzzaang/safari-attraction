@@ -150,18 +150,18 @@ export class Page {
   }
 
   // 선택자를 먼저 받는 줄임 동작(Playwright 의 page.click(sel) 꼴).
-  click = (sel: string, o?: ActOpts) => this.locator(sel).click(o);
-  fill = (sel: string, value: string, o?: ActOpts) => this.locator(sel).fill(value, o);
-  press = (sel: string, key: string, o?: ActOpts) => this.locator(sel).press(key, o);
-  type = (sel: string, text: string, o?: ActOpts) => this.locator(sel).type(text, o);
-  check = (sel: string, o?: ActOpts) => this.locator(sel).check(o);
-  uncheck = (sel: string, o?: ActOpts) => this.locator(sel).uncheck(o);
-  selectOption = (sel: string, value: Parameters<Locator["selectOption"]>[0], o?: ActOpts) => this.locator(sel).selectOption(value, o);
-  textContent = (sel: string, o?: ActOpts) => this.locator(sel).textContent(o);
-  innerText = (sel: string, o?: ActOpts) => this.locator(sel).innerText(o);
-  inputValue = (sel: string, o?: ActOpts) => this.locator(sel).inputValue(o);
-  getAttribute = (sel: string, name: string, o?: ActOpts) => this.locator(sel).getAttribute(name, o);
-  isVisible = (sel: string) => this.locator(sel).isVisible();
+  click = async (sel: string, o?: ActOpts) => this.locator(sel).click(o);
+  fill = async (sel: string, value: string, o?: ActOpts) => this.locator(sel).fill(value, o);
+  press = async (sel: string, key: string, o?: ActOpts) => this.locator(sel).press(key, o);
+  type = async (sel: string, text: string, o?: ActOpts) => this.locator(sel).type(text, o);
+  check = async (sel: string, o?: ActOpts) => this.locator(sel).check(o);
+  uncheck = async (sel: string, o?: ActOpts) => this.locator(sel).uncheck(o);
+  selectOption = async (sel: string, value: Parameters<Locator["selectOption"]>[0], o?: ActOpts) => this.locator(sel).selectOption(value, o);
+  textContent = async (sel: string, o?: ActOpts) => this.locator(sel).textContent(o);
+  innerText = async (sel: string, o?: ActOpts) => this.locator(sel).innerText(o);
+  inputValue = async (sel: string, o?: ActOpts) => this.locator(sel).inputValue(o);
+  getAttribute = async (sel: string, name: string, o?: ActOpts) => this.locator(sel).getAttribute(name, o);
+  isVisible = async (sel: string) => this.locator(sel).isVisible();
 
   /** 처음 맞는 요소가 조건(state, 기본 visible)이 될 때까지. 돌려주는 Locator 는 그 선택자를 가리킨다. */
   async waitForSelector(selector: string, opts: { state?: WaitState; timeout?: number } = {}): Promise<Locator> {
