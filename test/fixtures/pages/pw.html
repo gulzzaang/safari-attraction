@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>Playwright 호환 시험 페이지</title></head>
+<body>
+  <!-- PW-CONTENT-MARKER -->
+  <h1>Playwright 호환 시험</h1>
+  <nav aria-label="주 메뉴"><a href="#a">홈</a> <a href="#b">소개</a> <a href="#c" aria-hidden="true">가려진 링크</a></nav>
+  <button id="send" type="button">보내기</button>
+  <button id="cancel" type="button" disabled>취소</button>
+  <!-- 앞의 것은 안 보이고 뒤의 것이 보인다: 동작은 보이는 첫 번째에 한다(엄격하지 않음). -->
+  <button class="dup" style="display:none" type="button">중복</button>
+  <button class="dup" id="dup2" type="button">중복</button>
+  <label for="nm">이름</label>
+  <input id="nm" placeholder="이름을 입력" data-testid="name-input">
+  <input id="typed" placeholder="쳐 보기">
+  <label><input type="checkbox" id="agree"> 약관에 동의</label>
+  <input type="checkbox" id="news" aria-label="소식 받기" checked>
+  <select id="color" aria-label="색"><option value="r">빨강</option><option value="g">초록</option><option value="b">파랑</option></select>
+  <select id="multi" aria-label="여럿" multiple><option value="r">빨강</option><option value="g">초록</option><option value="b">파랑</option></select>
+  <select id="navsel" aria-label="이동"><option value="">고르세요</option><option value="go">이동하기</option></select>
+  <ul><li>첫째 항목</li><li>둘째 항목</li><li>셋째 항목</li></ul>
+  <p id="hid" style="display:none">숨김 글</p>
+  <p>안녕</p>
+  <p>안녕하세요 반갑습니다</p>
+  <span>Hello World</span>
+  <div id="hov" style="padding:12px">올려 보세요</div>
+  <button id="addlate" type="button">늦게 나타나기</button>
+  <button id="vanish" type="button">사라지기</button>
+  <div id="late2">곧 사라짐</div>
+  <p id="log">0</p>
+  <p id="evlog"></p>
+  <p id="stamp"></p>
+  <script>
+    var n = 0;
+    document.getElementById('dup2').addEventListener('click', function () { document.getElementById('log').textContent = String(++n); });
+    var ev = { keydown: 0, input: 0 };
+    var typed = document.getElementById('typed');
+    typed.addEventListener('keydown', function () { ev.keydown++; document.getElementById('evlog').textContent = 'keydown=' + ev.keydown + ' input=' + ev.input; });
+    typed.addEventListener('input', function () { ev.input++; document.getElementById('evlog').textContent = 'keydown=' + ev.keydown + ' input=' + ev.input; });
+    document.getElementById('hov').addEventListener('mouseover', function () { this.textContent = '올라옴'; });
+    // 처음에 잡아 둔 진짜 setTimeout 을 쓴다 — 동작 중에는 Page 가 window.setTimeout 을 바꿔 걸고 그 시간만큼 기다려 주므로(타이머 리다이렉트),
+    // 기다리기 시험은 그 눈에 안 띄는 타이머여야 한다. (setInterval 은 안 쓴다 — 뒤쪽 탭에서는 반복 타이머가 몇 번 돌고 멈춘다.)
+    var realST = window.setTimeout.bind(window);
+    document.getElementById('addlate').addEventListener('click', function () {
+      realST(function () { var d = document.createElement('div'); d.id = 'late'; d.textContent = '늦게 나타남'; document.body.appendChild(d); }, 500);
+    });
+    document.getElementById('vanish').addEventListener('click', function () {
+      realST(function () { document.getElementById('late2').style.display = 'none'; }, 500);
+    });
+    document.getElementById('navsel').addEventListener('change', function () {
+      if (this.value !== 'go') return;
+      location.href = 'result.html' + (location.search || '?') + '&q=' + encodeURIComponent('선택으로 왔다');
+    });
+    document.getElementById('stamp').textContent = String(Date.now()) + '-' + Math.random();
+    window.__beforeReload = 1;
+  </script>
+</body>
+</html>
