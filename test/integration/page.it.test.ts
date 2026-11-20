@@ -66,7 +66,7 @@ describeIt('페이지 조작(Page)', () => {
     await page.locator(ref).fill('홍길동');
     expect(await page.locator('#preview').textContent()).toBe('미리보기: 홍길동');
     expect(await page.evaluate(() => (document.getElementById('name') as HTMLInputElement).value)).toBe('홍길동');
-    expect(await page.url()).toContain('form.html'); // fill 은 이동시키지 않는다(rebind 없이 그대로)
+    expect(page.url()).toContain('form.html'); // fill 은 이동시키지 않는다(rebind 없이 그대로)
   });
 
   test('엔터가 막힌 검색칸도 press(Enter) 로 제출된다', async () => {
@@ -74,7 +74,7 @@ describeIt('페이지 조작(Page)', () => {
     await page.locator('#searchInput').fill('에베레스트산');
     expect(await page.evaluate(() => document.querySelectorAll('#suggest li').length)).toBe(3); // 추천 목록이 떴다
     await page.keyboard.press('Enter');
-    expect(decodeURIComponent(await page.url())).toMatch(/result\.html\?q=에베레스트산(&|$)/);
+    expect(decodeURIComponent(page.url())).toMatch(/result\.html\?q=에베레스트산(&|$)/);
     expect(await page.title()).toBe('결과: 에베레스트산');
     expect(await page.locator('#q').textContent()).toBe('에베레스트산');
   });
@@ -142,10 +142,10 @@ describeIt('페이지 조작(Page)', () => {
     expect(await page.title()).toBe('결과: 이동');
     await page.goto(mine('form.html'));
     expect(await page.title()).toBe('폼 시험 페이지');
-    expect(await page.url()).toContain('form.html');
-    const cur = await page.url();
+    expect(page.url()).toContain('form.html');
+    const cur = page.url();
     await page.goto(cur + '#아래'); // 해시만 바뀌는 이동은 새 문서가 아니다
-    expect(decodeURIComponent(await page.url())).toContain('#아래');
+    expect(decodeURIComponent(page.url())).toContain('#아래');
     expect(await page.title()).toBe('폼 시험 페이지');
   });
 

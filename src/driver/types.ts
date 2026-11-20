@@ -59,9 +59,14 @@ export class SafariError extends Error {
 export interface SafariDriver {
   listWindows(): Promise<WindowInfo[]>;
   listTabs(): Promise<TabInfo[]>;
-  /** 활성 탭을 바꾸지 않고, 사파리를 앞으로 가져오지 않고 뒤쪽 탭을 연다. 페이지가 뜰 때까지 기다린다. */
+  /**
+   * 활성 탭을 바꾸지 않고, 사파리를 앞으로 가져오지 않고 뒤쪽 탭을 연다. 페이지가 뜰 때까지 기다린다.
+   * frontAppChanged: 사파리가 맨 앞으로 나왔나(부르기 전엔 사파리가 아니었고 뒤엔 사파리일 때만 true — 다른 앱이 앞으로 나온 것은 false).
+   */
   openTab(url: string, opts?: { windowId?: number }): Promise<{ tab: TabInfo; frontAppChanged: boolean }>;
   runJs(tabKey: string, source: string, opts?: { timeoutMs?: number }): Promise<string>;
+  /** 그 탭의 마지막으로 알려진 주소(동기). openTab · runJs · settleTab · rebindTab 이 새로 한다. 모르는 키(닫힘)면 undefined. */
+  lastUrl(tabKey: string): string | undefined;
   closeTab(tabKey: string): Promise<void>;
   /**
    * 우리가 제자리에서 이동시킨 탭(주소 이동 · 링크 클릭 · 폼 전송)에 같은 키를 다시 붙인다.
@@ -78,6 +83,7 @@ export interface SafariDriver {
   settleTab(tabKey: string): Promise<{ navigated: boolean; leaving: boolean; tab: TabInfo }>;
   /**
    * 활성화 없이 새 창을 열고(앞 앱을 바꾸지 않는다), 크기를 맞추고, 사파리 창 순서 맨 뒤로 보내고, 페이지가 뜰 때까지 기다린다.
+   * frontAppChanged 는 openTab 과 같은 뜻(사파리가 맨 앞으로 나왔나).
    * 창과 그 탭은 우리 것(owned). width · height 는 창 안 페이지 크기(innerWidth · innerHeight)다.
    */
   openWindow(url: string, opts?: { width?: number; height?: number }): Promise<{ windowId: number; tab: TabInfo; frontAppChanged: boolean }>;

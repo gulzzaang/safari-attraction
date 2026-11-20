@@ -74,7 +74,7 @@ export async function runDoctor(driver: SafariDriver): Promise<DoctorReport> {
       const v = await driver.runJs(tab.key, "1+1");
       if (v.trim() === "2") {
         js.state = "ok";
-        if (frontAppChanged) js.detail = "주의: 탭을 여는 동안 맨 앞 앱이 바뀌었어요";
+        if (frontAppChanged) js.detail = "주의: 탭을 여는 동안 사파리가 맨 앞으로 나왔어요";
       } else {
         js.detail = `시험 값이 예상과 달라 확인 못 함(${JSON.stringify(v)})`;
       }

@@ -27,6 +27,8 @@ Read values with console.log (the last expression is NOT printed). Errors come b
 - closeTab(page?) — 우리가 연 탭만 닫는다. 서버가 끝나면 우리가 연 탭과 AI 창은 모두 닫힌다.
 - snapshot(page?, {interactive, selector, full}) — 페이지를 읽는다. console.log(await snapshot()) 로 찍으면 "지난번과 바뀐 곳만" 나오고, 처음이거나 같으면 전체 · 「변화 없음」이 나온다. 요소 앞의 e12 같은 ref 를 locator(ref) 에 쓴다. 16KB 를 넘으면 잘린다.
 - Page: goto(url), url(), title(), waitForLoadState(), evaluate(fn | 식, arg), locator(ref | CSS).click() / .fill(값) / .textContent(), keyboard.press("Enter") / keyboard.type(글).
+  url() 은 await 없이 바로 마지막으로 알려진 주소(글)를 돌려준다 — goto · 클릭 · evaluate 뒤에는 새 주소다. title() 은 페이지에 물어야 하므로 await 가 필요하다.
+  Page.url() returns the last known address immediately (a string, no await; updated after goto / clicks / evaluate); title() is async and needs await.
 - fetch(url, init) → {status, ok, headers(보통 객체), text(), json()}. 현재 page 안에서 돌아 그 페이지의 쿠키로 나가고 CORS · CSP 를 따른다.
 - sleep(ms), URL, URLSearchParams, structuredClone, TextEncoder/Decoder, atob/btoa.
 

@@ -209,3 +209,60 @@ describe('Page.screenshot 은 새 현재 탭이 그려진 뒤에 찍는다', () 
     expect(closed).toEqual([7]);
   });
 });
+
+describe('Page.url() 은 await 없이 마지막으로 알려진 주소를 돌려준다', () => {
+  /** 드라이버가 알려 주는 주소(lastUrl)를 시험이 바꾼다. 동작 글에 next.html 이 들어 있으면 이동한 것으로 친다(레지스트리가 settleTab 에서 주소를 새로 하듯). */
+  function nav() {
+    const st = { url: 'http://x/form.html' };
+    const d = {
+      lastUrl: () => st.url,
+      async runJs(_key: string, source: string) {
+        if (source === 'document.readyState') return 'complete';
+        if (source.includes('next.html')) return ok({ expectNav: true });
+        return ok({});
+      },
+      async settleTab() {
+        const moved = !st.url.endsWith('next.html');
+        if (moved) st.url = 'http://x/next.html';
+        return { navigated: moved, leaving: false, tab: { key: 't1', windowId: 1, index: 1, title: '', url: st.url, isActive: false, owned: true } as TabInfo };
+      },
+    } as unknown as SafariDriver;
+    return { page: new Page(d, 't1'), st };
+  }
+
+  test('await 없이 부르면 글(string)이 바로 나온다 — Promise 가 아니다', () => {
+    const { page } = nav();
+    const u = page.url();
+    expect(typeof u).toBe('string');
+    expect(u).toBe('http://x/form.html');
+    expect(String(u)).not.toContain('[object Promise]');
+  });
+
+  test('goto 로 이동하면 새 주소로 바뀐다', async () => {
+    const { page } = nav();
+    expect(page.url()).toBe('http://x/form.html');
+    await page.goto('http://x/next.html');
+    expect(page.url()).toBe('http://x/next.html');
+  });
+
+  test('클릭이 이동을 일으켜 settleTab 이 새 문서를 알리면 새 주소로 바뀐다', async () => {
+    const { page, st } = nav();
+    st.url = 'http://x/start.html';
+    // 클릭이 next.html 로 가는 동작: 동작 글에 next.html 이 들어 있도록 ref 대신 선택자에 담는다
+    await page.locator('a[href="next.html"]').click();
+    expect(page.url()).toBe('http://x/next.html');
+  });
+
+  test('await 해도 같은 값이다(예전 코드 호환)', async () => {
+    const { page } = nav();
+    expect(await page.url()).toBe('http://x/form.html');
+  });
+
+  test('탭이 닫혀 드라이버가 모르게 되면 마지막으로 알던 주소가 남는다', () => {
+    const st: { url: string | undefined } = { url: 'http://x/a' };
+    const page = new Page({ lastUrl: () => st.url } as unknown as SafariDriver, 't1');
+    expect(page.url()).toBe('http://x/a');
+    st.url = undefined;
+    expect(page.url()).toBe('http://x/a');
+  });
+});

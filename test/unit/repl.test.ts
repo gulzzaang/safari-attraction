@@ -210,7 +210,7 @@ describe("dispose", () => {
     const d2 = createFakeDriver();
     d2.answer = () => new Promise<string>(() => {}); // 영원히 안 오는 답
     const s2 = createReplSession(d2);
-    const running = s2.run('const hp = await openTab("http://a/"); await hp.url()', { timeoutMs: 3000 });
+    const running = s2.run('const hp = await openTab("http://a/"); await hp.title()', { timeoutMs: 3000 });
     while (d2.calls.runJs.length === 0) await new Promise((r) => setTimeout(r, 10)); // 호출이 멈춘 자리에 닿을 때까지
     const t0 = Date.now();
     await s2.dispose();
@@ -227,6 +227,14 @@ describe("dispose", () => {
     const r = await s2.run('await openTab("http://a/")');
     expect(r.error).toContain("끝나는 중");
     expect(d2.calls.openTab).toHaveLength(0);
+  });
+});
+
+describe("page.url()", () => {
+  test("openTab 직후 await 없이 부르면 열린 주소 글이 나온다(Promise 가 아니다)", async () => {
+    const r = await s.run('const up = await openTab("http://a/"); console.log(typeof up.url(), up.url())');
+    expect(r.error).toBeFalsy();
+    expect(r.output).toContain("string http://a/");
   });
 });
 

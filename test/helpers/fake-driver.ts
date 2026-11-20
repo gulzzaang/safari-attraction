@@ -110,6 +110,9 @@ export function createFakeDriver(): FakeDriver {
       calls.runJs.push({ key, source });
       return d.answer(key, source);
     },
+    lastUrl(key) {
+      return [...d.userTabs, ...owned].find((t) => t.key === key)?.url;
+    },
     async closeTab(key) {
       calls.closeTab.push(key);
       const i = owned.findIndex((t) => t.key === key);

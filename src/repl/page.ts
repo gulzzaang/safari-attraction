@@ -58,6 +58,8 @@ export interface Locator {
  * 동작 중 잡힌 짧은 setTimeout(타이머 리다이렉트)도 그만큼 기다렸다가 확인한다.
  */
 export class Page {
+  private knownUrl = "";
+
   constructor(
     private readonly driver: SafariDriver,
     readonly key: string,
@@ -85,8 +87,14 @@ export class Page {
     }
   }
 
-  url(): Promise<string> {
-    return this.driver.runJs(this.key, "location.href");
+  /**
+   * 마지막으로 알려진 주소를 바로 돌려준다(Playwright · 어사이드처럼 await 없이 쓴다). 드라이버가 탭을 열 때 · 페이지 안 코드를 돌린 뒤 ·
+   * 이동을 확인한 뒤마다 새로 해 두므로, goto · 클릭 · evaluate 뒤에는 새 주소다. 탭이 닫혔으면 마지막 값이 남는다.
+   */
+  url(): string {
+    const u = this.driver.lastUrl(this.key);
+    if (u !== undefined) this.knownUrl = u;
+    return this.knownUrl;
   }
 
   title(): Promise<string> {

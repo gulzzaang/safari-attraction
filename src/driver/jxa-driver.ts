@@ -15,11 +15,25 @@ const LAUNCH_WAIT_MS = 15_000;
 /** 새 창을 찾는 데(최대 10초)와 페이지가 뜨는 데(최대 15초)가 걸린다. */
 const OPEN_WINDOW_TIMEOUT_MS = 40_000;
 
-/** 맨 앞 앱을 가리키는 값(`lsappinfo front`). 앱이 바뀌면 값이 바뀐다. */
-async function frontAsn(): Promise<string> {
+export const SAFARI_BUNDLE_ID = "com.apple.Safari";
+
+/** `lsappinfo info -only bundleid` 출력에서 번들 아이디를 뽑는다(`bundleID="…"` 또는 `"CFBundleIdentifier"="…"`). 없으면 빈 글. */
+export function parseBundleId(out: string): string {
+  return /(?:bundleID|CFBundleIdentifier)"?\s*=\s*"([^"]+)"/.exec(out)?.[1] ?? "";
+}
+
+/** 사파리가 맨 앞으로 나왔는가: 뒤에 맨 앞 앱이 사파리이고, 앞에는 사파리가 아니었을 때만. 다른 앱이 앞으로 나온 것(화면 잠금 해제 등)은 아니다. */
+export function safariCameForward(beforeBundleId: string, afterBundleId: string): boolean {
+  return afterBundleId === SAFARI_BUNDLE_ID && beforeBundleId !== SAFARI_BUNDLE_ID;
+}
+
+/** 맨 앞 앱의 번들 아이디(`lsappinfo front` → `lsappinfo info -only bundleid`). 알 수 없으면 빈 글. */
+async function frontBundleId(): Promise<string> {
   try {
-    const { stdout } = await execFileP("lsappinfo", ["front"]);
-    return stdout.trim();
+    const asn = (await execFileP("lsappinfo", ["front"])).stdout.trim();
+    if (!asn) return "";
+    const { stdout } = await execFileP("lsappinfo", ["info", "-only", "bundleid", asn]);
+    return parseBundleId(stdout);
   } catch {
     return "";
   }
@@ -182,7 +196,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     },
 
     async openTab(url, o = {}) {
-      const before = await frontAsn();
+      const before = await frontBundleId();
       const key = registry.nextKey();
       const args = { url, windowId: o.windowId, key: registry.markerOf(key) }; // 페이지에는 서버마다 다른 표시를 적는다
       let raw: RawTab & { stamped: boolean };
@@ -196,12 +210,12 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
       registry.register(key, raw.windowId, raw.index, raw.url, { owned: true, stamped: raw.stamped });
       const { stamped: _stamped, ...rest } = raw;
       const tab = toTab({ raw: rest, key, owned: true });
-      const after = await frontAsn();
-      return { tab, frontAppChanged: before !== after };
+      const after = await frontBundleId();
+      return { tab, frontAppChanged: safariCameForward(before, after) };
     },
 
     async openWindow(url, o = {}) {
-      const before = await frontAsn();
+      const before = await frontBundleId();
       const key = registry.nextKey();
       const args = { url, key: registry.markerOf(key) };
       type Opened = { windowId: number; tab: RawTab; stamped: boolean };
@@ -224,8 +238,8 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
           throw e;
         }
       }
-      const after = await frontAsn();
-      return { windowId: raw.windowId, tab: toTab({ raw: raw.tab, key, owned: true }), frontAppChanged: before !== after };
+      const after = await frontBundleId();
+      return { windowId: raw.windowId, tab: toTab({ raw: raw.tab, key, owned: true }), frontAppChanged: safariCameForward(before, after) };
     },
 
     async setWindowSize(windowId, width, height) {
@@ -260,6 +274,8 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     runJs(tabKey, source, o = {}) {
       return registry.withTab(tabKey, (s) => call<Guarded<string>>("runJs", { ...guardArgs(s), source }, o.timeoutMs));
     },
+
+    lastUrl: (tabKey) => registry.urlOf(tabKey),
 
     closeTab: (tabKey) => registry.closeTab(tabKey),
 

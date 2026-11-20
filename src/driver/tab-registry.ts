@@ -144,6 +144,11 @@ export class TabRegistry {
     return { windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, unstamped: !e.stamped };
   }
 
+  /** 지금 알고 있는 그 탭의 주소(열 때 · runJs · settle · rebind 때마다 새로 한다). 모르는 키면 undefined. */
+  urlOf(key: string): string | undefined {
+    return this.entries.get(key)?.url;
+  }
+
   isOwned(key: string): boolean {
     return this.entries.get(key)?.owned ?? false;
   }
