@@ -232,6 +232,78 @@ describe('Page · Locator 메서드는 있고, 동작 하나는 runJs 한 번', 
   });
 });
 
+describe('동작은 대상이 준비될 때까지 기다린다(시도 하나 = runJs 하나)', () => {
+  const notReady = (why: string) => ok({ notReady: why });
+  const argsOf = (source: string) => JSON.parse(source.slice(source.lastIndexOf('})(') + 3, -1));
+
+  test('「아직 아님」을 두 번 받은 뒤 준비되면 한 번만 동작하고 runJs 는 모두 3번, settleTab 은 동작한 뒤 한 번', async () => {
+    const { page, log } = fake((_s, n) => (n <= 2 ? notReady(n === 1 ? 'missing' : 'hidden') : ok()));
+    await page.getByRole('button', { name: '보내기' }).click();
+    expect(log.runJs).toHaveLength(3);
+    expect(log.settle).toBe(1);
+  });
+
+  test('이미 있으면 runJs 한 번으로 끝난다(기다림 지연 없음)', async () => {
+    const { page, log } = fake(() => ok());
+    const t0 = Date.now();
+    await page.locator('#a').click();
+    await page.locator('#a').fill('v');
+    expect(log.runJs).toHaveLength(2);
+    expect(Date.now() - t0).toBeLessThan(100);
+  });
+
+  test('끝내 준비되지 않으면 준 시간 뒤 한국어 오류(이름 · 조건 · 마지막 상태)', async () => {
+    const { page, log } = fake(() => notReady('missing'));
+    const t0 = Date.now();
+    await expect(page.getByRole('button', { name: '보내기' }).click({ timeout: 400 })).rejects.toThrow(
+      "0.4초 기다렸지만 누를 수 있는 요소가 없어요: getByRole('button', {name: '보내기'}) (마지막 확인: 아직 없음)",
+    );
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(400);
+    expect(Date.now() - t0).toBeLessThan(1200);
+    expect(log.runJs.length).toBeGreaterThanOrEqual(3); // 150ms 간격으로 다시 확인했다
+    expect(log.settle).toBe(0); // 동작하지 않았으니 이동 확인도 없다
+    const ref = fake(() => notReady('missing'));
+    await expect(ref.page.locator('e9').click({ timeout: 100 })).rejects.toThrow(/e9.*snapshot 을 다시 찍어 새 ref/);
+    const hid = fake(() => notReady('disabled'));
+    await expect(hid.page.fill('#a', 'v', { timeout: 200 })).rejects.toThrow(/0\.2초 기다렸지만 글을 채울 수 있는 요소가 없어요: locator\('#a'\) \(마지막 확인: 있지만 비활성\)/);
+  });
+
+  test('기다리는 동작은 wait 조건을 함께 보낸다: 누르기 · 쓰기는 보임 + 활성, 글쇠 · 올리기는 보임, 읽기는 붙어 있기만', async () => {
+    const { page, log } = fake(() => ok({ v: 'x', text: 'x' }));
+    await page.locator('#a').click();
+    await page.locator('#a').press('Enter');
+    await page.locator('#a').textContent();
+    await page.locator('#a').getAttribute('href');
+    const w = log.runJs.map((s) => argsOf(s).wait);
+    expect(w).toEqual([{ visible: true, enabled: true }, { visible: true, enabled: false }, { visible: false, enabled: false }, { visible: false, enabled: false }]);
+  });
+
+  test('count · isVisible · isChecked · isEnabled 는 기다리지 않는다(wait 조건이 없다)', async () => {
+    const { page, log } = fake(() => ok({ v: true }));
+    await page.locator('#a').count();
+    await page.locator('#a').isVisible();
+    await page.locator('#a').isChecked();
+    await page.locator('#a').isEnabled();
+    expect(log.runJs.map((s) => argsOf(s).wait)).toEqual([undefined, undefined, undefined, undefined]);
+  });
+
+  test('timeout 은 모든 기다리는 동작에 준다', async () => {
+    for (const run of [
+      (p: Page) => p.locator('#a').check({ timeout: 100 }),
+      (p: Page) => p.locator('#a').selectOption('b', { timeout: 100 }),
+      (p: Page) => p.locator('#a').type('x', { timeout: 100 }),
+      (p: Page) => p.locator('#a').hover({ timeout: 100 }),
+      (p: Page) => p.locator('#a').focus({ timeout: 100 }),
+      (p: Page) => p.locator('#a').innerText({ timeout: 100 }),
+      (p: Page) => p.textContent('#a', { timeout: 100 }),
+      (p: Page) => p.getAttribute('#a', 'x', { timeout: 100 }),
+    ]) {
+      const { page } = fake(() => notReady('missing'));
+      await expect(run(page)).rejects.toThrow(/0\.1초 기다렸지만 .* 요소가 없어요: locator\('#a'\)/);
+    }
+  });
+});
+
 describe('REPL 안에서(vm 칸의 RegExp · 배열)', () => {
   test('sandbox 의 RegExp 리터럴이 name · hasText · waitForURL 에 RegExp 로 알아봐진다', async () => {
     const d = createFakeDriver();
@@ -262,7 +334,7 @@ describe('페이지 안 글이 문법에 맞다', () => {
 
 describe('repl 설명', () => {
   test('새로 되는 Playwright 식 이름과 엄격하지 않다는 규칙을 한 단락으로 알린다', () => {
-    for (const w of ['waitForURL', 'waitForSelector', 'waitForTimeout', 'reload', 'goBack', 'goForward', 'content', 'getByRole', 'getByText', 'getByLabel', 'getByPlaceholder', 'getByTestId', 'first', 'last', 'nth', 'count', 'all', 'filter', 'innerText', 'inputValue', 'getAttribute', 'isVisible', 'isChecked', 'isEnabled', 'check', 'uncheck', 'selectOption', 'pressSequentially', 'hover', 'focus', 'scrollIntoViewIfNeeded', 'waitFor', '엄격', 'Non-strict']) {
+    for (const w of ['waitForURL', 'waitForSelector', 'waitForTimeout', 'reload', 'goBack', 'goForward', 'content', 'getByRole', 'getByText', 'getByLabel', 'getByPlaceholder', 'getByTestId', 'first', 'last', 'nth', 'count', 'all', 'filter', 'innerText', 'inputValue', 'getAttribute', 'isVisible', 'isChecked', 'isEnabled', 'check', 'uncheck', 'selectOption', 'pressSequentially', 'hover', 'focus', 'scrollIntoViewIfNeeded', 'waitFor', '엄격', 'Non-strict', '최대 10초', 'up to 10 s']) {
       expect(REPL_DESCRIPTION, w).toContain(w);
     }
   });

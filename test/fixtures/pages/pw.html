@@ -27,6 +27,11 @@
   <button id="addlate" type="button">늦게 나타나기</button>
   <button id="vanish" type="button">사라지기</button>
   <div id="late2">곧 사라짐</div>
+  <!-- 자동 기다림 시험: spawn 을 누르면 700ms 뒤 단추가 생기고, enable 을 누르면 500ms 뒤 비활성 입력칸이 풀린다. -->
+  <button id="spawn" type="button">단추 만들기</button>
+  <button id="enable" type="button">입력칸 풀기</button>
+  <input id="slow-in" placeholder="느린 입력" disabled>
+  <p id="log2">0</p>
   <p id="log">0</p>
   <p id="evlog"></p>
   <p id="stamp"></p>
@@ -46,6 +51,16 @@
     });
     document.getElementById('vanish').addEventListener('click', function () {
       realST(function () { document.getElementById('late2').style.display = 'none'; }, 500);
+    });
+    document.getElementById('spawn').addEventListener('click', function () {
+      realST(function () {
+        var b = document.createElement('button'); b.id = 'later-btn'; b.type = 'button'; b.textContent = '나중 단추';
+        b.addEventListener('click', function () { document.getElementById('log2').textContent = '나중 단추 눌림'; });
+        document.body.appendChild(b);
+      }, 700);
+    });
+    document.getElementById('enable').addEventListener('click', function () {
+      realST(function () { document.getElementById('slow-in').disabled = false; }, 500);
     });
     document.getElementById('navsel').addEventListener('change', function () {
       if (this.value !== 'go') return;

@@ -18,6 +18,19 @@ export type Step =
 
 export type WaitState = "visible" | "hidden" | "attached" | "detached";
 
+/** 동작마다 줄 수 있는 선택: 대상이 나타나 동작할 수 있게 되길 기다리는 최대 시간(ms, 기본 10000, 0 이면 호출 한도까지). */
+export interface ActOpts {
+  timeout?: number;
+}
+/** 동작 전에 기다릴 조건: 보여야 하나 · 활성이어야 하나, 그리고 시간 초과 글에 쓸 「…할 수 있는」 꼴. */
+export interface WaitCond {
+  visible: boolean;
+  enabled: boolean;
+  phrase: string;
+}
+/** 동작이 대상이 나타나길 기다리는 기본 시간. 도구 호출 한도(120초)보다 훨씬 짧게 둔다. */
+export const DEFAULT_ACTION_WAIT_MS = 10000;
+
 export interface Locator {
   first(): Locator;
   last(): Locator;
@@ -31,24 +44,24 @@ export interface Locator {
   getByLabel(text: string | RegExp, opts?: { exact?: boolean }): Locator;
   getByPlaceholder(text: string | RegExp, opts?: { exact?: boolean }): Locator;
   getByTestId(id: string | RegExp): Locator;
-  click(): Promise<void>;
-  fill(value: string): Promise<void>;
-  textContent(): Promise<string>;
-  innerText(): Promise<string>;
-  inputValue(): Promise<string>;
-  getAttribute(name: string): Promise<string | null>;
+  click(o?: ActOpts): Promise<void>;
+  fill(value: string, o?: ActOpts): Promise<void>;
+  textContent(o?: ActOpts): Promise<string>;
+  innerText(o?: ActOpts): Promise<string>;
+  inputValue(o?: ActOpts): Promise<string>;
+  getAttribute(name: string, o?: ActOpts): Promise<string | null>;
   isVisible(): Promise<boolean>;
   isChecked(): Promise<boolean>;
   isEnabled(): Promise<boolean>;
-  check(): Promise<void>;
-  uncheck(): Promise<void>;
-  selectOption(value: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>): Promise<string[]>;
-  press(key: string): Promise<void>;
-  type(text: string): Promise<void>;
-  pressSequentially(text: string): Promise<void>;
-  hover(): Promise<void>;
-  focus(): Promise<void>;
-  scrollIntoViewIfNeeded(): Promise<void>;
+  check(o?: ActOpts): Promise<void>;
+  uncheck(o?: ActOpts): Promise<void>;
+  selectOption(value: string | { value?: string; label?: string; index?: number } | Array<string | { value?: string; label?: string; index?: number }>, o?: ActOpts): Promise<string[]>;
+  press(key: string, o?: ActOpts): Promise<void>;
+  type(text: string, o?: ActOpts): Promise<void>;
+  pressSequentially(text: string, o?: ActOpts): Promise<void>;
+  hover(o?: ActOpts): Promise<void>;
+  focus(o?: ActOpts): Promise<void>;
+  scrollIntoViewIfNeeded(o?: ActOpts): Promise<void>;
   waitFor(opts?: { state?: WaitState; timeout?: number }): Promise<void>;
 }
 
@@ -57,6 +70,8 @@ export interface LocatorHost {
   act(op: ActionOp, args: Record<string, unknown>): Promise<ActionOk["r"]>;
   read(op: ActionOp, args: Record<string, unknown>): Promise<ActionOk["r"]>;
   waitState(chain: Step[], desc: string, state: WaitState, timeoutMs: number): Promise<void>;
+  /** 조건(cond)이 될 때까지 다시 시도하며 동작 · 읽기 하나를 한다(시도 하나 = runJs 하나). */
+  until(kind: "act" | "read", op: ActionOp, args: Record<string, unknown>, cond: WaitCond, desc: string, timeoutMs: number): Promise<ActionOk["r"]>;
 }
 
 // ---- 값 바꾸기 · 글 만들기 ----
@@ -188,25 +203,33 @@ export class LocatorImpl implements Locator {
     return Array.from({ length: n }, (_, i) => this.nth(i));
   }
 
-  async click(): Promise<void> {
-    await this.host.act("click", this.args());
+  /** 대상이 준비될 때까지 기다리며 동작 · 읽기 하나를 한다. */
+  private wait(kind: "act" | "read", op: ActionOp, extra: Record<string, unknown>, o: ActOpts | undefined, cond: Partial<WaitCond> & { phrase: string }) {
+    const args = this.args(extra);
+    return this.host.until(kind, op, args, { visible: cond.visible ?? true, enabled: cond.enabled ?? false, phrase: cond.phrase }, args.desc as string, o?.timeout ?? DEFAULT_ACTION_WAIT_MS);
   }
-  async fill(value: string): Promise<void> {
-    await this.host.act("fill", this.args({ value: String(value) }));
+
+  async click(o?: ActOpts): Promise<void> {
+    await this.wait("act", "click", {}, o, { enabled: true, phrase: "누를 수 있는" });
   }
-  async textContent(): Promise<string> {
-    return (await this.host.read("text", this.args())).text ?? "";
+  async fill(value: string, o?: ActOpts): Promise<void> {
+    await this.wait("act", "fill", { value: String(value) }, o, { enabled: true, phrase: "글을 채울 수 있는" });
   }
-  async innerText(): Promise<string> {
-    return String((await this.host.read("prop", this.args({ what: "innerText" }))).v ?? "");
+  // 읽기는 「붙어 있기만」 하면 된다(Playwright 처럼 — 안 보이는 meta · script · 숨은 칸의 값도 읽는다).
+  async textContent(o?: ActOpts): Promise<string> {
+    return (await this.wait("read", "text", {}, o, { visible: false, phrase: "있는" })).text ?? "";
   }
-  async inputValue(): Promise<string> {
-    return String((await this.host.read("prop", this.args({ what: "inputValue" }))).v ?? "");
+  async innerText(o?: ActOpts): Promise<string> {
+    return String((await this.wait("read", "prop", { what: "innerText" }, o, { visible: false, phrase: "있는" })).v ?? "");
   }
-  async getAttribute(name: string): Promise<string | null> {
-    const v = (await this.host.read("prop", this.args({ what: "attr", name: String(name) }))).v;
+  async inputValue(o?: ActOpts): Promise<string> {
+    return String((await this.wait("read", "prop", { what: "inputValue" }, o, { visible: false, phrase: "있는" })).v ?? "");
+  }
+  async getAttribute(name: string, o?: ActOpts): Promise<string | null> {
+    const v = (await this.wait("read", "prop", { what: "attr", name: String(name) }, o, { visible: false, phrase: "있는" })).v;
     return v === undefined || v === null ? null : String(v);
   }
+  // 아래 셋은 기다리지 않는다(Playwright 처럼): 없으면 isVisible 은 false, 나머지는 바로 오류.
   async isVisible(): Promise<boolean> {
     return (await this.host.read("prop", this.args({ what: "isVisible" }))).v === true;
   }
@@ -216,33 +239,33 @@ export class LocatorImpl implements Locator {
   async isEnabled(): Promise<boolean> {
     return (await this.host.read("prop", this.args({ what: "isEnabled" }))).v === true;
   }
-  async check(): Promise<void> {
-    await this.host.act("check", this.args({ want: true }));
+  async check(o?: ActOpts): Promise<void> {
+    await this.wait("act", "check", { want: true }, o, { enabled: true, phrase: "켤 수 있는" });
   }
-  async uncheck(): Promise<void> {
-    await this.host.act("check", this.args({ want: false }));
+  async uncheck(o?: ActOpts): Promise<void> {
+    await this.wait("act", "check", { want: false }, o, { enabled: true, phrase: "끌 수 있는" });
   }
-  async selectOption(value: SelectSpec | SelectSpec[]): Promise<string[]> {
+  async selectOption(value: SelectSpec | SelectSpec[], o?: ActOpts): Promise<string[]> {
     const list = Array.isArray(value) ? value : [value];
     const sel = list.map((x) => (typeof x === "string" ? { any: x } : { value: x?.value, label: x?.label, index: x?.index }));
-    const r = await this.host.act("select", this.args({ sel }));
+    const r = await this.wait("act", "select", { sel }, o, { enabled: true, phrase: "고를 수 있는" });
     return Array.isArray(r.v) ? (r.v as string[]) : [];
   }
-  async press(key: string): Promise<void> {
-    await this.host.act("lpress", this.args({ key: String(key) }));
+  async press(key: string, o?: ActOpts): Promise<void> {
+    await this.wait("act", "lpress", { key: String(key) }, o, { phrase: "글쇠를 받을 수 있는" });
   }
-  async type(text: string): Promise<void> {
-    await this.host.act("ltype", this.args({ text: String(text) }));
+  async type(text: string, o?: ActOpts): Promise<void> {
+    await this.wait("act", "ltype", { text: String(text) }, o, { enabled: true, phrase: "글을 쳐 넣을 수 있는" });
   }
-  pressSequentially = (text: string) => this.type(text);
-  async hover(): Promise<void> {
-    await this.host.act("hover", this.args());
+  pressSequentially = (text: string, o?: ActOpts) => this.type(text, o);
+  async hover(o?: ActOpts): Promise<void> {
+    await this.wait("act", "hover", {}, o, { phrase: "올릴 수 있는" });
   }
-  async focus(): Promise<void> {
-    await this.host.act("focus", this.args());
+  async focus(o?: ActOpts): Promise<void> {
+    await this.wait("act", "focus", {}, o, { phrase: "초점을 줄 수 있는" });
   }
-  async scrollIntoViewIfNeeded(): Promise<void> {
-    await this.host.act("scroll", this.args());
+  async scrollIntoViewIfNeeded(o?: ActOpts): Promise<void> {
+    await this.wait("act", "scroll", {}, o, { phrase: "보이는" });
   }
   async waitFor(opts: { state?: WaitState; timeout?: number } = {}): Promise<void> {
     const state = opts?.state ?? "visible";

@@ -26,6 +26,8 @@ export interface ActionOk {
     /** 링크 · 폼 제출 · goto 처럼 문서를 떠나는 이동이 일어난 게 분명하다. */
     expectNav?: boolean;
     text?: string;
+    /** 기다리는 동작(args.wait)에서 대상이 아직 준비되지 않았다(missing · hidden · disabled). 동작은 하지 않았다. */
+    notReady?: "missing" | "hidden" | "disabled";
     /** 값을 돌려주는 동작(prop · count · state · select)의 결과(JSON). */
     v?: unknown;
     /** 동작 중 페이지가 setTimeout 으로 잡아 둔 가장 긴 지연(ms). 없으면 -1. 늦게 일어나는 이동(타이머 리다이렉트)을 기다릴지 정한다. */
@@ -167,8 +169,18 @@ const PRELUDE = String.raw`
   }
 
   // Locator 의 chain 을 풀어 동작 대상 하나(보이는 첫 번째)를 고른다. 없으면 한국어 오류.
+  // A.wait 가 있으면(기다리는 동작) 대상이 없거나 · 안 보이거나 · 비활성이면 오류 대신 「아직 아님」을 돌려보내(Node 가 다시 부른다) 동작하지 않는다.
+  // A.wait = {visible: 보여야 하나, enabled: 활성이어야 하나}. 없으면 예전처럼 없을 때 바로 한국어 오류.
+  function notReady(why) { var e = new Error('not ready: ' + why); e.saNotReady = why; throw e; }
   function locOne() {
-    var m = pwResolve(A.chain);
+    var m = pwResolve(A.chain), w = A.wait;
+    if (w) {
+      if (!m.length) notReady('missing');
+      var pool = m;
+      if (w.visible) { pool = m.filter(pwVis); if (!pool.length) notReady('hidden'); }
+      if (w.enabled) { pool = pool.filter(pwEnabled); if (!pool.length) notReady('disabled'); }
+      return w.visible ? pool[0] : pwPick(pool);
+    }
     if (!m.length) {
       var c = A.chain;
       if (c.length === 1 && c[0].k === 'ref') fail(c[0].s + ' 요소를 찾을 수 없음 — 페이지가 바뀌었을 수 있으니 snapshot 을 다시 찍어 새 ref 를 쓰세요');
@@ -354,7 +366,7 @@ const BODY = String.raw`
           if (el.tagName === 'LABEL' && el.control) el = el.control;
           r.v = pwOn(el);
         }
-        else if (A.what === 'isEnabled') r.v = !(el.disabled || el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true');
+        else if (A.what === 'isEnabled') r.v = pwEnabled(el);
         else fail('알 수 없는 읽기: ' + A.what);
         break;
       }
@@ -463,6 +475,7 @@ const BODY = String.raw`
     r.timerMs = __saTimers();
     return JSON.stringify({ ok: true, r: r });
   } catch (e) {
+    if (e && e.saNotReady) return JSON.stringify({ ok: true, r: { notReady: e.saNotReady } });
     return JSON.stringify({ ok: false, err: String((e && e.message) || e) });
   } finally {
     window.removeEventListener('submit', onSubmit);

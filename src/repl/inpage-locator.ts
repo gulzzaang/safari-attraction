@@ -244,6 +244,7 @@ export const LOCATOR_SOURCE = String.raw`
     for (var i = 0; i < m.length; i++) if (pwVis(m[i])) return m[i];
     return m[0];
   }
+  function pwEnabled(el) { return !(el.disabled || (el.matches && el.matches(':disabled')) || el.getAttribute('aria-disabled') === 'true'); }
   function pwOn(el) { return el.tagName === 'INPUT' ? !!el.checked : el.getAttribute('aria-checked') === 'true'; }
   function pwInnerText(el) {
     var t = el.innerText;

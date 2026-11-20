@@ -7,13 +7,15 @@ import {
   type ActionOk,
   type ActionOp,
 } from "./inpage-actions.js";
-import { LocatorImpl, globToRegExp, isRegExp, parseSelector, toMatcher, type Locator, type LocatorHost, type Step, type WaitState } from "./locator.js";
+import { LocatorImpl, globToRegExp, isRegExp, parseSelector, toMatcher, type ActOpts, type Locator, type LocatorHost, type Step, type WaitCond, type WaitState } from "./locator.js";
 
 export type { Locator } from "./locator.js";
 
 /** waitFor · waitForSelector · waitForURL 이 조건을 다시 확인하는 간격. */
 const WAIT_POLL_MS = 100;
 const DEFAULT_WAIT_MS = 30000;
+/** 「아직 아님」일 때 다시 확인하는 간격. 기다림은 Node 쪽에서 돈다 — 뒤쪽 탭에서는 사파리가 페이지의 타이머를 멈추기 때문이다. */
+const ACTION_POLL_MS = 150;
 
 /** 사파리 창이 줄어드는 최소 폭(대략). */
 const MIN_WINDOW_WIDTH_PX = 336;
@@ -142,17 +144,17 @@ export class Page {
   }
 
   // 선택자를 먼저 받는 줄임 동작(Playwright 의 page.click(sel) 꼴).
-  click = (sel: string) => this.locator(sel).click();
-  fill = (sel: string, value: string) => this.locator(sel).fill(value);
-  press = (sel: string, key: string) => this.locator(sel).press(key);
-  type = (sel: string, text: string) => this.locator(sel).type(text);
-  check = (sel: string) => this.locator(sel).check();
-  uncheck = (sel: string) => this.locator(sel).uncheck();
-  selectOption = (sel: string, value: Parameters<Locator["selectOption"]>[0]) => this.locator(sel).selectOption(value);
-  textContent = (sel: string) => this.locator(sel).textContent();
-  innerText = (sel: string) => this.locator(sel).innerText();
-  inputValue = (sel: string) => this.locator(sel).inputValue();
-  getAttribute = (sel: string, name: string) => this.locator(sel).getAttribute(name);
+  click = (sel: string, o?: ActOpts) => this.locator(sel).click(o);
+  fill = (sel: string, value: string, o?: ActOpts) => this.locator(sel).fill(value, o);
+  press = (sel: string, key: string, o?: ActOpts) => this.locator(sel).press(key, o);
+  type = (sel: string, text: string, o?: ActOpts) => this.locator(sel).type(text, o);
+  check = (sel: string, o?: ActOpts) => this.locator(sel).check(o);
+  uncheck = (sel: string, o?: ActOpts) => this.locator(sel).uncheck(o);
+  selectOption = (sel: string, value: Parameters<Locator["selectOption"]>[0], o?: ActOpts) => this.locator(sel).selectOption(value, o);
+  textContent = (sel: string, o?: ActOpts) => this.locator(sel).textContent(o);
+  innerText = (sel: string, o?: ActOpts) => this.locator(sel).innerText(o);
+  inputValue = (sel: string, o?: ActOpts) => this.locator(sel).inputValue(o);
+  getAttribute = (sel: string, name: string, o?: ActOpts) => this.locator(sel).getAttribute(name, o);
   isVisible = (sel: string) => this.locator(sel).isVisible();
 
   /** 처음 맞는 요소가 조건(state, 기본 visible)이 될 때까지. 돌려주는 Locator 는 그 선택자를 가리킨다. */
@@ -294,9 +296,31 @@ export class Page {
     act: (op, args) => this.act(op, args),
     read: (op, args) => this.read(op, args),
     waitState: (chain, desc, state, timeoutMs) => this.waitState(chain, desc, state, timeoutMs),
+    until: (kind, op, args, cond, desc, timeoutMs) => this.until(kind, op, args, cond, desc, timeoutMs),
   };
   private rootLocator(step: Step): Locator {
     return new LocatorImpl(this.host, [step]);
+  }
+
+  /**
+   * 동작 하나를 대상이 준비될 때까지(없음 · 안 보임 · 비활성이 아닐 때까지) 다시 시도한다. 한 번 시도 = 페이지 안에서 찾고 되면 동작하는 runJs 하나,
+   * 준비 전이면 동작 없이 「아직 아님」만 돌려받아 150ms 뒤 Node 쪽에서 다시 부른다. 이미 준비돼 있으면 정확히 한 번으로 끝난다.
+   */
+  private async until(kind: "act" | "read", op: ActionOp, args: Record<string, unknown>, cond: WaitCond, desc: string, timeoutMs: number) {
+    const full = { ...args, wait: { visible: cond.visible, enabled: cond.enabled } };
+    const t0 = Date.now();
+    for (;;) {
+      const r = await (kind === "act" ? this.act(op, full) : this.read(op, full));
+      if (!r.notReady) return r;
+      if (timeoutMs !== 0 && Date.now() - t0 >= timeoutMs) {
+        const why = { missing: "아직 없음", hidden: "있지만 안 보임", disabled: "있지만 비활성" }[r.notReady];
+        const chain = args.chain as Step[] | undefined;
+        const hint =
+          r.notReady !== "missing" ? "" : chain?.length === 1 && chain[0]!.k === "ref" ? " — 페이지가 바뀌었을 수 있으니 snapshot 을 다시 찍어 새 ref 를 쓰세요" : " — snapshot 으로 지금 화면을 확인하세요";
+        throw new Error(`${showSeconds(timeoutMs)}초 기다렸지만 ${cond.phrase} 요소가 없어요: ${desc} (마지막 확인: ${why})${hint}`);
+      }
+      await sleep(ACTION_POLL_MS);
+    }
   }
 
   /**
@@ -342,6 +366,7 @@ export class Page {
     const raw = await this.driver.runJs(this.key, source);
     const res = JSON.parse(raw) as ActionOk | ActionErr;
     if (!res.ok) throw new Error(res.err);
+    if (res.r.notReady) return res.r; // 동작하지 않았으니 이동도 없다
     await this.settle(expectNav || !!res.r.expectNav, res.r.timerMs ?? -1);
     return res.r;
   }

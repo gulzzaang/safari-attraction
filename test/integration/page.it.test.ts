@@ -163,8 +163,8 @@ describeIt('페이지 조작(Page)', () => {
 
   test('없는 ref 는 snapshot 을 다시 찍으라고 알린다', async () => {
     const page = await open('basic.html');
-    await expect(page.locator('e9999').click()).rejects.toThrow(/e9999.*snapshot/);
-    await expect(page.locator('#없는칸').fill('x')).rejects.toThrow(/#없는칸/);
+    await expect(page.locator('e9999').click({ timeout: 300 })).rejects.toThrow(/e9999.*snapshot/);
+    await expect(page.locator('#없는칸').fill('x', { timeout: 300 })).rejects.toThrow(/#없는칸/);
   });
 
   test('사파리를 앞으로 가져오지 않는다', async () => {

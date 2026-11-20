@@ -59,7 +59,7 @@ describeIt('Playwright 식 이름(Locator · Page)', () => {
     expect(await page.getByRole('heading', { name: 'playwright 호환' }).count()).toBe(1); // heading 은 snapshot 역할이 아니라 ARIA 기본 역할
     expect(await page.getByRole('navigation').count()).toBe(1);
     expect(await page.getByRole('listitem').count()).toBe(3);
-    await expect(page.getByRole('button', { name: '없는 단추' }).click()).rejects.toThrow("찾는 요소가 없어요: getByRole('button', {name: '없는 단추'})");
+    await expect(page.getByRole('button', { name: '없는 단추' }).click({ timeout: 300 })).rejects.toThrow("0.3초 기다렸지만 누를 수 있는 요소가 없어요: getByRole('button', {name: '없는 단추'})");
   });
 
   test('getByRole 은 shadow 의 slot 으로만 이름이 오는 단추도 snapshot 이 보여 준 이름으로 찾는다', async () => {
@@ -102,7 +102,7 @@ describeIt('Playwright 식 이름(Locator · Page)', () => {
     expect(await page.locator('#nm').inputValue()).toBe('테스트 아이디');
     expect(await page.getByTestId('name-input').count()).toBe(1);
     expect(await page.getByTestId('없음').count()).toBe(0);
-    await expect(page.getByTestId('없음').click()).rejects.toThrow(/찾는 요소가 없어요: getByTestId\('없음'\)/);
+    await expect(page.getByTestId('없음').click({ timeout: 300 })).rejects.toThrow(/누를 수 있는 요소가 없어요: getByTestId\('없음'\)/);
     await page.getByText('Hello World').click(); // 글 요소를 눌러도 오류가 없다
   });
 
@@ -280,6 +280,30 @@ describeIt('Playwright 식 이름(Locator · Page)', () => {
     expect((await d.listTabs()).filter(isMine)).toHaveLength(1);
     await page.goBack(); // 같은 키로 이어서 쓴다
     expect(await text(page, '#stamp')).not.toBe('');
+  });
+
+  test('자동 기다림: 700ms 뒤에 생기는 단추를 기다림 없이 눌러도 되고, 500ms 뒤에 풀리는 입력칸에도 쓴다', async () => {
+    const page = await open('pw.html');
+    await page.locator('#spawn').click();
+    expect(await page.locator('#later-btn').count()).toBe(0); // 아직 없다
+    const t0 = Date.now();
+    await page.getByRole('button', { name: '나중 단추' }).click(); // 따로 waitFor 없이
+    expect(Date.now() - t0).toBeGreaterThan(300);
+    expect(await text(page, '#log2')).toBe('나중 단추 눌림');
+
+    await page.locator('#enable').click();
+    expect(await page.locator('#slow-in').isEnabled()).toBe(false);
+    await page.locator('#slow-in').fill('풀린 뒤 씀');
+    expect(await page.inputValue('#slow-in')).toBe('풀린 뒤 씀');
+
+    // 이미 준비된 것은 기다리지 않는다
+    const t1 = Date.now();
+    await page.locator('#send').click();
+    expect(Date.now() - t1).toBeLessThan(1500);
+    // 안 보이는 것은 끝내 못 눌러서 시간 초과(있지만 안 보임)
+    await expect(page.locator('.dup').first().click({ timeout: 400 })).rejects.toThrow(/0\.4초 기다렸지만 누를 수 있는 요소가 없어요: locator\('\.dup'\)\.first\(\) \(마지막 확인: 있지만 안 보임\)/);
+    // 비활성 단추
+    await expect(page.getByRole('button', { name: '취소' }).click({ timeout: 400 })).rejects.toThrow(/마지막 확인: 있지만 비활성/);
   });
 
   test('content() 는 문서 전체 HTML 글이다', async () => {
