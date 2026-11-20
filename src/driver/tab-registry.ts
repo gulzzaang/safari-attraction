@@ -51,7 +51,7 @@ export interface TabBackend {
   /** 제자리에서 이동한 탭에 표시를 다시 적는다(불러오기가 끝나길 기다린다). */
   rebind(args: { windowId: number; index: number; key: string; url: string }): Promise<RebindResult>;
   /** 이동이 일어났는지 보고, 새 문서면 표시를 다시 적는다. 표시가 없다는 이유로 아무것도 지우지 않는다. */
-  settle(args: { windowId: number; index: number; key: string; url: string }): Promise<SettleResult>;
+  settle(args: { windowId: number; index: number; key: string; url: string; waitUntil?: "commit" }): Promise<SettleResult>;
   /** 자리의 탭이 spot.key 의 탭일 때만 닫는다. urlOnly 는 표시를 못 읽는 탭(경고창)용 — 주소만 본다. */
   close(spot: Spot, urlOnly: boolean, timeoutMs?: number): Promise<Guarded<null>>;
 }
@@ -272,8 +272,9 @@ export class TabRegistry {
    * 동작 뒤 탭이 이동했는지 본다. rebind 와 달리 문서가 이미 바뀌었어도 키를 지우지 않는다 —
    * 자리의 탭에 이 키의 표시가 있으면 navigated:false, 표시가 없으면(새 문서) 다 뜰 때까지 기다려 표시를
    * 다시 적고 navigated:true. 다른 키의 표시가 있거나 탭이 정말 없을 때만 TAB_CLOSED(그때만 키를 지운다).
+   * 「다 뜰 때」는 문서를 쓸 수 있게 될 때(domcontentloaded)다. opts.waitUntil 이 "commit" 이면 새 문서가 보이는 즉시 끝낸다(주소가 바뀐 것만 본다).
    */
-  async settle(key: string): Promise<{ navigated: boolean; leaving: boolean; tab: RawTab }> {
+  async settle(key: string, opts: { waitUntil?: "commit" } = {}): Promise<{ navigated: boolean; leaving: boolean; tab: RawTab }> {
     const e = this.entries.get(key);
     if (!e) throw tabClosed(key);
     if (!e.stamped) {
@@ -281,11 +282,12 @@ export class TabRegistry {
       const p = await this.backend.probe(e.windowId, e.index);
       if (p.exists && p.marker === "" && p.url === e.url && (await this.backend.stamp(e.windowId, e.index, this.markerOf(key)))) e.stamped = true;
     }
-    let r = await this.backend.settle({ windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url });
+    const waitUntil = opts.waitUntil;
+    let r = await this.backend.settle({ windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, waitUntil });
     if (r.status === "gone" || r.status === "other") {
       // 기록한 자리가 아니다 — 표시로 찾는다(못 찾으면 resolve 가 키를 지우고 TAB_CLOSED).
       const at = await this.resolve(key);
-      r = await this.backend.settle({ ...at, key: this.markerOf(key), url: e.url });
+      r = await this.backend.settle({ ...at, key: this.markerOf(key), url: e.url, waitUntil });
       if (r.status === "gone" || r.status === "other") {
         this.forget(key);
         throw tabClosed(key);

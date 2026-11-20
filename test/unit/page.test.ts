@@ -141,15 +141,17 @@ describe('Page 의 이동 판단(settleTab 로 확인, runJs 로 확인하지 �
 
 describe('Page.screenshot 은 새 현재 탭이 그려진 뒤에 찍는다', () => {
   /** 호출 순서를 적는 가짜 드라이버. visibility 는 runJs("document.visibilityState") 가 차례로 돌려줄 값이다. */
-  function shot(visibility: string[]) {
+  function shot(visibility: string[], loads: string[] = ['complete|1']) {
     const order: string[] = [];
     let n = 0;
+    let l = 0;
     const d = {
       async showTab() {
         order.push('showTab');
       },
       async runJs(_key: string, source: string) {
         order.push(`runJs:${source}`);
+        if (source.includes('readyState')) return loads[Math.min(l++, loads.length - 1)]!;
         return visibility[Math.min(n++, visibility.length - 1)]!;
       },
       async captureWindow(id: number) {
@@ -165,13 +167,21 @@ describe('Page.screenshot 은 새 현재 탭이 그려진 뒤에 찍는다', () 
   test('showTab → 보이는지 확인 → captureWindow 순서', async () => {
     const { page, order } = shot(['visible']);
     await page.screenshot();
-    expect(order).toEqual(['showTab', 'runJs:document.visibilityState', 'capture:7']);
+    expect(order.filter((o) => o !== 'showTab' && !o.includes('readyState'))).toEqual(['runJs:document.visibilityState', 'capture:7']);
+    expect(order[0]).toBe('showTab');
+  });
+
+  test('찍기 전에 load 를 잠깐 기다린다(interactive 면 complete 가 될 때까지), 읽지 못해도 막지 않는다', async () => {
+    const { page, order } = shot(['visible'], ['interactive|1', 'complete|1']);
+    await page.screenshot();
+    expect(order.filter((o) => o.includes('readyState'))).toHaveLength(2);
+    expect(order.at(-1)).toBe('capture:7');
   });
 
   test('아직 hidden 이면 visible 이 될 때까지 확인을 거듭한 뒤 찍는다', async () => {
     const { page, order } = shot(['hidden', 'hidden', 'visible']);
     await page.screenshot();
-    expect(order.filter((o) => o.startsWith('runJs'))).toHaveLength(3);
+    expect(order.filter((o) => o === 'runJs:document.visibilityState')).toHaveLength(3);
     expect(order.at(-1)).toBe('capture:7');
   });
 
@@ -217,7 +227,7 @@ describe('Page.url() 은 await 없이 마지막으로 알려진 주소를 돌려
     const d = {
       lastUrl: () => st.url,
       async runJs(_key: string, source: string) {
-        if (source === 'document.readyState') return 'complete';
+        if (source.includes('readyState')) return 'complete';
         if (source.includes('next.html')) return ok({ expectNav: true });
         return ok({});
       },

@@ -60,7 +60,7 @@ export interface SafariDriver {
   listWindows(): Promise<WindowInfo[]>;
   listTabs(): Promise<TabInfo[]>;
   /**
-   * 활성 탭을 바꾸지 않고, 사파리를 앞으로 가져오지 않고 뒤쪽 탭을 연다. 페이지가 뜰 때까지 기다린다.
+   * 활성 탭을 바꾸지 않고, 사파리를 앞으로 가져오지 않고 뒤쪽 탭을 연다. 페이지를 쓸 수 있을 때까지(domcontentloaded — load 이벤트까지는 아니다) 기다린다.
    * frontAppChanged: 사파리가 맨 앞으로 나왔나(부르기 전엔 사파리가 아니었고 뒤엔 사파리일 때만 true — 다른 앱이 앞으로 나온 것은 false).
    */
   openTab(url: string, opts?: { windowId?: number }): Promise<{ tab: TabInfo; frontAppChanged: boolean }>;
@@ -78,9 +78,10 @@ export interface SafariDriver {
    * 동작 뒤 탭이 제자리에서 이동했는지 본다 — rebindTab 의 읽기 전용 짝. 이동하지 않았으면(탭에 이 키의 표시가 그대로)
    * navigated:false(leaving: 문서를 떠나는 중이니 더 기다려야 할 수 있다). 새 문서가 떴으면(표시가 없음) 다 뜰 때까지 기다려
    * 표시를 다시 적고 navigated:true. 표시가 없다는 이유로 키를 지우지 않는다 — 다른 키의 표시가 있거나 탭이 정말 없을 때만
-   * TAB_CLOSED(그때만 키를 지운다).
+   * TAB_CLOSED(그때만 키를 지운다). 「다 뜰 때」는 문서를 쓸 수 있게 될 때(readyState 가 interactive · complete 이고 body 가 있음 — domcontentloaded)이고,
+   * opts.waitUntil 이 "commit" 이면 새 문서가 보이는 즉시 끝낸다.
    */
-  settleTab(tabKey: string): Promise<{ navigated: boolean; leaving: boolean; tab: TabInfo }>;
+  settleTab(tabKey: string, opts?: { waitUntil?: "commit" }): Promise<{ navigated: boolean; leaving: boolean; tab: TabInfo }>;
   /**
    * 활성화 없이 새 창을 열고(앞 앱을 바꾸지 않는다), 크기를 맞추고, 사파리 창 순서 맨 뒤로 보내고, 페이지가 뜰 때까지 기다린다.
    * frontAppChanged 는 openTab 과 같은 뜻(사파리가 맨 앞으로 나왔나).

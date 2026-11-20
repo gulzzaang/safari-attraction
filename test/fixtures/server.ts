@@ -16,7 +16,11 @@ const TYPES: Record<string, string> = {
 /** 127.0.0.1 임의 포트에서(localhost 로 불러도 닿는다) test/fixtures/pages 를 정적으로 내준다. */
 export async function startFixtureServer(): Promise<{ baseUrl: string; altBaseUrl: string; close(): Promise<void> }> {
   const server: Server = createServer(async (req, res) => {
-    const path = decodeURIComponent((req.url ?? "/").split("?")[0]!);
+    const [rawPath, rawQuery = ""] = (req.url ?? "/").split("?");
+    const path = decodeURIComponent(rawPath!);
+    // ?delay=밀리초 — 응답을 그만큼 늦춘다(load 이벤트가 늦는 페이지 시험용).
+    const delay = Math.min(Number(new URLSearchParams(rawQuery).get("delay")) || 0, 10_000);
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
     const file = normalize(join(PAGES_DIR, path));
     if (!file.startsWith(PAGES_DIR + "/")) {
       res.writeHead(403).end();

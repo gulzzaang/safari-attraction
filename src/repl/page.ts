@@ -7,6 +7,7 @@ import {
   type ActionOk,
   type ActionOp,
 } from "./inpage-actions.js";
+import { IdleWatch, LOAD_TIMEOUT_MS, loadPollSource, loadTimeoutMessage, parseLoadReading, parseLoadStateArgs, parseWaitUntil, reached, type LoadState, type WaitUntil } from "./load-state.js";
 import { DEFAULT_ACTION_WAIT_MS, LocatorImpl, globToRegExp, isRegExp, normTimeout, parseSelector, roleStep, textStep, toMatcher, type ActOpts, type Locator, type LocatorHost, type RoleOpts, type Step, type WaitCond, type WaitState } from "./locator.js";
 
 export type { Locator } from "./locator.js";
@@ -17,9 +18,10 @@ const DEFAULT_WAIT_MS = 30000;
 /** 「아직 아님」일 때 다시 확인하는 간격. 기다림은 Node 쪽에서 돈다 — 뒤쪽 탭에서는 사파리가 페이지의 타이머를 멈추기 때문이다. */
 const ACTION_POLL_MS = 150;
 
+type SettleOpts = { waitUntil: "commit" };
+
 /** 사파리 창이 줄어드는 최소 폭(대략). */
 const MIN_WINDOW_WIDTH_PX = 336;
-const LOAD_TIMEOUT_MS = 15000;
 /** 동작이 이동을 일으킬 것 같은데(expectNav) 문서를 떠나는 낌새(beforeunload)가 없을 때 더 기다리는 시간. */
 const EXPECT_NAV_GRACE_MS = 1500;
 /** 문서를 떠나는 중(beforeunload)인데 새 문서가 안 뜰 때(느린 서버 · 내려받기) 기다리는 최대 시간. */
@@ -29,6 +31,8 @@ const TIMER_WAIT_MAX_MS = 1000;
 /** evaluate 가 돌려준 약속을 기다리는 시간. */
 const PENDING_TIMEOUT_MS = 15000;
 /** 찍기 전에 새로 현재가 된 탭이 그려지길(visibilityState) 기다리는 최대 시간과 확인 간격. */
+/** 찍기 전에 load 를 더 기다리는 최대 시간. */
+const CAPTURE_LOAD_WAIT_MS = 3000;
 const PAINT_WAIT_MS = 1000;
 const PAINT_POLL_MS = 100;
 /** 보이게 된 뒤 한 번 더 그려지도록 두는 시간(프레임 한두 장). */
@@ -76,21 +80,43 @@ export class Page {
     return `Page { key: '${this.key}' }`;
   }
 
-  /** 이동한 뒤 새 문서가 다 뜰 때까지(waitForLoadState)까지 기다린다. */
-  async goto(url: string): Promise<void> {
-    await this.act("goto", { url });
-    await this.waitForLoadState();
+  /**
+   * 주소로 이동하고 새 문서를 쓸 수 있게 될 때까지 기다린다(기본 waitUntil 'domcontentloaded' — load 이벤트까지 기다리지 않는다).
+   * waitUntil: 'commit'(주소가 바뀌는 즉시) · 'domcontentloaded' · 'load' · 'networkidle'. timeout 은 밀리초(기본 15초, 최대 110초).
+   */
+  async goto(url: string, opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<void> {
+    const wait = parseWaitUntil(opts?.waitUntil, "goto", true);
+    await this.act("goto", { url }, wait === "commit" ? { waitUntil: "commit" } : undefined);
+    await this.afterNav(wait, opts?.timeout);
   }
 
-  /** document.readyState 가 complete 가 될 때까지(기본 15초). */
-  async waitForLoadState(timeoutMs = LOAD_TIMEOUT_MS): Promise<void> {
+  /**
+   * 불러오기 상태를 기다린다. state 를 안 주면 'load'(readyState 가 complete — Playwright 와 같다).
+   * 'domcontentloaded': 문서를 쓸 수 있을 때(interactive 이상 + body). 'networkidle': load 뒤 새 리소스 요청이 500ms 없을 때.
+   * 옛 꼴 waitForLoadState(밀리초) 도 받는다. 기다림은 Node 쪽에서 돈다(뒤쪽 탭에서는 사파리가 페이지 타이머를 멈춘다).
+   */
+  async waitForLoadState(state?: LoadState | number | { timeout?: number }, opts?: { timeout?: number }): Promise<void> {
+    const p = parseLoadStateArgs(state, opts);
+    await this.waitLoad(p.state, p.timeoutMs);
+  }
+
+  private async waitLoad(state: LoadState, timeoutMs: number): Promise<void> {
+    const source = loadPollSource(state);
+    const idle = state === "networkidle" ? new IdleWatch() : null;
     const t0 = Date.now();
     for (;;) {
       this.checkAbort();
-      if ((await this.driver.runJs(this.key, "document.readyState")) === "complete") return;
-      if (Date.now() - t0 > timeoutMs) throw new SafariError("TIMEOUT", `페이지가 ${timeoutMs}ms 안에 다 뜨지 않음`);
+      const r = parseLoadReading(await this.driver.runJs(this.key, source));
+      if (idle ? idle.feed(r, Date.now()) : reached(state as Exclude<LoadState, "networkidle">, r)) return;
+      if (Date.now() - t0 > timeoutMs) throw new SafariError("TIMEOUT", loadTimeoutMessage(state, timeoutMs));
       await sleep(100);
     }
+  }
+
+  /** 이동 뒤 기다림. commit 은 이미 주소가 바뀐 것을 settleTab 이 봤으니 더 기다리지 않는다. */
+  private async afterNav(wait: WaitUntil, timeout: unknown): Promise<void> {
+    if (wait === "commit") return;
+    await this.waitLoad(wait, normTimeout(timeout, LOAD_TIMEOUT_MS));
   }
 
   /**
@@ -176,15 +202,16 @@ export class Page {
 
   /**
    * 주소가 맞을 때까지 기다린다. 글은 정확히(또는 `*` · `**` · `?` · `{a,b}` 글 패턴), RegExp, 함수(URL 을 받는다) 모두 된다.
-   * 확인은 settleTab 으로 한다(이동 중에도 탭 키를 지키고 page.url() 도 새로 한다). 맞으면 새 문서가 다 뜰 때까지 기다린다.
+   * 확인은 settleTab 으로 한다(이동 중에도 탭 키를 지키고 page.url() 도 새로 한다). 맞으면 새 문서를 쓸 수 있을 때까지 기다린다(waitUntil, 기본 'domcontentloaded').
    */
-  async waitForURL(url: string | RegExp | ((u: URL) => boolean), opts: { timeout?: number } = {}): Promise<void> {
+  async waitForURL(url: string | RegExp | ((u: URL) => boolean), opts: { timeout?: number; waitUntil?: WaitUntil } = {}): Promise<void> {
     const test = urlTester(url);
+    const wait = parseWaitUntil(opts?.waitUntil, "waitForURL", true);
     const timeoutMs = normTimeout(opts?.timeout, DEFAULT_WAIT_MS);
     const t0 = Date.now();
     for (;;) {
       this.checkAbort();
-      const cur = (await this.driver.settleTab(this.key)).tab.url;
+      const cur = (await this.driver.settleTab(this.key, wait === "commit" ? { waitUntil: "commit" } : undefined)).tab.url;
       this.knownUrl = cur;
       if (test(cur)) break;
       if (Date.now() - t0 > timeoutMs) {
@@ -193,19 +220,19 @@ export class Page {
       }
       await sleep(WAIT_POLL_MS);
     }
-    await this.waitForLoadState();
+    await this.afterNav(wait, opts?.timeout);
   }
 
-  /** 지금 문서를 다시 불러온다(같은 탭 · 같은 키). */
-  async reload(): Promise<void> {
-    await this.navigate("reload");
+  /** 지금 문서를 다시 불러온다(같은 탭 · 같은 키). waitUntil 은 goto 와 같다(기본 'domcontentloaded'). */
+  async reload(opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<void> {
+    await this.navigate("reload", opts);
   }
   /** 뒤로 간다. 갈 곳이 없으면 잠깐 기다린 뒤 아무 일 없이 끝난다. */
-  async goBack(): Promise<void> {
-    await this.navigate("back");
+  async goBack(opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<void> {
+    await this.navigate("back", opts);
   }
-  async goForward(): Promise<void> {
-    await this.navigate("forward");
+  async goForward(opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<void> {
+    await this.navigate("forward", opts);
   }
 
   /** 문서 전체 HTML 글(doctype 포함, 안쪽 iframe · shadow 는 들어 있지 않다). */
@@ -273,6 +300,7 @@ export class Page {
    * 최대 1초 확인하고, 한 번 더 그려지도록 잠깐 둔다. 확인이 실패하거나 끝내 안 보여도 막지 않는다(찍기가 알아서 오류를 낸다).
    */
   private async waitForPaint(): Promise<void> {
+    await this.waitLoadedForCapture();
     const t0 = Date.now();
     for (;;) {
       let state = "";
@@ -287,10 +315,28 @@ export class Page {
     await sleep(PAINT_SETTLE_MS);
   }
 
+  /**
+   * 열기 · 이동이 문서를 쓸 수 있을 때(domcontentloaded) 돌아오므로, 찍기 전에 load 를 잠깐(최대 3초) 더 기다려 그림이 들어온 모습을 찍는다.
+   * 그 안에 안 끝나거나 읽지 못해도 막지 않고 그대로 찍는다.
+   */
+  private async waitLoadedForCapture(): Promise<void> {
+    const t0 = Date.now();
+    try {
+      for (;;) {
+        this.checkAbort();
+        const st = parseLoadReading(await this.driver.runJs(this.key, loadPollSource("load"))).readyState;
+        if ((st !== "loading" && st !== "interactive") || Date.now() - t0 >= CAPTURE_LOAD_WAIT_MS) return; // 알 수 없는 값도 기다리지 않는다
+        await sleep(100);
+      }
+    } catch (e) {
+      if (/이미 끝나서/.test((e as Error)?.message ?? "")) throw e; // 호출이 끝났으면 멈춘다
+    }
+  }
+
   /** 페이지 안 동작 하나를 돌리고, 문서가 바뀌었으면 탭 키를 다시 붙인다. */
-  private async act(op: ActionOp, args: Record<string, unknown>) {
+  private async act(op: ActionOp, args: Record<string, unknown>, settleOpts?: SettleOpts) {
     this.checkAbort();
-    return this.run(buildActionSource(op, { ...args, tok: newToken() }), false);
+    return this.run(buildActionSource(op, { ...args, tok: newToken() }), false, settleOpts);
   }
 
   /** 읽기만 하는 동작 하나(이동을 일으키지 않으니 settleTab 확인은 하지 않는다). */
@@ -334,23 +380,25 @@ export class Page {
   }
 
   /**
-   * 제자리 이동(reload · back · forward) 뒤 새 문서가 다 뜰 때까지. 되살아난(bfcache) 문서는 표시가 그대로라 새 문서로 보이지 않으므로,
+   * 제자리 이동(reload · back · forward) 뒤 새 문서를 쓸 수 있을 때까지(waitUntil). 되살아난(bfcache) 문서는 표시가 그대로라 새 문서로 보이지 않으므로,
    * 주소가 바뀌었는지도 함께 본다. 갈 곳이 없으면(뒤로 갈 이력이 없음) 잠깐 기다린 뒤 그대로 끝낸다.
    */
-  private async navigate(dir: "reload" | "back" | "forward"): Promise<void> {
+  private async navigate(dir: "reload" | "back" | "forward", opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<void> {
+    const wait = parseWaitUntil(opts?.waitUntil, dir === "reload" ? "reload" : dir === "back" ? "goBack" : "goForward", true);
+    const settleOpts: SettleOpts | undefined = wait === "commit" ? { waitUntil: "commit" } : undefined;
     // 이동하기 전 주소는 이동을 시키는 그 runJs 가 알려 준다(캐시가 한 박자 늦을 수 있다).
     const sent = await this.read("nav", { dir });
     const before = typeof sent.v === "string" ? sent.v : (this.driver.lastUrl?.(this.key) ?? this.knownUrl);
     const t0 = Date.now();
     for (;;) {
       this.checkAbort();
-      const r = await this.driver.settleTab(this.key);
+      const r = await this.driver.settleTab(this.key, settleOpts);
       this.knownUrl = r.tab.url;
       if (r.navigated || (dir !== "reload" && r.tab.url !== before && !r.leaving)) break;
       if (Date.now() - t0 > (r.leaving ? LEAVING_MAX_MS : EXPECT_NAV_GRACE_MS + 500)) break;
       await sleep(100);
     }
-    await this.waitForLoadState();
+    await this.afterNav(wait, opts?.timeout);
   }
 
   /**
@@ -381,12 +429,12 @@ export class Page {
     if (this.ai?.aborted?.()) throw new Error("repl 호출이 이미 끝나서 기다림을 멈췄어요(이 코드는 더 이상 페이지에 아무것도 하지 않아요)");
   }
 
-  private async run(source: string, expectNav: boolean) {
+  private async run(source: string, expectNav: boolean, settleOpts?: SettleOpts) {
     const raw = await this.driver.runJs(this.key, source);
     const res = JSON.parse(raw) as ActionOk | ActionErr;
     if (!res.ok) throw new Error(res.err);
     if (res.r.notReady) return res.r; // 동작하지 않았으니 이동도 없다
-    await this.settle(expectNav || !!res.r.expectNav, res.r.timerMs ?? -1);
+    await this.settle(expectNav || !!res.r.expectNav, res.r.timerMs ?? -1, settleOpts);
     return res.r;
   }
 
@@ -394,12 +442,12 @@ export class Page {
    * 동작 뒤 탭이 이동했는지 settleTab(읽기 전용)으로 보고, 새 문서면 거기서 끝낸다(표시는 settleTab 이 다시 적는다).
    * 아직 옛 문서면: 문서를 떠나는 중이면 더 기다리고, 동작이 이동을 일으킬 게 분명했으면(expectNav) 잠깐 더 기다리고, 아니면 끝.
    */
-  private async settle(expectNav: boolean, timerMs: number): Promise<void> {
+  private async settle(expectNav: boolean, timerMs: number, settleOpts?: SettleOpts): Promise<void> {
     if (timerMs >= 0 && timerMs <= TIMER_WAIT_MAX_MS) await sleep(timerMs + 80);
     const t0 = Date.now();
     for (;;) {
       this.checkAbort();
-      const r = await this.driver.settleTab(this.key);
+      const r = await this.driver.settleTab(this.key, settleOpts);
       if (r.navigated) return;
       const waited = Date.now() - t0;
       if (r.leaving ? waited > LEAVING_MAX_MS : !expectNav || waited > EXPECT_NAV_GRACE_MS) return;

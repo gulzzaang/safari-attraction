@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>늦게 끝나는 페이지</title></head>
+<body>
+  <h1>빠른 본문 제목</h1>
+  <p>이 글은 바로 보입니다. load 이벤트는 3초 뒤에 옵니다.</p>
+  <script>
+    window.__loaded = false;
+    window.addEventListener('load', function () { window.__loaded = true; });
+  </script>
+  <!-- async 스크립트는 DOMContentLoaded 를 늦추지 않고 load 만 늦춘다 -->
+  <script async src="/slow.js?delay=3000"></script>
+</body>
+</html>

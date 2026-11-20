@@ -94,8 +94,9 @@ const PLANT = String.raw`
   if (!window.__saUnl) {
     window.__saUnl = 1;
     window.addEventListener('beforeunload', function () { window.__saLeaving = true; });
-    // 뒤로 · 앞으로 가기로 이 문서가 되살아나면(bfcache) 「떠나는 중」 깃발이 옛 값으로 남아 있으므로 내린다.
-    window.addEventListener('pageshow', function () { window.__saLeaving = false; });
+    // 뒤로 · 앞으로 가기로 이 문서가 되살아나면(bfcache, persisted) 「떠나는 중」 깃발이 옛 값으로 남아 있으므로 내린다.
+    // 처음 불러오는 문서의 pageshow(persisted 가 아님)에는 내리지 않는다 — load 전에 동작이 시작돼 떠나는 중인 문서가 뒤늦게 load 를 마칠 때 깃발이 지워지면 안 된다.
+    window.addEventListener('pageshow', function (e) { if (e && e.persisted) window.__saLeaving = false; });
   }
   var __saOrigST = window.setTimeout, __saMax = -1;
   function __saPatched(fn, ms) { var d = +ms || 0; if (d > __saMax) __saMax = d; return __saOrigST.apply(this, arguments); }

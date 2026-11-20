@@ -109,16 +109,25 @@ function guardTab(args) {
   return null;
 }
 
-// 새 문서가 다 뜰 때까지(최대 15초) 기다려 표시를 적고 탭 정보를 돌려준다(rebind · settle 이 함께 쓴다).
+// 문서를 쓸 수 있는 때인가(Playwright 의 domcontentloaded 처럼): readyState 가 complete 이거나, interactive 이면서 body 가 있을 때.
+// body 가 없는 문서(XML · SVG · 이미지 단독 문서)는 complete 가 돼야 쓸 수 있는 것으로 본다. 이미지 · 스크립트 · 아이프레임이 다 오기 전의 load 이벤트는 기다리지 않는다.
+function usableState(readyState, hasBody) {
+  return readyState === "complete" || (readyState === "interactive" && hasBody);
+}
+
+// 새 문서가 쓸 수 있게 될 때까지(최대 15초) 기다려 표시를 적고 탭 정보를 돌려준다(rebind · settle 이 함께 쓴다).
+// args.waitUntil === "commit" 이면 기다리지 않고 바로 표시를 적어 본다(적지 못해도 나중에 키로 다시 찾는다).
 function finishRebind(args, tab) {
   // 읽어 보아 표시가 남아 있는지 확인한다(뜨는 중에 적으면 지워질 수 있다).
   const budget = args.loadBudgetMs || 15000;
   const t1 = Date.now();
+  const commitOnly = args.waitUntil === "commit";
   for (let attempt = 0; attempt < 5; attempt++) {
-    for (;;) {
+    for (; !commitOnly; ) {
       let ready = false;
       try {
-        ready = str(Safari.doJavaScript("document.readyState", { in: tab })) === "complete";
+        const st = str(Safari.doJavaScript("document.readyState + ' ' + (document.body ? 1 : 0)", { in: tab })).split(" ");
+        ready = usableState(st[0], st[1] === "1");
       } catch (e) {
         if (isJsOffError(e)) throw e;
       }
@@ -130,6 +139,7 @@ function finishRebind(args, tab) {
     if (again.marker !== "" && again.marker !== args.key) return { status: "other" };
     stampTab(tab, args.key);
     if (readMarker(tab) === args.key) break;
+    if (commitOnly) break;
     nap(0.1);
   }
   const win = Safari.windows.byId(args.windowId);
@@ -238,7 +248,8 @@ function windowState(w, measure) {
   return { gone: false, bounds: boundsOf(w), inner: measure === false ? null : innerSizeOf(w) };
 }
 
-// 페이지가 다 뜰 때까지(최대 args.loadBudgetMs) 기다린다. 「Apple 이벤트에서 JavaScript 허용」이 꺼진 오류는
+// 페이지를 쓸 수 있을 때(usableState — domcontentloaded)까지 최대 args.loadBudgetMs 기다리고, 새 문서의 주소가 보여야 한다(아직 about:blank 면 계속 기다린다. 가려는 곳이 about:blank 면 그대로 둔다).
+// load 이벤트까지의 기다림은 Node 쪽(page.waitForLoadState)이 필요할 때만 한다. 「Apple 이벤트에서 JavaScript 허용」이 꺼진 오류는
 // 기다려도 소용없으니 onJsOff() 로 만든 것을 치운 뒤 그대로 올린다(사파리 오류 문구는 로케일에 따라 영어 또는 한국어).
 function waitForLoad(tab, args, onJsOff) {
   const t0 = Date.now();
@@ -247,7 +258,7 @@ function waitForLoad(tab, args, onJsOff) {
   for (;;) {
     let state = "";
     try {
-      state = str(Safari.doJavaScript("location.href + ' ' + document.readyState", { in: tab }));
+      state = str(Safari.doJavaScript("location.href + ' ' + document.readyState + ' ' + (document.body ? 1 : 0)", { in: tab }));
     } catch (e) {
       if (isJsOffError(e)) {
         try {
@@ -256,10 +267,11 @@ function waitForLoad(tab, args, onJsOff) {
         throw e;
       }
     }
-    const sp = state.lastIndexOf(" ");
-    const href = state.slice(0, sp);
-    const ready = state.slice(sp + 1) === "complete";
-    if (ready && href !== "" && (blank || href !== "about:blank")) break;
+    const parts = state.split(" ");
+    const hasBody = parts.pop() === "1";
+    const readyState = parts.pop();
+    const href = parts.join(" ");
+    if (usableState(readyState, hasBody) && href !== "" && (blank || href !== "about:blank")) break;
     if (Date.now() - t0 > budget) break;
     nap(0.05);
   }
@@ -326,7 +338,7 @@ const ops = {
   },
 
   // 이동은 일어났는지 본다 — 표시가 남은 키의 탭이 그대로면 {status:"same"}, 자리의 탭에 표시가 없으면(새 문서)
-  // 다 뜰 때까지 기다려 표시를 다시 적고 {status:"navigated"}. 다른 키의 표시 → "other", 탭 없음 → "gone".
+  // 쓸 수 있을 때까지(args.waitUntil 이 "commit" 이면 기다리지 않고) 기다려 표시를 다시 적고 {status:"navigated"}. 다른 키의 표시 → "other", 탭 없음 → "gone".
   // 읽기만 하고 아무것도 지우지 않는다(표시가 없다는 이유로 탭을 잃지 않게 하려는 확인용).
   settle(args) {
     const p0 = probeTab(args.windowId, args.index);
@@ -357,7 +369,7 @@ const ops = {
     return stampTab(tab, args.key);
   },
 
-  // 활성 탭은 바꾸지 않고 맨 뒤에 새 탭을 만든다. 페이지가 뜰 때까지(최대 loadBudgetMs) 기다린다.
+  // 활성 탭은 바꾸지 않고 맨 뒤에 새 탭을 만든다. 페이지를 쓸 수 있을 때까지(최대 loadBudgetMs) 기다린다(load 까지는 아니다).
   // 새 탭은 맨 앞 창(= 맨 앞 일반 창)에 연다. 사파리 스크립트 사전에는 개인정보 보호 창을 가리키는 속성이 없어
   // 개인정보 보호 창을 가려낼 수 없다 — 맨 앞 창이 개인정보 보호 창이면 거기에 열린다(알려진 한계).
   openTab(args) {
@@ -398,7 +410,7 @@ const ops = {
     };
   },
 
-  // 활성화하지 않고 새 문서 창을 열어 사파리 창 순서 맨 뒤(보이는 창들 가운데)로 보내고, 페이지가 뜰 때까지 기다린다.
+  // 활성화하지 않고 새 문서 창을 열어 사파리 창 순서 맨 뒤(보이는 창들 가운데)로 보내고, 페이지를 쓸 수 있을 때까지 기다린다.
   // 새 창은 만들기 전 창 id 목록과 비교해 찾는다. 앞 앱은 바꾸지 않는다(activate 를 부르지 않는다).
   openWindow(args) {
     const before = Safari.windows().map((w) => w.id());

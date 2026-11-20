@@ -4,6 +4,7 @@ import { inspect } from "node:util";
 import { SafariError, type SafariDriver, type SafariErrorCode, type TabInfo } from "../driver/types.js";
 import { buildSnapshotSource, type SnapshotOptions } from "../snapshot/inpage.js";
 import { SnapshotStore, splitSnapshotMeta } from "../snapshot/store.js";
+import { parseWaitUntil, type WaitUntil } from "./load-state.js";
 import { Page, type AiWindowAccess } from "./page.js";
 import { OutputBuffer } from "./output.js";
 import { hoistTopLevel } from "./transform.js";
@@ -152,8 +153,18 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     return p;
   };
 
-  sandbox.openTab = async (url: string): Promise<Page> => {
+  /**
+   * 열린 뒤 더 기다릴 불러오기 상태. 드라이버는 문서를 쓸 수 있게 될 때(domcontentloaded)까지만 기다리고 돌려주므로(commit 도 같다 — 새 탭에는 주소 변화로 알 일이 없다),
+   * load · networkidle 만 Page 가 이어서 기다린다.
+   */
+  const extraWait = (opts: { waitUntil?: WaitUntil } | undefined, who: string): "load" | "networkidle" | null => {
+    const w = parseWaitUntil(opts?.waitUntil, who, true);
+    return w === "load" || w === "networkidle" ? w : null;
+  };
+
+  sandbox.openTab = async (url: string, opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<Page> => {
     if (disposed) throw new Error("openTab: 서버가 끝나는 중이라 탭을 열 수 없음");
+    const more = extraWait(opts, "openTab"); // 잘못된 값이면 탭을 열기 전에 알린다
     const backToFront = () => {
       log("고른 창이 닫혀서 맨 앞 창으로 돌아갑니다");
       workWindowId = null;
@@ -180,11 +191,14 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       throw new Error("openTab: 서버가 끝나는 중이라 탭을 열 수 없음");
     }
     owned.add(tab.key);
-    return track(new Page(driver, tab.key, aiAccess));
+    const pg = track(new Page(driver, tab.key, aiAccess));
+    if (more) await pg.waitForLoadState(more, { timeout: opts?.timeout });
+    return pg;
   };
 
-  sandbox.openAiWindow = async (url: string = "about:blank", opts: { width?: number; height?: number } = {}): Promise<Page> => {
+  sandbox.openAiWindow = async (url: string = "about:blank", opts: { width?: number; height?: number; waitUntil?: WaitUntil; timeout?: number } = {}): Promise<Page> => {
     if (disposed) throw new Error("openAiWindow: 서버가 끝나는 중이라 창을 열 수 없음");
+    const more = extraWait(opts, "openAiWindow");
     const explicit = opts?.width !== undefined || opts?.height !== undefined;
     const width = opts?.width ?? 1280;
     const height = opts?.height ?? 800;
@@ -219,7 +233,9 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     if (front) log("주의: 사파리가 맨 앞으로 나왔어요");
     owned.add(key);
     aiKeys.set(key, winId);
-    return track(new Page(driver, key, aiAccess));
+    const pg = track(new Page(driver, key, aiAccess));
+    if (more) await pg.waitForLoadState(more, { timeout: opts?.timeout });
+    return pg;
   };
 
   sandbox.closeTab = async (p?: Page): Promise<void> => {

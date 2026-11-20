@@ -13,7 +13,7 @@ Drive the user's real, logged-in Safari with JavaScript. New tabs open in the ba
 Read values with console.log (the last expression is NOT printed). Errors come back with isError.
 
 전역 / Globals:
-- openTab(url) → Page. 뒤쪽 탭을 열고 다 뜰 때까지 기다린다. 열린 탭은 \`page\`(현재)와 \`tabs\`(배열)에 들어간다.
+- openTab(url) → Page. 뒤쪽 탭을 열고 쓸 수 있게 되면(domcontentloaded) 돌려준다 — load 까지 필요하면 page.waitForLoadState('load'|'networkidle'). openTab/goto return once the page is usable (domcontentloaded). 열린 탭은 \`page\`(현재)와 \`tabs\`(배열)에 들어간다.
 - attachActiveBrowserTab() → 사용자가 지금 보고 있는 맨 앞 창의 활성 탭. "내가 보고 있는 페이지" 라고 할 때 쓴다. attachBrowserTab(key) / listBrowserTabs() 로 다른 탭도 고른다. 사용자의 탭은 떼기만 하고 닫지 않는다.
 - openAiWindow(url = "about:blank", {width = 1280, height = 800}) → Page. Claude 전용 사파리 창(사용자 창 맨 뒤, 앞 앱을 안 바꿈)을 열고 그 안의 탭을 돌려준다. 창은 세션에 하나라 다시 부르면 같은 창에 새 탭이 열린다. 사용자가 창을 닫았으면 WINDOW_CLOSED 안내가 나오고, openAiWindow() 를 다시 부르면 새 창이 열린다.
 - page.setViewportSize({width, height}) → {width, height}(실제 값) — 창 안 페이지 크기를 맞춘다(휴대폰 폭이면 390×844). 사파리 창은 약 336px 보다 좁게 못 줄인다. AI 창의 탭에서만.

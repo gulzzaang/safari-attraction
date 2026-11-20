@@ -284,8 +284,8 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
       return toTab({ raw, key: tabKey, owned: registry.isOwned(tabKey) });
     },
 
-    async settleTab(tabKey) {
-      const r = await registry.settle(tabKey);
+    async settleTab(tabKey, o = {}) {
+      const r = await registry.settle(tabKey, o);
       return { navigated: r.navigated, leaving: r.leaving, tab: toTab({ raw: r.tab, key: tabKey, owned: registry.isOwned(tabKey) }) };
     },
 

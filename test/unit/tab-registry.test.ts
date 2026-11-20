@@ -28,7 +28,10 @@ class FakeSafari implements TabBackend {
   };
   /** 켜 두면 settle 이 「문서를 떠나는 중」이라고 답한다. */
   leaving = false;
-  settle = async (a: { windowId: number; index: number; key: string }): Promise<SettleResult> => {
+  /** settle 이 받은 waitUntil 기록. */
+  settleWaits: Array<string | undefined> = [];
+  settle = async (a: { windowId: number; index: number; key: string; waitUntil?: 'commit' }): Promise<SettleResult> => {
+    this.settleWaits.push(a.waitUntil);
     const t = this.tabs[a.index - 1];
     if (!t) return { status: 'gone' };
     const tab = { windowId: 1, index: a.index, title: t.url, url: t.url, isActive: false };
@@ -167,6 +170,15 @@ describe('TabRegistry', () => {
     expect(reg.ownedKeys()).toEqual([k]); // 키가 남았다
     expect(await reg.resolve(k)).toEqual({ windowId: 1, index: 1 }); // 이후에도 찾는다
     expect(await reg.closeOwned()).toBe(1);
+  });
+
+  test('settle: waitUntil commit 은 호스트까지 그대로 전해진다(안 주면 빈 값)', async () => {
+    const sf = new FakeSafari();
+    const reg = new TabRegistry(sf);
+    const k = openOwned(sf, reg, 'http://a/x');
+    await reg.settle(k);
+    await reg.settle(k, { waitUntil: 'commit' });
+    expect(sf.settleWaits).toEqual([undefined, 'commit']);
   });
 
   test('settle: 자리에 다른 키의 표시가 있으면 표시로 찾고, 못 찾을 때만 TAB_CLOSED 로 키를 지운다', async () => {
