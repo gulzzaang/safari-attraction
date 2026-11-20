@@ -38,7 +38,7 @@ GitHub 로그인이 안 돼 있으면 저장소를 내려받은 폴더로 설치
 /plugin install safari-attraction@safari-attraction
 ```
 
-플러그인은 `plugin/server.mjs`(부품을 한 파일로 묶은 서버)를 그 맥의 `node` 로 띄운다(Node 18 이상). 설치 뒤 새 세션부터 도구가 보인다.
+플러그인은 `plugin/server.mjs`(부품을 한 파일로 묶은 서버)를 그 맥의 `node` 로 띄운다. Node 는 `plugin/run.sh` 가 알아서 찾으니(PATH · 홈브루 · nvm · volta · asdf · fnm) Dock 에서 켠 Claude Code 에서도 되고, Node 18 이상이 있어야 한다. 설치 뒤 새 세션부터 도구가 보인다.
 
 ### 길 2. 홈브루
 
