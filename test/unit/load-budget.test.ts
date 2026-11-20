@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createJxaDriver } from "../../src/driver/jxa-driver.js";
+import { budgetTimeout, createJxaDriver } from "../../src/driver/jxa-driver.js";
 import { createReplSession } from "../../src/repl/context.js";
 import { createFakeDriver } from "../helpers/fake-driver.js";
 
@@ -53,6 +53,26 @@ describe("호스트가 페이지를 기다리는 시간(loadBudgetMs)", () => {
   });
 });
 
+describe("요청 시간 제한 늘리기", () => {
+  test("드라이버의 requestTimeoutMs 를 바탕으로 늘리고 115초를 넘지 않는다", () => {
+    expect(budgetTimeout(undefined, undefined, 20_000)).toBeUndefined();
+    expect(budgetTimeout(15_000, undefined, 20_000)).toBeUndefined();
+    expect(budgetTimeout(60_000, undefined, 20_000)).toBe(20_000 + 45_000 + 5_000);
+    expect(budgetTimeout(60_000, undefined, 30_000)).toBe(30_000 + 45_000 + 5_000); // requestTimeoutMs 를 줬을 때
+    expect(budgetTimeout(60_000, 40_000, 20_000)).toBe(40_000 + 45_000 + 5_000); // 요청마다 정한 제한(openWindow)이 바탕
+    expect(budgetTimeout(100_000, 40_000, 20_000)).toBe(115_000); // 상한
+  });
+  test("호스트에 넘기는 기다림은 100초까지, 요청 시간 제한은 requestTimeoutMs 기준", async () => {
+    const { calls, host } = stubHost();
+    const d = createJxaDriver({ host, requestTimeoutMs: 30_000 });
+    await d.openTab("http://x/", { loadBudgetMs: 500_000 });
+    expect(calls[0]!.args.loadBudgetMs).toBe(100_000);
+    expect(calls[0]!.timeoutMs).toBe(115_000);
+    await d.openTab("http://x/", { loadBudgetMs: 60_000 });
+    expect(calls[1]!.timeoutMs).toBe(30_000 + 45_000 + 5_000);
+  });
+});
+
 describe("REPL openTab 의 timeout", () => {
   test("정규화한 시간(기본 15초, 최대 110초)을 드라이버에 넘긴다", async () => {
     const d = createFakeDriver();
@@ -65,7 +85,7 @@ describe("REPL openTab 의 timeout", () => {
     d.answer = () => "complete|1|1";
     const s = createReplSession(d);
     await s.run('await openTab("http://a/"); await openTab("http://a/", { timeout: 2000 }); await openTab("http://a/", { timeout: 999999 })');
-    expect(seen).toEqual([15000, 2000, 110000]);
+    expect(seen).toEqual([15000, 2000, 100000]); // 호스트 기다림은 100초 상한
     await s.dispose();
   });
   test("timeout 을 줬는데 쓸 수 있게 안 되면 한국어 TIMEOUT 오류(탭은 남는다)", async () => {

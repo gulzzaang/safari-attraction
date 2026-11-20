@@ -31,7 +31,7 @@ export interface Spot {
 export type Guarded<T> = { stale: true } | { value: T; /** 일을 마친 뒤의 탭 주소(알면). */ url?: string };
 
 /** 호스트의 rebind 답. gone = 그 자리에 탭 없음, other = 그 자리에 다른 키의 표시가 있는 탭. */
-export type RebindResult = { status: "ok"; tab: RawTab } | { status: "gone" } | { status: "other" };
+export type RebindResult = { status: "ok"; tab: RawTab; /** 표시가 실제로 적혔는가(안 주면 적힌 것으로 본다). */ stamped?: boolean } | { status: "gone" } | { status: "other" };
 
 /**
  * 호스트의 settle 답(읽기 전용 확인). same = 자리의 탭에 이 키의 표시가 그대로(leaving: 문서를 떠나는 중),
@@ -39,7 +39,7 @@ export type RebindResult = { status: "ok"; tab: RawTab } | { status: "gone" } | 
  */
 export type SettleResult =
   | { status: "same"; leaving: boolean; tab: RawTab }
-  | { status: "navigated"; tab: RawTab }
+  | { status: "navigated"; tab: RawTab; /** 표시가 실제로 적혔는가(안 주면 적힌 것으로 본다). */ stamped?: boolean }
   | { status: "gone" }
   | { status: "other" };
 
@@ -263,7 +263,7 @@ export class TabRegistry {
     e.windowId = r.tab.windowId;
     e.index = r.tab.index;
     e.url = r.tab.url;
-    e.stamped = true;
+    e.stamped = r.stamped ?? true; // 표시를 못 적었으면 「표시 안 한 탭」으로 둬 다음에 자리 · 주소로 다시 알아본다
     e.blocked = false;
     return r.tab;
   }
@@ -296,7 +296,7 @@ export class TabRegistry {
     e.windowId = r.tab.windowId;
     e.index = r.tab.index;
     e.url = r.tab.url;
-    e.stamped = true;
+    e.stamped = r.status === "navigated" ? (r.stamped ?? true) : true; // commit 에서 표시를 못 적었으면 「표시 안 한 탭」으로 둔다
     e.blocked = false;
     return { navigated: r.status === "navigated", leaving: r.status === "same" && r.leaving, tab: r.tab };
   }

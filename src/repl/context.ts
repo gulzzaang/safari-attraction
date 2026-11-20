@@ -4,9 +4,9 @@ import { inspect } from "node:util";
 import { SafariError, type SafariDriver, type SafariErrorCode, type TabInfo } from "../driver/types.js";
 import { buildSnapshotSource, type SnapshotOptions } from "../snapshot/inpage.js";
 import { SnapshotStore, splitSnapshotMeta } from "../snapshot/store.js";
-import { LOAD_TIMEOUT_MS, parseWaitUntil, type WaitUntil } from "./load-state.js";
+import { LOAD_TIMEOUT_MS, MAX_HOST_BUDGET_MS, parseWaitUntil, type WaitUntil } from "./load-state.js";
 import { normTimeout } from "./locator.js";
-import { Page, type AiWindowAccess } from "./page.js";
+import { Page, WAIT_LOAD, type AiWindowAccess } from "./page.js";
 import { OutputBuffer } from "./output.js";
 import { hoistTopLevel } from "./transform.js";
 
@@ -173,9 +173,11 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     const budget = normTimeout(opts?.timeout, LOAD_TIMEOUT_MS);
     return {
       budget,
+      /** 호스트(사파리 쪽)가 기다리는 시간 — 호출 한 번의 120초 안에 끝나도록 100초까지만. */
+      hostBudget: Math.min(budget, MAX_HOST_BUDGET_MS),
       finish: async (pg: Page, more: "load" | "networkidle" | null): Promise<void> => {
         const state = more ?? (opts?.timeout !== undefined && opts?.timeout !== null ? "domcontentloaded" : null);
-        if (state) await pg.waitLoad(state, Math.max(1, budget - (Date.now() - t0)), budget);
+        if (state) await pg[WAIT_LOAD](state, Math.max(1, budget - (Date.now() - t0)), budget);
       },
     };
   };
@@ -195,12 +197,12 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     }
     let opened;
     try {
-      opened = await driver.openTab(String(url), { windowId: target, loadBudgetMs: wait.budget });
+      opened = await driver.openTab(String(url), { windowId: target, loadBudgetMs: wait.hostBudget });
     } catch (e) {
       // 창을 확인한 뒤 열기 전에 닫혔다면 맨 앞 창에 다시 연다. 창이 살아 있으면 원래 오류 그대로.
       if (target === undefined || (await windowExists(target))) throw e;
       backToFront();
-      opened = await driver.openTab(String(url), { loadBudgetMs: wait.budget });
+      opened = await driver.openTab(String(url), { loadBudgetMs: wait.hostBudget });
     }
     const { tab, frontAppChanged } = opened;
     if (frontAppChanged) log("주의: 사파리가 맨 앞으로 나왔어요");
@@ -230,7 +232,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     let front: boolean;
     let winId: number;
     if (aiWindowId === null) {
-      const r = await driver.openWindow(String(url), { width: Math.round(width), height: Math.round(height), loadBudgetMs: wait.budget });
+      const r = await driver.openWindow(String(url), { width: Math.round(width), height: Math.round(height), loadBudgetMs: wait.hostBudget });
       if (disposed) {
         await driver.closeWindow(r.windowId).catch(() => {});
         throw new Error("openAiWindow: 서버가 끝나는 중이라 창을 열 수 없음");
@@ -240,7 +242,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       front = r.frontAppChanged;
     } else {
       const id = (winId = aiWindowId);
-      const r = await driver.openTab(String(url), { windowId: id, loadBudgetMs: wait.budget });
+      const r = await driver.openTab(String(url), { windowId: id, loadBudgetMs: wait.hostBudget });
       if (disposed) {
         await driver.closeTab(r.tab.key).catch(() => {});
         throw new Error("openAiWindow: 서버가 끝나는 중이라 창을 열 수 없음");

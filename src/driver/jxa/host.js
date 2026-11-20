@@ -118,12 +118,14 @@ function usableState(readyState, hasBody, dclDone) {
 }
 
 // 새 문서가 쓸 수 있게 될 때까지(최대 args.loadBudgetMs, 기본 15초) 기다려 표시를 적고 탭 정보를 돌려준다(rebind · settle 이 함께 쓴다).
-// args.waitUntil === "commit" 이면 기다리지 않고 바로 표시를 적어 본다(적지 못해도 나중에 키로 다시 찾는다).
+// args.waitUntil === "commit" 이면 기다리지 않고 바로 표시를 적어 본다. 표시가 적혔는지는 stamped 로 알린다 —
+// 못 적었으면(false) Node 쪽이 그 탭을 「표시 안 한 탭」으로 기록해, 다음 일 때 자리 · 주소로 다시 알아보고 표시를 다시 적는다.
 function finishRebind(args, tab) {
   // 읽어 보아 표시가 남아 있는지 확인한다(뜨는 중에 적으면 지워질 수 있다).
   const budget = args.loadBudgetMs || 15000;
   const t1 = Date.now();
   const commitOnly = args.waitUntil === "commit";
+  let stamped = false;
   for (let attempt = 0; attempt < 5; attempt++) {
     for (; !commitOnly; ) {
       let ready = false;
@@ -140,13 +142,17 @@ function finishRebind(args, tab) {
     if (!again) return { status: "gone" };
     if (again.marker !== "" && again.marker !== args.key) return { status: "other" };
     stampTab(tab, args.key);
-    if (readMarker(tab) === args.key) break;
+    if (readMarker(tab) === args.key) {
+      stamped = true;
+      break;
+    }
     if (commitOnly) break;
     nap(0.1);
   }
   const win = Safari.windows.byId(args.windowId);
   return {
     status: "ok",
+    stamped,
     tab: {
       windowId: args.windowId,
       index: args.index,
@@ -362,7 +368,7 @@ const ops = {
       };
     }
     const r = finishRebind(args, p0.tab);
-    return r.status === "ok" ? { status: "navigated", tab: r.tab } : r;
+    return r.status === "ok" ? { status: "navigated", tab: r.tab, stamped: r.stamped } : r;
   },
 
   // 자리의 탭에 표시를 적는다(탭 붙잡기).

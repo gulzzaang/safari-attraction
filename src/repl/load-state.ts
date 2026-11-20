@@ -13,6 +13,11 @@ export const DEFAULT_NAV_WAIT: WaitUntil = "domcontentloaded";
 export const LOAD_TIMEOUT_MS = 15000;
 /** networkidle: 새 네트워크 요청이 이 시간 동안 없어야 한다. */
 export const NETWORK_IDLE_MS = 500;
+/** 리소스 기록 칸이 이미 찬 문서(첫 읽기에서 기록이 이 수 이상)는 새 요청이 기록에 안 남을 수 있어 개수를 믿을 수 없다 — 더 길게 조용해야 한다. */
+export const RESOURCE_BUFFER_FULL_AT = 250;
+export const NETWORK_IDLE_UNRELIABLE_MS = 1500;
+/** 호스트(사파리 쪽)가 페이지를 기다리는 시간의 상한. 호출 한 번이 120초 안에 끝나야 하니 호스트 기다림은 그보다 먼저 끝나야 한다. */
+export const MAX_HOST_BUDGET_MS = 100_000;
 
 /** waitUntil 값을 바로잡는다. 안 줬으면 기본(domcontentloaded). allowCommit 이 아니면 commit 은 오류. */
 export function parseWaitUntil(v: unknown, who: string, allowCommit: boolean): WaitUntil {
@@ -35,7 +40,8 @@ export function parseLoadStateArgs(a: unknown, b: unknown): { state: LoadState; 
   else if (a !== undefined && a !== null && typeof a === "object") timeout = (a as { timeout?: unknown }).timeout;
   else {
     state = a;
-    if (b !== undefined && b !== null && typeof b === "object") timeout = (b as { timeout?: unknown }).timeout;
+    if (typeof b === "number") timeout = b; // waitForLoadState('load', 5000)
+    else if (b !== undefined && b !== null && typeof b === "object") timeout = (b as { timeout?: unknown }).timeout;
   }
   const st = state === undefined || state === null ? "load" : (parseWaitUntil(state, "waitForLoadState", false) as LoadState);
   return { state: st, timeoutMs: normTimeout(timeout, LOAD_TIMEOUT_MS) };
@@ -56,8 +62,9 @@ export const usable = (r: LoadReading): boolean => r.readyState === "complete" |
 export function loadPollSource(state: LoadState): string {
   const base = "document.readyState + '|' + (document.body ? 1 : 0) + '|' + (((performance.getEntriesByType('navigation')[0] || {}).domContentLoadedEventEnd || 0) > 0 ? 1 : 0)";
   if (state !== "networkidle") return base;
-  // 리소스 기록 칸(기본 250개)이 차면 새 요청이 기록에 안 남아 변화를 못 보므로 칸을 키워 둔다.
-  return `(function(){try{if(performance.setResourceTimingBufferSize)performance.setResourceTimingBufferSize(2000)}catch(e){}var r=performance.getEntriesByType('resource');var l=r[r.length-1];return ${base} + '|' + r.length + '|' + (l ? Math.round(l.responseEnd) : 0)})()`;
+  // 기록 칸(기본 250개)이 차면 새 요청이 기록에 안 남아 변화를 못 본다. 문서마다 한 번만, 아직 차지 않았을 때(기본 칸으로 보일 때)만 칸을 키운다 —
+  // 페이지가 스스로 정한 칸을 덮어쓰지 않으려고 이미 찬 문서는 건드리지 않는다(그때는 Node 쪽이 더 길게 기다린다).
+  return `(function(){var r=performance.getEntriesByType('resource');if(!window.__saRtb){window.__saRtb=1;try{if(r.length<${RESOURCE_BUFFER_FULL_AT}&&performance.setResourceTimingBufferSize)performance.setResourceTimingBufferSize(2000)}catch(e){}}var l=r[r.length-1];return ${base} + '|' + r.length + '|' + (l ? Math.round(l.responseEnd) : 0)})()`;
 }
 
 /** loadPollSource 의 답을 읽는다. 모르는 꼴(옛 시험 답 `complete` 등)도 앞부분만 보고 받아들인다. */
@@ -80,14 +87,21 @@ export function reached(state: Exclude<LoadState, "networkidle">, r: LoadReading
 export class IdleWatch {
   private lastSig: string | undefined;
   private since = 0;
+  private quietMs = NETWORK_IDLE_MS;
   feed(r: LoadReading, now: number): boolean {
+    if (this.lastSig === undefined && Number(r.sig.split("|")[0]) >= RESOURCE_BUFFER_FULL_AT) this.quietMs = NETWORK_IDLE_UNRELIABLE_MS; // 첫 읽기부터 기록 칸이 찼다
     if (r.readyState !== "complete" || r.sig !== this.lastSig || this.lastSig === undefined) {
       this.lastSig = r.sig;
       this.since = now;
       return false;
     }
-    return now - this.since >= NETWORK_IDLE_MS;
+    return now - this.since >= this.quietMs;
   }
+}
+
+/** goto · reload · 뒤로 · 앞으로가 새 문서를 못 받고 시간이 다 된 오류 글(서버가 느리거나 응답이 없다). */
+export function navTimeoutMessage(timeoutMs: number): string {
+  return `페이지가 ${timeoutMs}ms 안에 이동하지 않음(새 문서가 안 떠 아직 이전 페이지 — 서버가 느리거나 응답이 없음)`;
 }
 
 /** 시간 초과 오류 글. */

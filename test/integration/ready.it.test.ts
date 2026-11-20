@@ -184,5 +184,41 @@ describeIt('열기 · 이동은 쓸 수 있을 때 돌아온다(domcontentloaded
     expect(Number(ms)).toBeLessThan(5000);
     expect(msg.join(' ')).toContain('쓸 수 있게 되지 않음');
   });
+
+  test('응답이 10초 걸리는 주소: goto {timeout:15000} 은 새 문서에서 끝난다(주소가 바뀐다)', async () => {
+    const out = await run(`
+      const k1 = await openTab(${JSON.stringify(basic())});
+      const t0 = Date.now();
+      await k1.goto(${JSON.stringify(basic() + '&delay=10000')}, { timeout: 15000 });
+      console.log(Date.now() - t0 >= 9000, k1.url().includes('delay=10000'), await k1.title());
+    `);
+    expect(out).toBe('true true 기본 시험 페이지');
+  });
+
+  test('응답이 10초 걸리는 주소: goto {timeout:3000} 은 3초쯤 뒤 한국어 TIMEOUT 이고 옛 문서에서 끝난 척하지 않는다', async () => {
+    const r = await s.run(`
+      const k2 = await openTab(${JSON.stringify(basic())});
+      const t0 = Date.now();
+      try { await k2.goto(${JSON.stringify(basic() + '&delay=10000')}, { timeout: 3000 }); console.log('오류 없음'); }
+      catch (e) { console.log(Date.now() - t0, e.code || '', e.message); }
+    `);
+    expect(r.error).toBeUndefined();
+    expect(r.output).not.toContain('오류 없음');
+    const line = r.output.split('\n').pop()!; // (사용자가 사파리를 앞으로 가져오면 앞에 「주의」 줄이 붙는다)
+    const [ms] = line.split(' ');
+    expect(Number(ms)).toBeGreaterThanOrEqual(2800);
+    expect(Number(ms)).toBeLessThan(6000);
+    expect(line).toContain('3000ms 안에 이동하지 않음');
+  });
+
+  test('아직 로딩 중(load 가 3초 뒤)인 문서에서 시작한 6초 걸리는 이동 — 옛 문서의 pageshow(persisted 아님)가 「떠나는 중」을 지워 일찍 끝나지 않는다', async () => {
+    const out = await run(`
+      const m1 = await openTab(${JSON.stringify(slow())});
+      const t0 = Date.now();
+      await m1.goto(${JSON.stringify(basic() + '&delay=6000')});
+      console.log(Date.now() - t0 >= 5000, m1.url().includes('delay=6000'), await m1.title());
+    `);
+    expect(out).toBe('true true 기본 시험 페이지');
+  });
 });
 

@@ -7,7 +7,7 @@ import {
   type ActionOk,
   type ActionOp,
 } from "./inpage-actions.js";
-import { IdleWatch, LOAD_TIMEOUT_MS, loadPollSource, loadTimeoutMessage, parseLoadReading, parseLoadStateArgs, parseWaitUntil, reached, type LoadState, type WaitUntil } from "./load-state.js";
+import { IdleWatch, LOAD_TIMEOUT_MS, MAX_HOST_BUDGET_MS, loadPollSource, loadTimeoutMessage, navTimeoutMessage, parseLoadReading, parseLoadStateArgs, parseWaitUntil, reached, type LoadState, type WaitUntil } from "./load-state.js";
 import { DEFAULT_ACTION_WAIT_MS, LocatorImpl, globToRegExp, isRegExp, normTimeout, parseSelector, roleStep, textStep, toMatcher, type ActOpts, type Locator, type LocatorHost, type RoleOpts, type Step, type WaitCond, type WaitState } from "./locator.js";
 
 export type { Locator } from "./locator.js";
@@ -18,9 +18,17 @@ const DEFAULT_WAIT_MS = 30000;
 /** 「아직 아님」일 때 다시 확인하는 간격. 기다림은 Node 쪽에서 돈다 — 뒤쪽 탭에서는 사파리가 페이지의 타이머를 멈추기 때문이다. */
 const ACTION_POLL_MS = 150;
 
+/**
+ * 열기(openTab)가 호스트 기다림 뒤에 이어서 기다릴 때 쓰는 Page 의 방법 이름표. 심볼이라 REPL 코드의 page.… 로는 부를 수 없다
+ * (REPL 에는 이 파일의 내보내기가 들어 있지 않다).
+ */
+export const WAIT_LOAD = Symbol("safari-attraction.waitLoad");
+
 /** 이동 하나의 기다림: 무엇을 기다리고(wait) 얼마 안에(timeoutMs, 시작 t0 부터) 끝내야 하는지. 호스트가 기다리는 시간도 남은 만큼으로 맞춘다. */
 class NavWait {
   private readonly t0 = Date.now();
+  /** 이동이 새 문서로 끝났다고 settleTab 이 알렸나(옛 문서에서는 load 상태를 기다리지 않는다). */
+  replaced = false;
   constructor(
     readonly wait: WaitUntil,
     readonly timeoutMs: number,
@@ -29,9 +37,14 @@ class NavWait {
   remaining(): number {
     return Math.max(1, Math.round(this.timeoutMs - (Date.now() - this.t0)));
   }
-  /** settleTab 에 줄 인자. */
+  /** 시간이 다 됐나. */
+  expired(): boolean {
+    return Date.now() - this.t0 >= this.timeoutMs;
+  }
+  /** settleTab 에 줄 인자: 호스트가 새 문서를 기다리는 시간은 남은 시간만큼(상한 MAX_HOST_BUDGET_MS). */
   settleOpts(): { waitUntil?: "commit"; loadBudgetMs: number } {
-    return this.wait === "commit" ? { waitUntil: "commit", loadBudgetMs: this.remaining() } : { loadBudgetMs: this.remaining() };
+    const loadBudgetMs = Math.min(this.remaining(), MAX_HOST_BUDGET_MS);
+    return this.wait === "commit" ? { waitUntil: "commit", loadBudgetMs } : { loadBudgetMs };
   }
 }
 
@@ -45,9 +58,9 @@ const LEAVING_MAX_MS = 8000;
 const TIMER_WAIT_MAX_MS = 1000;
 /** evaluate 가 돌려준 약속을 기다리는 시간. */
 const PENDING_TIMEOUT_MS = 15000;
-/** 찍기 전에 새로 현재가 된 탭이 그려지길(visibilityState) 기다리는 최대 시간과 확인 간격. */
 /** 찍기 전에 load 를 더 기다리는 최대 시간. */
 const CAPTURE_LOAD_WAIT_MS = 3000;
+/** 찍기 전에 새로 현재가 된 탭이 그려지길(visibilityState) 기다리는 최대 시간과 확인 간격. */
 const PAINT_WAIT_MS = 1000;
 const PAINT_POLL_MS = 100;
 /** 보이게 된 뒤 한 번 더 그려지도록 두는 시간(프레임 한두 장). */
@@ -102,24 +115,21 @@ export class Page {
   async goto(url: string, opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<void> {
     const nav = new NavWait(parseWaitUntil(opts?.waitUntil, "goto", true), normTimeout(opts?.timeout, LOAD_TIMEOUT_MS));
     await this.act("goto", { url }, nav);
-    await this.afterNav(nav);
+    if (nav.replaced) await this.afterNav(nav); // 같은 문서 안 이동(#해시만 바뀜)이면 기다릴 새 문서가 없다
   }
 
   /**
    * 불러오기 상태를 기다린다. state 를 안 주면 'load'(readyState 가 complete — Playwright 와 같다).
-   * 'domcontentloaded': 문서를 쓸 수 있을 때(interactive 이상 + body). 'networkidle': load 뒤 새 리소스 요청이 500ms 없을 때.
+   * 'domcontentloaded': DOMContentLoaded 이벤트가 끝나고 body 가 있을 때(defer 스크립트가 돈 뒤). 'networkidle': load 뒤 새 리소스 요청이 500ms 없을 때.
    * 옛 꼴 waitForLoadState(밀리초) 도 받는다. 기다림은 Node 쪽에서 돈다(뒤쪽 탭에서는 사파리가 페이지 타이머를 멈춘다).
    */
   async waitForLoadState(state?: LoadState | number | { timeout?: number }, opts?: { timeout?: number }): Promise<void> {
     const p = parseLoadStateArgs(state, opts);
-    await this.waitLoad(p.state, p.timeoutMs);
+    await this[WAIT_LOAD](p.state, p.timeoutMs);
   }
 
-  /**
-   * 남은 시간(remainingMs) 안에 상태가 되길 기다린다. 시간 초과 오류에는 부른 쪽이 처음 정한 전체 시간(totalMs, 안 주면 remainingMs)을 적는다.
-   * @internal 열기(openTab)가 호스트 기다림 뒤에 이어서 기다릴 때 쓴다.
-   */
-  async waitLoad(state: LoadState, remainingMs: number, totalMs: number = remainingMs): Promise<void> {
+  /** 남은 시간(remainingMs) 안에 상태가 되길 기다린다. 시간 초과 오류에는 부른 쪽이 처음 정한 전체 시간(totalMs, 안 주면 remainingMs)을 적는다. */
+  async [WAIT_LOAD](state: LoadState, remainingMs: number, totalMs: number = remainingMs): Promise<void> {
     const source = loadPollSource(state);
     const idle = state === "networkidle" ? new IdleWatch() : null;
     const t0 = Date.now();
@@ -135,7 +145,7 @@ export class Page {
   /** 이동 뒤 기다림. commit 은 이미 주소가 바뀐 것을 settleTab 이 봤으니 더 기다리지 않는다. */
   private async afterNav(nav: NavWait): Promise<void> {
     if (nav.wait === "commit") return;
-    await this.waitLoad(nav.wait, nav.remaining(), nav.timeoutMs);
+    await this[WAIT_LOAD](nav.wait, nav.remaining(), nav.timeoutMs);
   }
 
   /**
@@ -229,10 +239,11 @@ export class Page {
     loadNav(); // 잘못된 waitUntil 은 기다리기 전에 알린다
     const commit = opts?.waitUntil === "commit";
     const timeoutMs = normTimeout(opts?.timeout, DEFAULT_WAIT_MS);
+    const urlNav = new NavWait(commit ? "commit" : "domcontentloaded", timeoutMs); // 호스트가 새 문서를 기다리는 시간은 이 기다림의 남은 시간
     const t0 = Date.now();
     for (;;) {
       this.checkAbort();
-      const cur = (await this.driver.settleTab(this.key, commit ? { waitUntil: "commit" } : undefined)).tab.url;
+      const cur = (await this.driver.settleTab(this.key, urlNav.settleOpts())).tab.url;
       this.knownUrl = cur;
       if (test(cur)) break;
       if (Date.now() - t0 > timeoutMs) {
@@ -342,15 +353,16 @@ export class Page {
    */
   private async waitLoadedForCapture(): Promise<void> {
     const t0 = Date.now();
-    try {
-      for (;;) {
-        this.checkAbort();
-        const st = parseLoadReading(await this.driver.runJs(this.key, loadPollSource("load"))).readyState;
-        if ((st !== "loading" && st !== "interactive") || Date.now() - t0 >= CAPTURE_LOAD_WAIT_MS) return; // 알 수 없는 값도 기다리지 않는다
-        await sleep(100);
+    for (;;) {
+      this.checkAbort(); // 호출이 끝났으면 멈춘다(읽기 실패를 삼키는 try 밖)
+      let st: string;
+      try {
+        st = parseLoadReading(await this.driver.runJs(this.key, loadPollSource("load"))).readyState;
+      } catch {
+        return; // 읽지 못하면 기다리지 않고 찍는다
       }
-    } catch (e) {
-      if (/이미 끝나서/.test((e as Error)?.message ?? "")) throw e; // 호출이 끝났으면 멈춘다
+      if ((st !== "loading" && st !== "interactive") || Date.now() - t0 >= CAPTURE_LOAD_WAIT_MS) return; // 알 수 없는 값도 기다리지 않는다
+      await sleep(100);
     }
   }
 
@@ -410,15 +422,22 @@ export class Page {
     const sent = await this.read("nav", { dir });
     const before = typeof sent.v === "string" ? sent.v : (this.driver.lastUrl?.(this.key) ?? this.knownUrl);
     const t0 = Date.now();
+    let replaced = false;
     for (;;) {
       this.checkAbort();
       const r = await this.driver.settleTab(this.key, nav.settleOpts());
       this.knownUrl = r.tab.url;
-      if (r.navigated || (dir !== "reload" && r.tab.url !== before && !r.leaving)) break;
-      if (Date.now() - t0 > (r.leaving ? LEAVING_MAX_MS : EXPECT_NAV_GRACE_MS + 500)) break;
+      if (r.navigated || (dir !== "reload" && r.tab.url !== before && !r.leaving)) {
+        replaced = true;
+        break;
+      }
+      // 문서를 떠나는 중이면 새 문서가 올 때까지 호출한 시간만큼 기다리고(느린 서버), 그래도 안 오면 시간 초과 — 옛 문서에서 끝난 척하지 않는다.
+      if (r.leaving) {
+        if (nav.expired()) throw new SafariError("TIMEOUT", navTimeoutMessage(nav.timeoutMs));
+      } else if (Date.now() - t0 > EXPECT_NAV_GRACE_MS + 500) break; // 갈 곳이 없었다(이동 없음)
       await sleep(100);
     }
-    await this.afterNav(nav);
+    if (replaced) await this.afterNav(nav);
   }
 
   /**
@@ -460,17 +479,26 @@ export class Page {
 
   /**
    * 동작 뒤 탭이 이동했는지 settleTab(읽기 전용)으로 보고, 새 문서면 거기서 끝낸다(표시는 settleTab 이 다시 적는다).
-   * 아직 옛 문서면: 문서를 떠나는 중이면 더 기다리고, 동작이 이동을 일으킬 게 분명했으면(expectNav) 잠깐 더 기다리고, 아니면 끝.
+   * 아직 옛 문서면: 문서를 떠나는 중이면 더 기다리고(이동을 직접 시킨 goto 같은 호출(nav)은 호출한 시간이 다 될 때까지 기다린 뒤 시간 초과 오류를 낸다 —
+   * 다른 동작(클릭 등)은 LEAVING_MAX_MS 까지만 기다리고 그대로 돌려준다), 동작이 이동을 일으킬 게 분명했으면(expectNav) 잠깐 더 기다리고, 아니면 끝.
+   * 호스트가 새 문서를 기다리는 시간은 항상 남은 시간으로 맞춘다(nav 가 없으면 기본 15초).
    */
   private async settle(expectNav: boolean, timerMs: number, nav?: NavWait): Promise<void> {
     if (timerMs >= 0 && timerMs <= TIMER_WAIT_MAX_MS) await sleep(timerMs + 80);
+    const budget = nav ?? new NavWait("domcontentloaded", LOAD_TIMEOUT_MS);
     const t0 = Date.now();
     for (;;) {
       this.checkAbort();
-      const r = await this.driver.settleTab(this.key, nav?.settleOpts());
-      if (r.navigated) return;
-      const waited = Date.now() - t0;
-      if (r.leaving ? waited > LEAVING_MAX_MS : !expectNav || waited > EXPECT_NAV_GRACE_MS) return;
+      const r = await this.driver.settleTab(this.key, budget.settleOpts());
+      if (r.navigated) {
+        budget.replaced = true;
+        return;
+      }
+      if (r.leaving) {
+        if (nav) {
+          if (nav.expired()) throw new SafariError("TIMEOUT", navTimeoutMessage(nav.timeoutMs));
+        } else if (Date.now() - t0 > LEAVING_MAX_MS) return;
+      } else if (!expectNav || Date.now() - t0 > EXPECT_NAV_GRACE_MS) return;
       await sleep(100);
     }
   }

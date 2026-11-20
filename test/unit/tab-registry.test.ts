@@ -28,15 +28,18 @@ class FakeSafari implements TabBackend {
   };
   /** 켜 두면 settle 이 「문서를 떠나는 중」이라고 답한다. */
   leaving = false;
+  /** 켜 두면 commit 이동에서 표시를 못 적었다고(stamped:false) 답한다. */
+  loseStampOnCommit = false;
   /** settle 이 받은 waitUntil 기록. */
   settleWaits: Array<string | undefined> = [];
-  settle = async (a: { windowId: number; index: number; key: string; waitUntil?: 'commit' }): Promise<SettleResult> => {
+  settle = async (a: { windowId: number; index: number; key: string; waitUntil?: 'commit'; loadBudgetMs?: number }): Promise<SettleResult> => {
     this.settleWaits.push(a.waitUntil);
     const t = this.tabs[a.index - 1];
     if (!t) return { status: 'gone' };
     const tab = { windowId: 1, index: a.index, title: t.url, url: t.url, isActive: false };
     if (t.marker === a.key) return { status: 'same', leaving: this.leaving, tab };
     if (t.marker !== '') return { status: 'other' };
+    if (this.loseStampOnCommit && a.waitUntil === 'commit') return { status: 'navigated', tab, stamped: false }; // 새 문서가 떴지만 표시를 못 적었다
     t.marker = a.key;
     return { status: 'navigated', tab };
   };
@@ -170,6 +173,32 @@ describe('TabRegistry', () => {
     expect(reg.ownedKeys()).toEqual([k]); // 키가 남았다
     expect(await reg.resolve(k)).toEqual({ windowId: 1, index: 1 }); // 이후에도 찾는다
     expect(await reg.closeOwned()).toBe(1);
+  });
+
+  test('settle: commit 이동에서 표시를 못 적어도 붙인(사용자) 탭의 키를 잃지 않는다 — 다음 일에서 자리 · 주소로 알아보고 표시를 다시 적는다', async () => {
+    const sf = new FakeSafari();
+    sf.tabs.push({ url: 'http://a/x', marker: '' });
+    const reg = new TabRegistry(sf);
+    const k = reg.nextKey();
+    reg.register(k, 1, 1, 'http://a/x', { owned: false, stamped: true }); // 붙인 사용자 탭(표시는 적혀 있었다)
+    sf.tabs[0] = { url: 'http://a/y', marker: '' }; // 전체 이동 — 새 문서에는 표시가 없다
+    sf.loseStampOnCommit = true;
+    const r = await reg.settle(k, { waitUntil: 'commit' });
+    expect(r.navigated).toBe(true);
+    expect(sf.tabs[0]!.marker).toBe(''); // 못 적었다
+    // 호스트의 runJs 처럼: 표시가 키이거나, 표시 안 한 탭(unstamped)이면서 표시가 없고 주소가 같을 때만 돈다(그리고 표시를 적는다)
+    const guard = async (s: Spot): Promise<Guarded<string>> => {
+      const t = sf.tabs[s.index - 1];
+      if (!t) return { stale: true };
+      if (t.marker === s.key || (s.unstamped && t.marker === '' && t.url === s.url)) {
+        t.marker = s.key;
+        return { value: 'ok' };
+      }
+      return { stale: true };
+    };
+    expect(await reg.withTab(k, guard)).toBe('ok'); // TAB_CLOSED 없이
+    expect(sf.tabs[0]!.marker).toBe(reg.markerOf(k));
+    expect(reg.urlOf(k)).toBe('http://a/y'); // 키가 그대로 남았다
   });
 
   test('settle: waitUntil commit 은 호스트까지 그대로 전해진다(안 주면 빈 값)', async () => {

@@ -14,14 +14,27 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 const LAUNCH_WAIT_MS = 15_000;
 /** 새 창을 찾는 데(최대 10초)와 페이지가 뜨는 데(최대 15초)가 걸린다. */
 const OPEN_WINDOW_TIMEOUT_MS = 40_000;
-/** 호스트가 페이지를 기다리는 기본 최대 시간(host.js 의 기본값과 같다). 부른 쪽이 더 길게 정하면 요청 시간 제한도 그만큼 늘린다. */
+/** 호스트가 페이지를 기다리는 기본 최대 시간(host.js 의 기본값과 같다). */
 const DEFAULT_LOAD_BUDGET_MS = 15_000;
+/** 호스트가 페이지를 기다리는 시간의 상한(호출 한 번 120초 안에 끝나도록). */
+const MAX_LOAD_BUDGET_MS = 100_000;
 /** 페이지 기다림 말고 호스트 요청이 더 걸릴 수 있는 여유. */
 const LOAD_REQUEST_SLACK_MS = 5_000;
+/** 호스트 요청 시간 제한의 상한. */
+const MAX_REQUEST_TIMEOUT_MS = 115_000;
 
-/** 페이지 기다림 시간(loadBudgetMs)을 늘렸을 때 호스트 요청 시간 제한(밀리초). 기본이면 undefined(호스트 기본값을 쓴다). */
-const budgetTimeout = (loadBudgetMs: number | undefined, base: number | undefined): number | undefined =>
-  loadBudgetMs !== undefined && loadBudgetMs > DEFAULT_LOAD_BUDGET_MS ? (base ?? DEFAULT_REQUEST_TIMEOUT_MS) + (loadBudgetMs - DEFAULT_LOAD_BUDGET_MS) + LOAD_REQUEST_SLACK_MS : base;
+/** 호스트가 기다릴 시간을 바로잡는다(상한 100초). 안 주면 undefined. */
+const clampBudget = (loadBudgetMs: number | undefined): number | undefined =>
+  loadBudgetMs === undefined ? undefined : Math.min(Math.max(1, Math.round(loadBudgetMs)), MAX_LOAD_BUDGET_MS);
+
+/**
+ * 페이지 기다림 시간(loadBudgetMs)을 기본(15초)보다 늘렸을 때 호스트 요청 시간 제한(밀리초). 기본이면 base 그대로(undefined 면 호스트 기본값).
+ * base 는 그 요청의 원래 제한(안 정했으면 드라이버의 requestTimeoutMs). 늘린 제한도 115초를 넘지 않는다.
+ */
+export function budgetTimeout(loadBudgetMs: number | undefined, base: number | undefined, requestTimeoutMs: number): number | undefined {
+  if (loadBudgetMs === undefined || loadBudgetMs <= DEFAULT_LOAD_BUDGET_MS) return base;
+  return Math.min((base ?? requestTimeoutMs) + (loadBudgetMs - DEFAULT_LOAD_BUDGET_MS) + LOAD_REQUEST_SLACK_MS, MAX_REQUEST_TIMEOUT_MS);
+}
 
 export const SAFARI_BUNDLE_ID = "com.apple.Safari";
 
@@ -72,7 +85,9 @@ export function opError(op: string, e: unknown): SafariError {
 export type HostLike = Pick<JxaHost, "call" | "close">;
 
 export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLike } = {}): SafariDriver {
-  const host: HostLike = opts.host ?? new JxaHost(opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+  const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const host: HostLike = opts.host ?? new JxaHost(requestTimeoutMs);
+  const withBudget = (loadBudgetMs: number | undefined, base?: number) => budgetTimeout(clampBudget(loadBudgetMs), base, requestTimeoutMs);
 
   async function call<T>(op: string, args: object = {}, timeoutMs?: number): Promise<T> {
     try {
@@ -90,7 +105,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     probe: (windowId, index, timeoutMs) => call<Probe>("probe", { windowId, index }, timeoutMs),
     stamp: (windowId, index, key) => call<boolean>("stamp", { windowId, index, key }),
     rebind: (a) => call<RebindResult>("rebind", a),
-    settle: (a) => call<SettleResult>("settle", a, budgetTimeout(a.loadBudgetMs, undefined)),
+    settle: (a) => call<SettleResult>("settle", { ...a, loadBudgetMs: clampBudget(a.loadBudgetMs) }, withBudget(a.loadBudgetMs)),
     close: (spot, urlOnly, timeoutMs) => call<Guarded<null>>("closeTab", { ...guardArgs(spot), urlOnly }, timeoutMs),
   });
 
@@ -206,14 +221,14 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     async openTab(url, o = {}) {
       const before = await frontBundleId();
       const key = registry.nextKey();
-      const args = { url, windowId: o.windowId, key: registry.markerOf(key), loadBudgetMs: o.loadBudgetMs }; // 페이지에는 서버마다 다른 표시를 적는다
+      const args = { url, windowId: o.windowId, key: registry.markerOf(key), loadBudgetMs: clampBudget(o.loadBudgetMs) }; // 페이지에는 서버마다 다른 표시를 적는다
       let raw: RawTab & { stamped: boolean };
       try {
-        raw = await call("openTab", args, budgetTimeout(o.loadBudgetMs, undefined));
+        raw = await call("openTab", args, withBudget(o.loadBudgetMs));
       } catch (e) {
         if (!(e instanceof SafariError && e.code === "SAFARI_NOT_RUNNING")) throw e;
         await launchSafari();
-        raw = await call("openTab", args, budgetTimeout(o.loadBudgetMs, undefined));
+        raw = await call("openTab", args, withBudget(o.loadBudgetMs));
       }
       registry.register(key, raw.windowId, raw.index, raw.url, { owned: true, stamped: raw.stamped });
       const { stamped: _stamped, ...rest } = raw;
@@ -225,12 +240,12 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     async openWindow(url, o = {}) {
       const before = await frontBundleId();
       const key = registry.nextKey();
-      const args = { url, key: registry.markerOf(key), loadBudgetMs: o.loadBudgetMs };
+      const args = { url, key: registry.markerOf(key), loadBudgetMs: clampBudget(o.loadBudgetMs) };
       type Opened = { windowId: number; tab: RawTab; stamped: boolean };
       const idsBefore = await windowIdsNow(); // 시간을 넘겨 호스트가 죽어도 새 창을 알아보는 기준
       let raw: Opened;
       try {
-        raw = await call<Opened>("openWindow", args, budgetTimeout(o.loadBudgetMs, OPEN_WINDOW_TIMEOUT_MS));
+        raw = await call<Opened>("openWindow", args, withBudget(o.loadBudgetMs, OPEN_WINDOW_TIMEOUT_MS));
       } catch (e) {
         if (e instanceof SafariError && e.code === "TIMEOUT") throw await cleanupAfterTimeout(e, idsBefore, args.key);
         throw e;

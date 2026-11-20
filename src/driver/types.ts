@@ -76,15 +76,15 @@ export interface SafariDriver {
   rebindTab(tabKey: string): Promise<TabInfo>;
   /**
    * 동작 뒤 탭이 제자리에서 이동했는지 본다 — rebindTab 의 읽기 전용 짝. 이동하지 않았으면(탭에 이 키의 표시가 그대로)
-   * navigated:false(leaving: 문서를 떠나는 중이니 더 기다려야 할 수 있다). 새 문서가 떴으면(표시가 없음) 다 뜰 때까지 기다려
+   * navigated:false(leaving: 문서를 떠나는 중이니 더 기다려야 할 수 있다). 새 문서가 떴으면(표시가 없음) 쓸 수 있을 때까지 기다려
    * 표시를 다시 적고 navigated:true. 표시가 없다는 이유로 키를 지우지 않는다 — 다른 키의 표시가 있거나 탭이 정말 없을 때만
-   * TAB_CLOSED(그때만 키를 지운다). 「다 뜰 때」는 문서를 쓸 수 있게 될 때(readyState 가 interactive · complete 이고 body 가 있음 — domcontentloaded)이고,
+   * TAB_CLOSED(그때만 키를 지운다). 「쓸 수 있을 때」는 DOMContentLoaded 이벤트가 끝나고 body 가 있을 때(또는 readyState complete — domcontentloaded)이고,
    * opts.waitUntil 이 "commit" 이면 새 문서가 보이는 즉시 끝낸다.
-   * opts.loadBudgetMs 는 호스트가 쓸 수 있을 때를 기다리는 최대 시간(기본 15초). 넘기면 기다림만 끝내고 그대로 돌려준다(시간 초과 오류는 부른 쪽 몫).
+   * opts.loadBudgetMs 는 호스트가 쓸 수 있을 때를 기다리는 최대 시간(기본 15초, 상한 100초). 넘기면 기다림만 끝내고 그대로 돌려준다(시간 초과 오류는 부른 쪽 몫).
    */
   settleTab(tabKey: string, opts?: { waitUntil?: "commit"; loadBudgetMs?: number }): Promise<{ navigated: boolean; leaving: boolean; tab: TabInfo }>;
   /**
-   * 활성화 없이 새 창을 열고(앞 앱을 바꾸지 않는다), 크기를 맞추고, 사파리 창 순서 맨 뒤로 보내고, 페이지가 뜰 때까지 기다린다.
+   * 활성화 없이 새 창을 열고(앞 앱을 바꾸지 않는다), 크기를 맞추고, 사파리 창 순서 맨 뒤로 보내고, 페이지를 쓸 수 있을 때까지(domcontentloaded) 기다린다.
    * frontAppChanged 는 openTab 과 같은 뜻(사파리가 맨 앞으로 나왔나).
    * 창과 그 탭은 우리 것(owned). width · height 는 창 안 페이지 크기(innerWidth · innerHeight)다.
    */

@@ -28,6 +28,9 @@ describe("waitUntil · waitForLoadState 인자 풀기", () => {
     expect(parseLoadStateArgs(3000, undefined)).toEqual({ state: "load", timeoutMs: 3000 });
     expect(parseLoadStateArgs({ timeout: 2500 }, undefined)).toEqual({ state: "load", timeoutMs: 2500 });
   });
+  test("waitForLoadState('load', 5000) 처럼 숫자를 둘째 인자로 줘도 시간으로 본다", () => {
+    expect(parseLoadStateArgs("load", 5000)).toEqual({ state: "load", timeoutMs: 5000 });
+  });
   test("시간 제한은 110초까지로 바로잡는다", () => {
     expect(parseLoadStateArgs("load", { timeout: 999_999 }).timeoutMs).toBe(MAX_WAIT_MS);
     expect(parseLoadStateArgs(0, undefined).timeoutMs).toBe(MAX_WAIT_MS);
@@ -66,6 +69,20 @@ describe("읽은 값으로 상태 판단", () => {
 });
 
 describe("IdleWatch(networkidle 판단)", () => {
+  test("첫 읽기부터 리소스 기록이 250개 이상이면(칸이 찬 문서) 개수를 믿지 못하니 1500ms 조용해야 한다", () => {
+    const full = parseLoadReading("complete|1|1|250|900");
+    const w = new IdleWatch();
+    w.feed(full, 0);
+    expect(w.feed(full, 600)).toBe(false);
+    expect(w.feed(full, 1499)).toBe(false);
+    expect(w.feed(full, 1500)).toBe(true);
+  });
+  test("읽는 식은 문서마다 한 번만, 기록 칸이 안 찼을 때만 칸을 키운다", () => {
+    const src = loadPollSource("networkidle");
+    expect(src).toContain("__saRtb");
+    expect(src).toContain("r.length<250");
+    expect(src.match(/setResourceTimingBufferSize/g)).toHaveLength(2); // 있는지 확인 + 부르기(매 읽기마다 부르지 않는다)
+  });
   const r = (state: string, sig: string) => parseLoadReading(`${state}|1|1|${sig}`);
   test("load 가 끝난 뒤 변화 없이 500ms 가 지나야 한다", () => {
     const w = new IdleWatch();
@@ -194,11 +211,10 @@ describe("Page 의 이동은 기본으로 domcontentloaded 까지만 기다린�
     expect(Date.now() - t0).toBeLessThan(1500);
     expect((log.settleOpts[0] as { loadBudgetMs: number }).loadBudgetMs).toBeLessThanOrEqual(300);
   });
-  test("goto {timeout} 은 최대 110초로 바로잡아 호스트에 넘긴다", async () => {
+  test("goto {timeout} 은 110초로 바로잡고 호스트에는 100초까지만 넘긴다", async () => {
     const { page, log } = fake(["complete|1|1"]);
     await page.goto("http://x/next", { timeout: 9_999_999 });
-    expect((log.settleOpts[0] as { loadBudgetMs: number }).loadBudgetMs).toBeLessThanOrEqual(110_000);
-    expect((log.settleOpts[0] as { loadBudgetMs: number }).loadBudgetMs).toBeGreaterThan(100_000);
+    expect((log.settleOpts[0] as { loadBudgetMs: number }).loadBudgetMs).toBe(100_000);
   });
   test("goto 에 잘못된 waitUntil 은 페이지를 건드리기 전에 오류", async () => {
     const { page, log } = fake(["complete|1"]);

@@ -13,7 +13,7 @@ Drive the user's real, logged-in Safari with JavaScript. New tabs open in the ba
 Read values with console.log (the last expression is NOT printed). Errors come back with isError.
 
 전역 / Globals:
-- openTab(url) → Page. 뒤쪽 탭을 열고 쓸 수 있게 되면(domcontentloaded) 돌려준다 — load 까지 필요하면 page.waitForLoadState('load'|'networkidle'). openTab/goto return once the page is usable (domcontentloaded). 열린 탭은 \`page\`(현재)와 \`tabs\`(배열)에 들어간다.
+- openTab(url) → Page. 뒤쪽 탭을 열고 페이지를 쓸 수 있게 되면(domcontentloaded) 돌려준다(load 까지는 waitForLoadState('load'|'networkidle')). 열린 탭은 \`page\`(현재)와 \`tabs\`(배열)에 들어간다.
 - attachActiveBrowserTab() → 사용자가 지금 보고 있는 맨 앞 창의 활성 탭. "내가 보고 있는 페이지" 라고 할 때 쓴다. attachBrowserTab(key) / listBrowserTabs() 로 다른 탭도 고른다. 사용자의 탭은 떼기만 하고 닫지 않는다.
 - openAiWindow(url = "about:blank", {width = 1280, height = 800}) → Page. Claude 전용 사파리 창(사용자 창 맨 뒤, 앞 앱을 안 바꿈)을 열고 그 안의 탭을 돌려준다. 창은 세션에 하나라 다시 부르면 같은 창에 새 탭이 열린다. 사용자가 창을 닫았으면 WINDOW_CLOSED 안내가 나오고, openAiWindow() 를 다시 부르면 새 창이 열린다.
 - page.setViewportSize({width, height}) → {width, height}(실제 값) — 창 안 페이지 크기를 맞춘다(휴대폰 폭이면 390×844). 사파리 창은 약 336px 보다 좁게 못 줄인다. AI 창의 탭에서만.
@@ -29,7 +29,7 @@ Read values with console.log (the last expression is NOT printed). Errors come b
   By default only the visible screen is read; a final "… 아래에 더 있음(약 N줄)" line means there is more content below. After scrolling, snapshot prints only the newly visible lines (use {full: true} for everything).
 - Page: goto(url), url(), title(), waitForLoadState(), evaluate(fn | 식, arg), locator(ref | CSS).click() / .fill(값) / .textContent(), keyboard.press("Enter") / keyboard.type(글).
   url() 은 await 없이 바로 마지막으로 알려진 주소(글)를 돌려준다 — goto · 클릭 · evaluate 뒤에는 새 주소다. title() 은 페이지에 물어야 하므로 await 가 필요하다.
-  Page.url() returns the last known address immediately (a string, no await; updated after goto / clicks / evaluate); title() is async and needs await.
+  Page.url() returns the last known address immediately (a string, no await; updated after goto / clicks / evaluate); title() is async and needs await. openTab / goto return once the page is usable (domcontentloaded); add waitForLoadState('load' | 'networkidle') if needed.
 - Playwright 식도 된다 / Playwright-style API: page.waitForURL(글·glob·RegExp·함수)/waitForSelector/waitForTimeout/reload/goBack/goForward/content, page.click·fill·check·selectOption·textContent 등 Locator 동작은 page.동작(선택자,…) 로도, getByRole/getByText/getByLabel/getByPlaceholder/getByTestId. Locator: first/last/nth/count/all/locator/filter({hasText})/getBy…/innerText/inputValue/getAttribute/isVisible/isChecked/isEnabled/check/uncheck/selectOption/press/type/pressSequentially/hover/focus/scrollIntoViewIfNeeded/waitFor. 엄격하지 않다: 동작은 보이는 첫 번째에(first()/nth() 는 글자 그대로), count()/all() 은 전부, 요소가 나타날 때까지 최대 10초 기다린다({timeout}). 선택자 text= role= :has-text >> 도 된다. Non-strict: actions use the first visible match (first()/nth() literal), count()/all() see all; they wait up to 10 s ({timeout}).
 - fetch(url, init) → {status, ok, headers(보통 객체), text(), json()}. 현재 page 안에서 돌아 그 페이지의 쿠키로 나가고 CORS · CSP 를 따른다.
 - sleep(ms), URL, URLSearchParams, structuredClone, TextEncoder/Decoder, atob/btoa.
