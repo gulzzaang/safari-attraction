@@ -207,6 +207,20 @@ describe("REPL 세부", () => {
       expect((await s.run("console.log(await snapshot(page))")).output).not.toContain("문단 3");
     });
 
+    test("N4: .diff 를 읽으면(console.log(a.diff)) 바로 올라가 같은 호출의 다음 읽기가 그 기준을 쓴다", async () => {
+      text = mk(0, [1, 2, 3]);
+      await start();
+      const r = await s.run("const a1 = await snapshot(page); console.log(a1.diff); console.log(await snapshot(page))");
+      expect(r.output.split("\n").at(-1)).toBe("변화 없음");
+    });
+
+    test("N4: .tree 만 읽는 것은 올리지 않는다", async () => {
+      text = mk(0, [1, 2, 3]);
+      await start();
+      const r = await s.run("const a2 = await snapshot(page); a2.tree.length; console.log(await snapshot(page))");
+      expect(r.output).toContain("문단 1"); // 앞 읽기는 안 쳤으니 전체
+    });
+
     test("같은 호출에서 찍은 뒤 다시 읽어도 앞 읽기가 반영된다", async () => {
       text = mk(0, [1, 2, 3]);
       await start();

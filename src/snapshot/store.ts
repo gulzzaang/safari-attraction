@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { capSnapshot, diffDetailed, scrollDiffSnapshot, type DiffMode } from "./diff.js";
 import type { SnapshotOptions } from "./inpage.js";
 
@@ -20,6 +21,12 @@ export const MAX_SEEN = 50_000;
 /** ref 없는 줄을 글만으로 찾는 기억의 접두어(화면 맨 위 첫 줄 전용). */
 const PLAIN = "p:";
 const REF_RE = /\[ref=(e\d+)\](?!.*\[ref=e)/;
+/** 값이 글자 하나로 바뀔 수 있는 조작 요소(체크 · 입력칸 등). 이런 ref 줄이 기준 줄일 때는 글이 바뀌어도 같은 기준으로 본다. */
+const FORM_ROLE_RE = /^\s*- (?:checkbox|radio|textbox|combobox|slider|file) /;
+
+/** 기억이 커지지 않게 긴 글 대신 짧은 해시를 쓴다(96비트라 겹칠 일이 없다). */
+const short = (s: string): string => createHash("sha1").update(s).digest("base64url").slice(0, 16);
+const plainKey = (line: string): string => PLAIN + short(line);
 
 /**
  * 줄마다 정체(key)와 값(val)을 낸다. ref 가 있는 줄은 ref 로(같은 요소가 같은 글이면 같은 줄), ref 가 없는 줄은
@@ -36,12 +43,13 @@ function identities(lines: string[]): Array<{ key: string; val: string }> {
   lines.forEach((l, i) => {
     const m = REF_RE.exec(l);
     if (m) {
-      out.push({ key: "r:" + m[1], val: l });
-      anchor = "r:" + m[1];
+      out.push({ key: "r:" + m[1], val: short(l) });
+      // 화면 조각을 재활용하는 목록(같은 ref 에 다른 글)에서 뒤 줄이 가려지지 않게, 조작 요소가 아니면 기준에 글의 해시도 넣는다.
+      anchor = "r:" + m[1] + (FORM_ROLE_RE.test(l) ? "" : "#" + short(l));
       anchorAt = i;
       return;
     }
-    out.push({ key: "t:" + anchor + "\n" + (i - anchorAt) + "\n" + l, val: "" });
+    out.push({ key: "t:" + short(anchor + "\n" + (i - anchorAt) + "\n" + l), val: "" });
     if (count.get(l) === 1) {
       anchor = "u:" + l;
       anchorAt = i;
@@ -167,7 +175,7 @@ export class SnapshotStore {
       const id = curIds[i]!;
       if (baseSeen.get(id.key) === id.val) return true;
       // 화면 맨 위 첫 줄은 윗줄이 (화면 밖이라) 늘 머리 줄로 바뀌어 보이므로, ref 없는 줄은 글만 같아도 본 줄로 친다.
-      return i === 1 && !REF_RE.test(l) && baseSeen.has(PLAIN + l);
+      return i === 1 && !REF_RE.test(l) && baseSeen.has(plainKey(l));
     };
 
     let text: string;
@@ -202,14 +210,14 @@ export class SnapshotStore {
               const id = curIds[i]!;
               if (old.seen.get(id.key) !== id.val) return;
               remember(seen, id.key, id.val);
-              if (id.key.startsWith("t:")) remember(seen, PLAIN + curLines[i]!, "");
+              if (id.key.startsWith("t:")) remember(seen, plainKey(curLines[i]!), "");
             });
           }
         }
         // 사라졌다고 알린 줄은 본 줄에서 뺀다(다시 나타나면 새로 보여 준다).
         for (const j of removed) {
           const id = oldIds[j]!;
-          const keys = id.key.startsWith("t:") ? [id.key, PLAIN + oldLines[j]!] : [id.key];
+          const keys = id.key.startsWith("t:") ? [id.key, plainKey(oldLines[j]!)] : [id.key];
           for (const key of keys) {
             if (!seen.has(key)) continue;
             const was = seen.get(key)!;
@@ -222,7 +230,7 @@ export class SnapshotStore {
           if (idx === null) return;
           const id = curIds[idx]!;
           const entries: Array<[string, string]> = [[id.key, id.val]];
-          if (id.key.startsWith("t:")) entries.push([PLAIN + curLines[idx]!, ""]);
+          if (id.key.startsWith("t:")) entries.push([plainKey(curLines[idx]!), ""]);
           for (const [key, val] of entries) {
             const was = seen.get(key);
             remember(seen, key, val);

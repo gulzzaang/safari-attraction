@@ -307,17 +307,16 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     // 찍힌 출력(16KB 로 잘렸을 수도 있다)에 맞춰 맞춘다. 찍지 않고 .tree 만 쓰면 아무것도 읽은 것으로 치지 않는다.
     const pending = store.read(pg.key, o, raw);
     const tree = splitSnapshotMeta(raw).tree;
-    const result: SnapshotResult = { tree, diff: pending.text };
-    slots.getStore()?.buf.watch(pending); // console.log(result.diff) 처럼 글로 찍은 것도 호출이 끝날 때 알아본다
+    const read = (): string => {
+      pending.commit();
+      slots.getStore()?.buf.watch(pending); // 호출이 끝날 때 실제로 찍힌 만큼에 맞춰 잘린 줄을 도로 뺀다
+      return pending.text;
+    };
+    // .diff 를 읽는 것은 찍으려는 것으로 본다(console.log(r.diff)). .tree 는 읽어도 아무것도 올리지 않는다.
+    const result = { tree } as SnapshotResult;
+    Object.defineProperty(result, "diff", { get: read, enumerable: true });
     // console.log(result) 는 바뀐 곳 글을 찍는다.
-    Object.defineProperty(result, inspect.custom, {
-      value: () => {
-        pending.commit();
-        slots.getStore()?.buf.watch(pending);
-        return pending.text;
-      },
-      enumerable: false,
-    });
+    Object.defineProperty(result, inspect.custom, { value: read, enumerable: false });
     return result;
   };
 

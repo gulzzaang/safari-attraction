@@ -48,7 +48,8 @@ export class OutputBuffer {
   /** 줄을 이어 붙이고 16KB 에서 자른다(읽기 결과와 같은 자르기). */
   text(): string {
     const out = capSnapshot(this.lines.join("\n"));
-    for (const p of this.watched) p.settle(out);
+    // 나중에 올린 것부터 되돌려야 기억이 실제로 보인 상태로 돌아간다.
+    for (const p of [...this.watched].reverse()) p.settle(out);
     this.watched.clear();
     return out;
   }

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { capSnapshot, diffSnapshot, SNAPSHOT_LIMIT_BYTES } from '../../src/snapshot/diff.js';
+import { OutputBuffer } from '../../src/repl/output.js';
 import { SnapshotStore } from '../../src/snapshot/store.js';
 
 const a = ['- title: "시험" [url=http://x/]', '- heading "제목"', '- button "저장" [ref=e1]', '- link "목록" [ref=e2]'].join('\n');
@@ -368,5 +369,30 @@ describe('SnapshotStore — 내리며 읽기', () => {
     };
     expect(run(title)).toBe(NOTHING); // 같은 주소의 새로고침: 이월
     expect(run('- title: "다른" [url=http://y/]').split('\n').slice(1)).toContain(para(3)); // 다른 문서: 이월 안 함
+  });
+  test('N1: 화면 조각을 재활용해 같은 ref 에 다른 글이 오면 바로 뒤 줄도 새 줄이다(체크 토글의 이웃은 아니다)', () => {
+    const s = new SnapshotStore();
+    s.diff('t', {}, raw('0,0', ['- link "결과 11" [ref=e1]', '- paragraph "$10"']));
+    const r = s.diff('t', {}, raw('0,500', ['- link "결과 21" [ref=e1]', '- paragraph "$10"']));
+    expect(r.text.split('\n').slice(1)).toEqual(['- link "결과 21" [ref=e1]', '- paragraph "$10"']);
+    // 체크박스(조작 요소)가 기준이면 글이 바뀌어도 이웃은 그대로 본 줄
+    const s2 = new SnapshotStore();
+    const box = (c: boolean) => `- checkbox "동의" [ref=e5]${c ? ' [checked]' : ''}`;
+    s2.diff('t', {}, raw('0,0', [box(true), para(1)]));
+    expect(s2.diff('t', {}, raw('0,500', [box(false), para(1)])).text.split('\n').slice(1)).toEqual([box(false)]);
+  });
+
+  test('N3: 같은 범위에서 두 번 읽어 둘 다 잘리면 나중 것부터 되돌려 기준이 처음으로 돌아온다', () => {
+    const s = new SnapshotStore();
+    const buf = new OutputBuffer();
+    const a = s.read('t', {}, raw('0,0', [para(1), para(2)]));
+    buf.watch(a);
+    a.commit();
+    const b = s.read('t', {}, raw('0,0', [para(1), para(3)]));
+    buf.watch(b);
+    b.commit();
+    buf.log('가'.repeat(20000)); // 둘 다 16KB 밖으로 밀려 안 보인다
+    buf.text();
+    expect(s.last('t', {})).toBeUndefined();
   });
 });
