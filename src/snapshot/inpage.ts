@@ -166,10 +166,10 @@ const PAGE_FN = String.raw`function (o) {
       if (SKIP_TAGS[tg] || c.getAttribute('aria-hidden') === 'true' || c.hidden) return;
       var disp = 'inline';
       if (tg !== 'SLOT') {
-        try { disp = c.ownerDocument.defaultView.getComputedStyle(c).display; } catch (x) {}
+        try { var cs = c.ownerDocument.defaultView.getComputedStyle(c); disp = cs.display; if (cs.visibility === 'hidden' || cs.visibility === 'collapse') return; } catch (x) {}
         if (disp === 'none') return;
       }
-      var pad = disp.indexOf('inline') !== 0 && disp !== 'contents';
+      var pad = (disp.indexOf('inline') !== 0 && disp !== 'contents') || tg === 'BR';
       if (pad) s += ' ';
       if (tg === 'SLOT' && typeof c.assignedNodes === 'function') {
         var an = c.assignedNodes({ flatten: true });
@@ -184,16 +184,12 @@ const PAGE_FN = String.raw`function (o) {
     return clip(s, limit);
   }
   function fullText(el) { return flatText(el, NAME_MAX); }
-  // 안쪽 조종 요소의 이름이 비었을 때, 그 shadow 호스트(들)의 aria-label · title · 평평한 글을 빌린다.
+  // 안쪽 조종 요소의 이름이 비었을 때, 바로 그 shadow 호스트의 aria-label · title · 평평한 글을 빌린다(더 바깥 호스트까지는 올라가지 않는다 — 앱 전체 글이 이름이 되는 것을 막는다).
   function hostName(el) {
-    var r = el.getRootNode && el.getRootNode(), h;
-    for (var depth = 0; r && r.host && depth < 5; depth++) {
-      h = r.host;
-      var n = clip(h.getAttribute('aria-label') || '', NAME_MAX) || clip(h.getAttribute('title') || '', NAME_MAX) || flatText(h, NAME_MAX);
-      if (n) return n;
-      r = h.getRootNode && h.getRootNode();
-    }
-    return '';
+    var r = el.getRootNode && el.getRootNode();
+    if (!r || !r.host) return '';
+    var h = r.host;
+    return clip(h.getAttribute('aria-label') || '', NAME_MAX) || clip(h.getAttribute('title') || '', NAME_MAX) || flatText(h, NAME_MAX);
   }
 
   function roleOf(el) {
