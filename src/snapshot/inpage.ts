@@ -78,16 +78,113 @@ export const DEEP_SOURCE = String.raw`
   }
 `;
 
+
+/**
+ * 페이지 안 공용 「역할 · 이름」 계산(소스 글). snapshot 의 줄(`button "보내기"`)과 locator 의 getByRole(name)이 같은 규칙을 쓰도록 둘 다 이 글을 끼운다.
+ *   roleOf(el)          snapshot 이 쓰는 역할(link · button · textbox · checkbox …, 모르면 generic)
+ *   nameInfo(el, role)  {name, val} — snapshot 줄의 이름(60자로 잘림)과 따로 보일 값
+ *   flatText(root, n)   평평한 트리의 글(slot · 열린 shadow 안쪽 포함)을 n 자로 자른 것
+ * 백틱 · 달러-중괄호는 쓰지 않는다(String.raw).
+ */
+export const NAME_SOURCE = String.raw`
+  var NAME_MAX = 60;
+  var SKIP_TAGS = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, SVG: 1, svg: 1 };
+  function clip(s, n) { s = String(s).replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+  // 평평한 트리의 글(innerText · textContent 는 사파리에서 slot 에 배정된 노드를 빼 먹는다):
+  // slot 은 배정된 노드(없으면 slot 안의 기본 내용), shadow 호스트는 shadow root 안, 숨은 것 · svg 등은 건너뛴다.
+  function flatText(root, limit) {
+    var s = '', cap = limit * 3;
+    function visit(c) {
+      if (s.length > cap) return;
+      if (c.nodeType === 3) { s += c.nodeValue; return; }
+      if (c.nodeType !== 1) return;
+      var tg = c.tagName;
+      if (SKIP_TAGS[tg] || c.getAttribute('aria-hidden') === 'true' || c.hidden) return;
+      var disp = 'inline';
+      if (tg !== 'SLOT') {
+        try { var cs = c.ownerDocument.defaultView.getComputedStyle(c); disp = cs.display; if (cs.visibility === 'hidden' || cs.visibility === 'collapse') return; } catch (x) {}
+        if (disp === 'none') return;
+      }
+      var pad = (disp.indexOf('inline') !== 0 && disp !== 'contents') || tg === 'BR';
+      if (pad) s += ' ';
+      if (tg === 'SLOT' && typeof c.assignedNodes === 'function') {
+        var an = c.assignedNodes({ flatten: true });
+        if (an.length) for (var i = 0; i < an.length; i++) visit(an[i]);
+        else kids(c);
+      } else if (c.shadowRoot) kids(c.shadowRoot);
+      else kids(c);
+      if (pad) s += ' ';
+    }
+    function kids(n) { for (var c = n.firstChild; c; c = c.nextSibling) { if (s.length > cap) return; visit(c); } }
+    if (root.nodeType === 11) kids(root); else visit(root);
+    return clip(s, limit);
+  }
+  function fullText(el) { return flatText(el, NAME_MAX); }
+  // 안쪽 조종 요소의 이름이 비었을 때, 바로 그 shadow 호스트의 aria-label · title · 평평한 글을 빌린다(더 바깥 호스트까지는 올라가지 않는다 — 앱 전체 글이 이름이 되는 것을 막는다).
+  function hostName(el) {
+    var r = el.getRootNode && el.getRootNode();
+    if (!r || !r.host) return '';
+    var h = r.host;
+    return clip(h.getAttribute('aria-label') || '', NAME_MAX) || clip(h.getAttribute('title') || '', NAME_MAX) || flatText(h, NAME_MAX);
+  }
+
+  function roleOf(el) {
+    var r = el.getAttribute('role');
+    if (r && /^(button|link|tab|checkbox|menuitem)$/.test(r)) return r;
+    var t = el.tagName;
+    if (t === 'A') return 'link';
+    if (t === 'BUTTON') return 'button';
+    if (t === 'SELECT') return 'combobox';
+    if (t === 'TEXTAREA') return 'textbox';
+    if (t === 'SUMMARY') return 'summary';
+    if (t === 'INPUT') {
+      var ty = (el.getAttribute('type') || 'text').toLowerCase();
+      if (ty === 'checkbox' || ty === 'radio') return ty;
+      if (/^(button|submit|reset|image)$/.test(ty)) return 'button';
+      if (ty === 'file') return 'file';
+      if (ty === 'range') return 'slider';
+      return 'textbox';
+    }
+    if (el.isContentEditable) return 'textbox';
+    return r || 'generic';
+  }
+
+  function labelOf(el) {
+    try { if (el.labels && el.labels.length) return clip(el.labels[0].textContent || '', NAME_MAX); } catch (e) {}
+    return '';
+  }
+
+  // 이름이 정해지는 순서: aria-label → placeholder → (입력칸이면) 연결된 label → (아니면) 평평한 글 → 단추의 value → title · alt → 그 shadow 호스트의 이름.
+  // 이름이 비었을 때만 값을 이름 자리에 올리고, 그때는 값을 따로 보이지 않는다.
+  function nameInfo(el, role) {
+    var t = el.tagName;
+    var isPw = t === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'password';
+    var isField = t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT';
+    var val = '';
+    if (isField && !isPw && role !== 'checkbox' && role !== 'radio') {
+      if (t === 'SELECT') { var so = el.selectedOptions && el.selectedOptions[0]; val = so ? so.textContent : ''; }
+      else val = el.value || '';
+    }
+    var name = clip(el.getAttribute('aria-label') || '', NAME_MAX)
+      || clip(el.getAttribute('placeholder') || '', NAME_MAX)
+      || (isField ? labelOf(el) : '')
+      || (isField ? '' : fullText(el))
+      || (role === 'button' && !isPw ? clip(el.getAttribute('value') || '', NAME_MAX) : '')
+      || clip(el.getAttribute('title') || el.getAttribute('alt') || '', NAME_MAX);
+    if (!name) name = hostName(el);
+    if (!name && val && !isPw) { name = clip(val, NAME_MAX); val = ''; }
+    return { name: name, val: val };
+  }
+`;
+
 // 페이지 안에서 도는 코드. 일부러 문자열로 둔다(번들러가 함수 이름을 끼워 넣어도 깨지지 않게).
 const PAGE_FN = String.raw`function (o) {
-` + DEEP_SOURCE + String.raw`
-  var NAME_MAX = 60, TEXT_MAX = 140, SOFT_CHARS = 20000;
+` + DEEP_SOURCE + NAME_SOURCE + String.raw`
+  var TEXT_MAX = 140, SOFT_CHARS = 20000;
   var INTERACTIVE = 'a,button,input,select,textarea,summary,[role=button],[role=link],[role=tab],[role=checkbox],[role=menuitem],[contenteditable=""],[contenteditable=true]';
   var BLOCK = 'h1,h2,h3,h4,p,li,td,th';
   var BLOCK_ROLE = { H1: 'heading', H2: 'heading', H3: 'heading', H4: 'heading', P: 'paragraph', LI: 'listitem', TD: 'cell', TH: 'cell' };
-  var SKIP_TAGS = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, SVG: 1, svg: 1 };
 
-  function clip(s, n) { s = String(s).replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
   function q(s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; }
 
   var title = clip(document.title || '', TEXT_MAX);
@@ -177,87 +274,9 @@ const PAGE_FN = String.raw`function (o) {
     })(el);
     return clip(s, TEXT_MAX);
   }
-  // 평평한 트리의 글(innerText · textContent 는 사파리에서 slot 에 배정된 노드를 빼 먹는다):
-  // slot 은 배정된 노드(없으면 slot 안의 기본 내용), shadow 호스트는 shadow root 안, 숨은 것 · svg 등은 건너뛴다.
-  function flatText(root, limit) {
-    var s = '', cap = limit * 3;
-    function visit(c) {
-      if (s.length > cap) return;
-      if (c.nodeType === 3) { s += c.nodeValue; return; }
-      if (c.nodeType !== 1) return;
-      var tg = c.tagName;
-      if (SKIP_TAGS[tg] || c.getAttribute('aria-hidden') === 'true' || c.hidden) return;
-      var disp = 'inline';
-      if (tg !== 'SLOT') {
-        try { var cs = c.ownerDocument.defaultView.getComputedStyle(c); disp = cs.display; if (cs.visibility === 'hidden' || cs.visibility === 'collapse') return; } catch (x) {}
-        if (disp === 'none') return;
-      }
-      var pad = (disp.indexOf('inline') !== 0 && disp !== 'contents') || tg === 'BR';
-      if (pad) s += ' ';
-      if (tg === 'SLOT' && typeof c.assignedNodes === 'function') {
-        var an = c.assignedNodes({ flatten: true });
-        if (an.length) for (var i = 0; i < an.length; i++) visit(an[i]);
-        else kids(c);
-      } else if (c.shadowRoot) kids(c.shadowRoot);
-      else kids(c);
-      if (pad) s += ' ';
-    }
-    function kids(n) { for (var c = n.firstChild; c; c = c.nextSibling) { if (s.length > cap) return; visit(c); } }
-    if (root.nodeType === 11) kids(root); else visit(root);
-    return clip(s, limit);
-  }
-  function fullText(el) { return flatText(el, NAME_MAX); }
-  // 안쪽 조종 요소의 이름이 비었을 때, 바로 그 shadow 호스트의 aria-label · title · 평평한 글을 빌린다(더 바깥 호스트까지는 올라가지 않는다 — 앱 전체 글이 이름이 되는 것을 막는다).
-  function hostName(el) {
-    var r = el.getRootNode && el.getRootNode();
-    if (!r || !r.host) return '';
-    var h = r.host;
-    return clip(h.getAttribute('aria-label') || '', NAME_MAX) || clip(h.getAttribute('title') || '', NAME_MAX) || flatText(h, NAME_MAX);
-  }
-
-  function roleOf(el) {
-    var r = el.getAttribute('role');
-    if (r && /^(button|link|tab|checkbox|menuitem)$/.test(r)) return r;
-    var t = el.tagName;
-    if (t === 'A') return 'link';
-    if (t === 'BUTTON') return 'button';
-    if (t === 'SELECT') return 'combobox';
-    if (t === 'TEXTAREA') return 'textbox';
-    if (t === 'SUMMARY') return 'summary';
-    if (t === 'INPUT') {
-      var ty = (el.getAttribute('type') || 'text').toLowerCase();
-      if (ty === 'checkbox' || ty === 'radio') return ty;
-      if (/^(button|submit|reset|image)$/.test(ty)) return 'button';
-      if (ty === 'file') return 'file';
-      if (ty === 'range') return 'slider';
-      return 'textbox';
-    }
-    if (el.isContentEditable) return 'textbox';
-    return r || 'generic';
-  }
-
-  function labelOf(el) {
-    try { if (el.labels && el.labels.length) return clip(el.labels[0].textContent || '', NAME_MAX); } catch (e) {}
-    return '';
-  }
-
   function describe(el) {
-    var role = roleOf(el), t = el.tagName;
-    var isPw = t === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'password';
-    var isField = t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT';
-    var val = '';
-    if (isField && !isPw && role !== 'checkbox' && role !== 'radio') {
-      if (t === 'SELECT') { var so = el.selectedOptions && el.selectedOptions[0]; val = so ? so.textContent : ''; }
-      else val = el.value || '';
-    }
-    var name = clip(el.getAttribute('aria-label') || '', NAME_MAX)
-      || clip(el.getAttribute('placeholder') || '', NAME_MAX)
-      || (isField ? labelOf(el) : '')
-      || (isField ? '' : fullText(el))
-      || (role === 'button' && !isPw ? clip(el.getAttribute('value') || '', NAME_MAX) : '')
-      || clip(el.getAttribute('title') || el.getAttribute('alt') || '', NAME_MAX);
-    if (!name) name = hostName(el);
-    if (!name && val && !isPw) { name = clip(val, NAME_MAX); val = ''; } // 이름이 없을 때만 값을 이름 자리에
+    var role = roleOf(el);
+    var ni = nameInfo(el, role), name = ni.name, val = ni.val;
     var line = '- ' + role + ' ' + q(name) + ' [ref=' + refOf(el) + ']';
     if (val && !(role === 'button')) line += ' [value=' + q(clip(val, 40)) + ']';
     if ((role === 'checkbox' || role === 'radio') && el.checked) line += ' [checked]';

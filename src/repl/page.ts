@@ -7,6 +7,13 @@ import {
   type ActionOk,
   type ActionOp,
 } from "./inpage-actions.js";
+import { LocatorImpl, globToRegExp, isRegExp, parseSelector, toMatcher, type Locator, type LocatorHost, type Step, type WaitState } from "./locator.js";
+
+export type { Locator } from "./locator.js";
+
+/** waitFor · waitForSelector · waitForURL 이 조건을 다시 확인하는 간격. */
+const WAIT_POLL_MS = 100;
+const DEFAULT_WAIT_MS = 30000;
 
 /** 사파리 창이 줄어드는 최소 폭(대략). */
 const MIN_WINDOW_WIDTH_PX = 336;
@@ -40,12 +47,6 @@ export interface AiWindowAccess {
   closed(windowId: number): void;
   /** 이 호출의 출력에 한 줄 남긴다. */
   note(line: string): void;
-}
-
-export interface Locator {
-  click(): Promise<void>;
-  fill(value: string): Promise<void>;
-  textContent(): Promise<string>;
 }
 
 /**
@@ -120,13 +121,89 @@ export class Page {
     return (s === undefined ? undefined : JSON.parse(s)) as Awaited<T>;
   }
 
-  /** ref(`e12`, snapshot 에서 본 것) 또는 CSS 선택자로 요소를 가리킨다. 요소는 동작할 때 찾는다. */
-  locator(ref: string): Locator {
-    return {
-      click: async () => void (await this.act("click", { ref })),
-      fill: async (value: string) => void (await this.act("fill", { ref, value: String(value) })),
-      textContent: async () => (await this.act("text", { ref })).text ?? "",
-    };
+  /** ref(`e12`, snapshot 에서 본 것) 또는 CSS 선택자(`text=글` 도 된다)로 요소를 가리킨다. 요소는 동작할 때 찾는다. */
+  locator(selector: string): Locator {
+    return this.rootLocator(parseSelector(selector));
+  }
+  getByRole(role: string, opts: { name?: string | RegExp; exact?: boolean } = {}): Locator {
+    return this.rootLocator({ k: "role", role: String(role).toLowerCase(), name: opts?.name === undefined ? undefined : toMatcher(opts.name), exact: !!opts?.exact });
+  }
+  getByText(text: string | RegExp, opts: { exact?: boolean } = {}): Locator {
+    return this.rootLocator({ k: "text", m: toMatcher(text), exact: !!opts?.exact });
+  }
+  getByLabel(text: string | RegExp, opts: { exact?: boolean } = {}): Locator {
+    return this.rootLocator({ k: "label", m: toMatcher(text), exact: !!opts?.exact });
+  }
+  getByPlaceholder(text: string | RegExp, opts: { exact?: boolean } = {}): Locator {
+    return this.rootLocator({ k: "placeholder", m: toMatcher(text), exact: !!opts?.exact });
+  }
+  getByTestId(id: string | RegExp): Locator {
+    return this.rootLocator({ k: "testid", m: toMatcher(id) });
+  }
+
+  // 선택자를 먼저 받는 줄임 동작(Playwright 의 page.click(sel) 꼴).
+  click = (sel: string) => this.locator(sel).click();
+  fill = (sel: string, value: string) => this.locator(sel).fill(value);
+  press = (sel: string, key: string) => this.locator(sel).press(key);
+  type = (sel: string, text: string) => this.locator(sel).type(text);
+  check = (sel: string) => this.locator(sel).check();
+  uncheck = (sel: string) => this.locator(sel).uncheck();
+  selectOption = (sel: string, value: Parameters<Locator["selectOption"]>[0]) => this.locator(sel).selectOption(value);
+  textContent = (sel: string) => this.locator(sel).textContent();
+  innerText = (sel: string) => this.locator(sel).innerText();
+  inputValue = (sel: string) => this.locator(sel).inputValue();
+  getAttribute = (sel: string, name: string) => this.locator(sel).getAttribute(name);
+  isVisible = (sel: string) => this.locator(sel).isVisible();
+
+  /** 처음 맞는 요소가 조건(state, 기본 visible)이 될 때까지. 돌려주는 Locator 는 그 선택자를 가리킨다. */
+  async waitForSelector(selector: string, opts: { state?: WaitState; timeout?: number } = {}): Promise<Locator> {
+    const loc = this.locator(selector);
+    await loc.waitFor({ state: opts?.state, timeout: opts?.timeout });
+    return loc;
+  }
+
+  async waitForTimeout(ms: number): Promise<void> {
+    await sleep(Number(ms) || 0);
+  }
+
+  /**
+   * 주소가 맞을 때까지 기다린다. 글은 정확히(또는 `*` · `**` · `?` · `{a,b}` 글 패턴), RegExp, 함수(URL 을 받는다) 모두 된다.
+   * 확인은 settleTab 으로 한다(이동 중에도 탭 키를 지키고 page.url() 도 새로 한다). 맞으면 새 문서가 다 뜰 때까지 기다린다.
+   */
+  async waitForURL(url: string | RegExp | ((u: URL) => boolean), opts: { timeout?: number } = {}): Promise<void> {
+    const test = urlTester(url);
+    const timeoutMs = opts?.timeout ?? DEFAULT_WAIT_MS;
+    const t0 = Date.now();
+    for (;;) {
+      const cur = (await this.driver.settleTab(this.key)).tab.url;
+      this.knownUrl = cur;
+      if (test(cur)) break;
+      if (timeoutMs !== 0 && Date.now() - t0 > timeoutMs) {
+        const what = typeof url === "function" ? "함수 조건" : String(url);
+        throw new Error(`${showSeconds(timeoutMs)}초 안에 주소가 ${what} 와(과) 맞지 않았어요 (지금 주소: ${cur})`);
+      }
+      await sleep(WAIT_POLL_MS);
+    }
+    await this.waitForLoadState();
+  }
+
+  /** 지금 문서를 다시 불러온다(같은 탭 · 같은 키). */
+  async reload(): Promise<void> {
+    await this.navigate("reload");
+  }
+  /** 뒤로 간다. 갈 곳이 없으면 잠깐 기다린 뒤 아무 일 없이 끝난다. */
+  async goBack(): Promise<void> {
+    await this.navigate("back");
+  }
+  async goForward(): Promise<void> {
+    await this.navigate("forward");
+  }
+
+  /** 문서 전체 HTML 글(doctype 포함, 안쪽 iframe · shadow 는 들어 있지 않다). */
+  content(): Promise<string> {
+    return this.evaluate<string>(
+      "(function(){var d=document.doctype;return (d?new XMLSerializer().serializeToString(d):'')+document.documentElement.outerHTML})()",
+    );
   }
 
   keyboard = {
@@ -206,6 +283,61 @@ export class Page {
     return this.run(buildActionSource(op, { ...args, tok: newToken() }), false);
   }
 
+  /** 읽기만 하는 동작 하나(이동을 일으키지 않으니 settleTab 확인은 하지 않는다). */
+  private async read(op: ActionOp, args: Record<string, unknown>) {
+    const res = JSON.parse(await this.driver.runJs(this.key, buildActionSource(op, { ...args, tok: newToken() }))) as ActionOk | ActionErr;
+    if (!res.ok) throw new Error(res.err);
+    return res.r;
+  }
+
+  private readonly host: LocatorHost = {
+    act: (op, args) => this.act(op, args),
+    read: (op, args) => this.read(op, args),
+    waitState: (chain, desc, state, timeoutMs) => this.waitState(chain, desc, state, timeoutMs),
+  };
+  private rootLocator(step: Step): Locator {
+    return new LocatorImpl(this.host, [step]);
+  }
+
+  /**
+   * 제자리 이동(reload · back · forward) 뒤 새 문서가 다 뜰 때까지. 되살아난(bfcache) 문서는 표시가 그대로라 새 문서로 보이지 않으므로,
+   * 주소가 바뀌었는지도 함께 본다. 갈 곳이 없으면(뒤로 갈 이력이 없음) 잠깐 기다린 뒤 그대로 끝낸다.
+   */
+  private async navigate(dir: "reload" | "back" | "forward"): Promise<void> {
+    const before = this.driver.lastUrl?.(this.key) ?? this.knownUrl;
+    await this.read("nav", { dir });
+    const t0 = Date.now();
+    for (;;) {
+      const r = await this.driver.settleTab(this.key);
+      this.knownUrl = r.tab.url;
+      if (r.navigated || (dir !== "reload" && r.tab.url !== before && !r.leaving)) break;
+      if (Date.now() - t0 > (r.leaving ? LEAVING_MAX_MS : EXPECT_NAV_GRACE_MS + 500)) break;
+      await sleep(100);
+    }
+    await this.waitForLoadState();
+  }
+
+  /**
+   * 요소 상태가 될 때까지 다시 확인한다. 한 번 확인할 때마다 settleTab 으로 이동을 먼저 확인한다(이동 중에도 키를 지킨다).
+   * hidden · detached 는 요소가 아예 없어도 된 것으로 친다.
+   */
+  private async waitState(chain: Step[], desc: string, state: WaitState, timeoutMs: number): Promise<void> {
+    const t0 = Date.now();
+    for (;;) {
+      await this.driver.settleTab(this.key);
+      const v = (await this.read("state", { chain, desc })).v as { n: number; vis: boolean } | undefined;
+      const n = v?.n ?? 0;
+      const vis = !!v?.vis;
+      const done = state === "visible" ? vis : state === "attached" ? n > 0 : state === "hidden" ? !vis : n === 0;
+      if (done) return;
+      if (timeoutMs !== 0 && Date.now() - t0 > timeoutMs) {
+        const ko = { visible: "보이게", hidden: "숨겨지게", attached: "나타나게", detached: "없어지게" }[state];
+        throw new Error(`${showSeconds(timeoutMs)}초 안에 ${desc} 가 ${ko} 되지 않았어요`);
+      }
+      await sleep(WAIT_POLL_MS);
+    }
+  }
+
   private async run(source: string, expectNav: boolean) {
     const raw = await this.driver.runJs(this.key, source);
     const res = JSON.parse(raw) as ActionOk | ActionErr;
@@ -250,3 +382,33 @@ export class Page {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+const showSeconds = (ms: number) => String(Math.round(ms) / 1000);
+
+/** waitForURL 의 인자(글 · 글 패턴 · RegExp · 함수)를 「주소 글 → 맞나」 함수로. */
+function urlTester(url: string | RegExp | ((u: URL) => boolean)): (cur: string) => boolean {
+  if (typeof url === "function") {
+    return (cur) => {
+      try {
+        return !!url(new URL(cur));
+      } catch {
+        return false;
+      }
+    };
+  }
+  if (isRegExp(url)) {
+    const re = new RegExp(url.source, url.flags.replace(/[gy]/g, ""));
+    return (cur) => re.test(cur);
+  }
+  const want = String(url);
+  const glob = /[*?{]/.test(want) ? globToRegExp(want) : null;
+  return (cur) => {
+    if (cur === want) return true;
+    if (glob) return glob.test(cur);
+    try {
+      return new URL(cur).href === new URL(want, cur).href; // 끝 / 처럼 같은 주소의 다른 꼴
+    } catch {
+      return false;
+    }
+  };
+}

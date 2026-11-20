@@ -9,9 +9,15 @@
  * 페이지 안에서 문자열을 eval 하는 곳은 없다(엄격한 CSP 에서도 돌도록).
  */
 
-import { DEEP_SOURCE } from "../snapshot/inpage.js";
+import { DEEP_SOURCE, NAME_SOURCE } from "../snapshot/inpage.js";
+import { LOCATOR_SOURCE } from "./inpage-locator.js";
 
-export type ActionOp = "click" | "fill" | "text" | "press" | "type" | "goto";
+/**
+ * 동작 이름. click · fill · text · prop · count · state · check · select · lpress · ltype · hover · focus · scroll 은 Locator 의 chain(args.chain)을
+ * 풀어 요소를 찾고 바로 동작한다. press · type 은 포커스된 요소에(keyboard), goto · nav 는 문서 이동이다.
+ */
+export const ACTION_OPS = ["click", "fill", "text", "prop", "count", "state", "check", "select", "lpress", "ltype", "hover", "focus", "scroll", "press", "type", "goto", "nav"] as const;
+export type ActionOp = (typeof ACTION_OPS)[number];
 
 /** 페이지 안에서 동작이 끝난 뒤 보내는 결과. */
 export interface ActionOk {
@@ -20,6 +26,8 @@ export interface ActionOk {
     /** 링크 · 폼 제출 · goto 처럼 문서를 떠나는 이동이 일어난 게 분명하다. */
     expectNav?: boolean;
     text?: string;
+    /** 값을 돌려주는 동작(prop · count · state · select)의 결과(JSON). */
+    v?: unknown;
     /** 동작 중 페이지가 setTimeout 으로 잡아 둔 가장 긴 지연(ms). 없으면 -1. 늦게 일어나는 이동(타이머 리다이렉트)을 기다릴지 정한다. */
     timerMs?: number;
     /** evaluate 결과를 JSON.stringify 한 글(undefined 면 없다). */
@@ -39,7 +47,9 @@ export function buildPendingReadSource(id: string): string {
 }
 
 export function buildActionSource(op: ActionOp, args: Record<string, unknown> & { tok: string }): string {
-  return `(function(A){${plant('A')}${DEEP_SOURCE}${PRELUDE}${BODY}})(${JSON.stringify({ ...args, op })})`;
+  // 요소를 찾는 동작(chain 이 있는 것)만 역할 · 이름 계산과 chain 풀이 코드를 함께 보낸다.
+  const loc = Array.isArray(args.chain) ? NAME_SOURCE + LOCATOR_SOURCE : '';
+  return `(function(A){${plant('A')}${DEEP_SOURCE}${loc}${PRELUDE}${BODY}})(${JSON.stringify({ ...args, op })})`;
 }
 
 const plant = (arg: string) => PLANT.split('__SA_ARG__').join(arg);
@@ -82,6 +92,8 @@ const PLANT = String.raw`
   if (!window.__saUnl) {
     window.__saUnl = 1;
     window.addEventListener('beforeunload', function () { window.__saLeaving = true; });
+    // 뒤로 · 앞으로 가기로 이 문서가 되살아나면(bfcache) 「떠나는 중」 깃발이 옛 값으로 남아 있으므로 내린다.
+    window.addEventListener('pageshow', function () { window.__saLeaving = false; });
   }
   var __saOrigST = window.setTimeout, __saMax = -1;
   function __saPatched(fn, ms) { var d = +ms || 0; if (d > __saMax) __saMax = d; return __saOrigST.apply(this, arguments); }
@@ -94,19 +106,6 @@ const PRELUDE = String.raw`
   function fail(msg) { var e = new Error(msg); e.saPlain = true; throw e; }
   // 요소가 든 문서의 창(iframe 안 요소는 그 iframe 창). 이벤트 · 값 대입은 그 창의 생성자로 만든다.
   function winOf(el) { return (el && el.ownerDocument && el.ownerDocument.defaultView) || window; }
-  // 요소를 찾는다: 문서 → 열린 shadow root → 같은 출처 iframe 순(ref 도 CSS 선택자도 같은 규칙).
-  function find(ref) {
-    var isRef = /^e\d+$/.test(ref);
-    var el;
-    try { el = __saDeepQuery(ref); }
-    catch (e) { fail('선택자가 잘못됨: ' + ref); }
-    if (!el) {
-      fail(isRef
-        ? ref + ' 요소를 찾을 수 없음 — 페이지가 바뀌었을 수 있으니 snapshot 을 다시 찍어 새 ref 를 쓰세요'
-        : '선택자에 맞는 요소 없음: ' + ref + ' — snapshot 으로 지금 화면을 확인하세요');
-    }
-    return el;
-  }
   function linkNav(a) {
     var h = a.getAttribute('href');
     if (!h || h.charAt(0) === '#' || /^\s*(javascript:|mailto:|tel:)/i.test(h)) return false;
@@ -129,6 +128,15 @@ const PRELUDE = String.raw`
     if (!e.defaultPrevented && (!tg || tg === '_self') && !(f && f.method && f.method.toLowerCase() === 'dialog')) sub.nav = true;
   }
   window.addEventListener('submit', onSubmit);
+  // 동작 동안 이 문서를 떠나는 이동(Navigation API 의 navigate 이벤트)이 시작됐나. 핸들러가 곧바로 location.href 를 바꾸는 경우도 잡는다.
+  // 같은 문서 안 이동(해시 · pushState) · 내려받기는 뺀다. Navigation API 가 없는 사파리에서는 이 신호 없이 예전처럼 돈다.
+  var navFired = false;
+  function onNavigate(e) {
+    if (e.hashChange || e.downloadRequest || (e.destination && e.destination.sameDocument)) return;
+    navFired = true;
+  }
+  var navApi = window.navigation && typeof window.navigation.addEventListener === 'function' ? window.navigation : null;
+  if (navApi) navApi.addEventListener('navigate', onNavigate);
 
   function mouse(type, el, x, y, buttons) {
     var W = winOf(el);
@@ -156,6 +164,26 @@ const PRELUDE = String.raw`
     var notPrevented = mouse('click', el, x, y, 0);
     var a = el.closest ? el.closest('a[href]') : null;
     return notPrevented && ((a && linkNav(a)) || sub.nav);
+  }
+
+  // Locator 의 chain 을 풀어 동작 대상 하나(보이는 첫 번째)를 고른다. 없으면 한국어 오류.
+  function locOne() {
+    var m = pwResolve(A.chain);
+    if (!m.length) {
+      var c = A.chain;
+      if (c.length === 1 && c[0].k === 'ref') fail(c[0].s + ' 요소를 찾을 수 없음 — 페이지가 바뀌었을 수 있으니 snapshot 을 다시 찍어 새 ref 를 쓰세요');
+      if (c.length === 1 && c[0].k === 'css') fail('선택자에 맞는 요소 없음: ' + c[0].s + ' — snapshot 으로 지금 화면을 확인하세요');
+      fail('찾는 요소가 없어요: ' + A.desc);
+    }
+    return pwPick(m);
+  }
+  function hoverEvent(type, el, x, y, bubbles) {
+    var W = winOf(el);
+    var init = { bubbles: bubbles, cancelable: bubbles, composed: true, view: W, clientX: x, clientY: y, screenX: x, screenY: y, button: 0, buttons: 0 };
+    var ev;
+    if (type.indexOf('pointer') === 0 && typeof W.PointerEvent === 'function') { init.pointerType = 'mouse'; init.isPrimary = true; init.pointerId = 1; ev = new W.PointerEvent(type, init); }
+    else ev = new W.MouseEvent(type, init);
+    el.dispatchEvent(ev);
   }
 
   function isTextField(el) {
@@ -269,12 +297,12 @@ const BODY = String.raw`
     var r = {};
     switch (A.op) {
       case 'click': {
-        var el = find(A.ref);
+        var el = locOne();
         r.expectNav = !!doClick(el);
         break;
       }
       case 'fill': {
-        var el = find(A.ref);
+        var el = locOne();
         try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
         if (el.tagName === 'SELECT') {
           el.focus(); el.value = A.value;
@@ -295,7 +323,121 @@ const BODY = String.raw`
         break;
       }
       case 'text': {
-        r.text = find(A.ref).textContent || '';
+        r.text = locOne().textContent || '';
+        break;
+      }
+      case 'count': {
+        r.v = pwResolve(A.chain).length;
+        break;
+      }
+      case 'state': {
+        var ms = pwResolve(A.chain), anyVis = false;
+        for (var si = 0; si < ms.length && !anyVis; si++) anyVis = pwVis(ms[si]);
+        r.v = { n: ms.length, vis: anyVis };
+        break;
+      }
+      case 'prop': {
+        if (A.what === 'isVisible') {
+          var pm = pwResolve(A.chain), pv = false;
+          for (var pi = 0; pi < pm.length && !pv; pi++) pv = pwVis(pm[pi]);
+          r.v = pv;
+          break;
+        }
+        var el = locOne();
+        if (A.what === 'innerText') r.v = pwInnerText(el);
+        else if (A.what === 'inputValue') {
+          if (!('value' in el)) fail('입력칸이 아니라 값을 읽을 수 없음(' + el.tagName.toLowerCase() + ') — ' + A.desc);
+          r.v = String(el.value);
+        }
+        else if (A.what === 'attr') r.v = el.getAttribute(A.name);
+        else if (A.what === 'isChecked') {
+          if (el.tagName === 'LABEL' && el.control) el = el.control;
+          r.v = pwOn(el);
+        }
+        else if (A.what === 'isEnabled') r.v = !(el.disabled || el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true');
+        else fail('알 수 없는 읽기: ' + A.what);
+        break;
+      }
+      case 'check': {
+        var el = locOne();
+        if (el.tagName === 'LABEL' && el.control) el = el.control;
+        var isNative = el.tagName === 'INPUT' && /^(checkbox|radio)$/i.test(el.type);
+        if (!isNative && !/^(checkbox|radio|switch)$/.test(el.getAttribute('role') || '')) fail('체크박스나 라디오가 아니라 켜고 끌 수 없음: ' + A.desc);
+        var want = !!A.want;
+        if (pwOn(el) !== want) {
+          if (!want && el.type === 'radio') fail('라디오는 끌 수 없음(다른 것을 고르세요): ' + A.desc);
+          r.expectNav = !!doClick(el);
+          if (isNative && !r.expectNav && pwOn(el) !== want) fail('눌렀는데 상태가 바뀌지 않았음(페이지가 막은 것 같음): ' + A.desc);
+        }
+        break;
+      }
+      case 'select': {
+        var el = locOne();
+        if (el.tagName !== 'SELECT') fail('<select> 요소가 아니라 고를 수 없음(' + el.tagName.toLowerCase() + '): ' + A.desc);
+        if (el.disabled) fail('비활성 요소라 고를 수 없음: ' + A.desc);
+        var opts = Array.prototype.slice.call(el.options), chosen = [];
+        for (var oi = 0; oi < A.sel.length; oi++) {
+          var spec = A.sel[oi], found = -1;
+          for (var oj = 0; oj < opts.length && found < 0; oj++) {
+            var o1 = opts[oj];
+            if (spec.any !== undefined ? (o1.value === spec.any || o1.label === spec.any || pwNorm(o1.textContent) === pwNorm(spec.any)) :
+                (spec.value !== undefined && o1.value === spec.value) || (spec.label !== undefined && (o1.label === spec.label || pwNorm(o1.textContent) === pwNorm(spec.label))) || (spec.index !== undefined && spec.index === oj)) found = oj;
+          }
+          if (found < 0) fail('고를 선택지가 없음: ' + JSON.stringify(spec.any !== undefined ? spec.any : spec) + ' — ' + A.desc);
+          chosen.push(found);
+        }
+        if (!chosen.length) fail('고를 선택지를 하나 이상 넘기세요');
+        try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
+        el.focus();
+        if (el.multiple) for (var ok = 0; ok < opts.length; ok++) opts[ok].selected = chosen.indexOf(ok) >= 0;
+        else el.selectedIndex = chosen[chosen.length - 1];
+        el.dispatchEvent(new (winOf(el).Event)('input', { bubbles: true }));
+        el.dispatchEvent(new (winOf(el).Event)('change', { bubbles: true }));
+        r.expectNav = sub.nav;
+        r.v = Array.prototype.map.call(el.selectedOptions, function (x) { return x.value; });
+        break;
+      }
+      case 'lpress': {
+        var el = locOne();
+        try { el.focus(); } catch (e) {}
+        r.expectNav = !!pressKey(String(A.key));
+        break;
+      }
+      case 'ltype': {
+        var el = locOne();
+        var wasActive = el.ownerDocument.activeElement === el;
+        try { el.focus(); } catch (e) {}
+        if (!wasActive && isTextField(el)) { try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) {} }
+        var tchars = Array.from(String(A.text)), tnav = false;
+        for (var ti = 0; ti < tchars.length; ti++) { if (tchars[ti] === '\n') tnav = pressKey('Enter') || tnav; else pressKey(tchars[ti]); }
+        r.expectNav = tnav || sub.nav;
+        break;
+      }
+      case 'hover': {
+        var el = locOne();
+        try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
+        var hr = el.getBoundingClientRect();
+        var hx = Math.round(hr.left + hr.width / 2), hy = Math.round(hr.top + hr.height / 2);
+        hoverEvent('pointerover', el, hx, hy, true); hoverEvent('pointerenter', el, hx, hy, false);
+        hoverEvent('mouseover', el, hx, hy, true); hoverEvent('mouseenter', el, hx, hy, false);
+        hoverEvent('pointermove', el, hx, hy, true); hoverEvent('mousemove', el, hx, hy, true);
+        break;
+      }
+      case 'focus': {
+        var el = locOne();
+        el.focus();
+        break;
+      }
+      case 'scroll': {
+        var el = locOne();
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        break;
+      }
+      case 'nav': {
+        r.expectNav = true;
+        if (A.dir === 'reload') location.reload();
+        else if (A.dir === 'back') history.back();
+        else history.forward();
         break;
       }
       case 'press': {
@@ -317,12 +459,14 @@ const BODY = String.raw`
       }
       default: fail('알 수 없는 동작: ' + A.op);
     }
+    if (navFired) r.expectNav = true;
     r.timerMs = __saTimers();
     return JSON.stringify({ ok: true, r: r });
   } catch (e) {
     return JSON.stringify({ ok: false, err: String((e && e.message) || e) });
   } finally {
     window.removeEventListener('submit', onSubmit);
+    if (navApi) navApi.removeEventListener('navigate', onNavigate);
     __saTimersStop();
   }
 `;
