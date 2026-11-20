@@ -152,6 +152,24 @@ describe("REPL 세부", () => {
     expect(third.output.split("\n").at(-1)).toBe("true");
   });
 
+  test("snapshot: 내린 뒤에는 새로 보이는 줄만 찍히고 tree 는 안내 줄 없는 지금 화면", async () => {
+    const mk = (y: number, nums: number[]) => `#sa-meta scroll=0,${y} doc=d1\n- title: "a" [url=http://a/]\n` + nums.map((n) => `- paragraph "문단 ${n} 문단 ${n} 문단 ${n}"`).join("\n");
+    let text = mk(0, [1, 2, 3]);
+    d.answer = () => text;
+    await s.run('await openTab("http://a/")');
+    const first = await s.run("console.log(await snapshot(page))");
+    expect(first.output).not.toContain("#sa-meta");
+    expect(first.output).toContain("문단 1");
+    text = mk(1000, [3, 4, 5]);
+    const r = await s.run("const r2 = await snapshot(page); console.log(r2); console.log(r2.tree.startsWith('- title:'))");
+    expect(r.output).toContain("# 내린 뒤 새로 보이는 곳만 (이미 본 줄 1개 · 화면 밖으로 지나간 줄 2개 생략)");
+    expect(r.output).toContain("문단 4");
+    expect(r.output).not.toContain("문단 1");
+    expect(r.output.split("\n").at(-1)).toBe("true");
+    text = mk(0, [1, 2, 3]);
+    expect((await s.run("console.log(await snapshot(page))")).output).toBe("새로 보이는 곳 없음(이미 읽은 곳)");
+  });
+
   test("snapshot 에 선택지가 JSON 소스로 전달된다", async () => {
     d.answer = () => "x";
     await s.run('await openTab("http://a/"); await snapshot(page, { interactive: true })');

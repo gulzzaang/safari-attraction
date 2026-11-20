@@ -8,7 +8,8 @@ export interface SnapshotOptions {
 }
 
 /**
- * 페이지 안에서 돌릴 자바스크립트 원문. 값은 글(문자열)이다 — 머리 줄 `- title: "…" [url=…]` 다음에
+ * 페이지 안에서 돌릴 자바스크립트 원문. 값은 글(문자열)이다 — 맨 앞 안내 줄 `#sa-meta scroll=x,y doc=아이디`(store.ts 의
+ * splitSnapshotMeta 가 떼어 낸다) 다음에 머리 줄 `- title: "…" [url=…]` 다음에
  * 대화형 요소 `- <역할> "<이름>" [ref=eN]` 과 글 덩어리 `- <종류> "<글>"` 가 문서 순서대로 이어진다.
  * ref 는 요소에 `data-sa-ref` 로 붙어 같은 문서 안에서는 다시 읽어도 같다.
  * 사파리의 `do JavaScript` 는 마지막 식의 값을 돌려주므로 즉시 실행 함수 하나다.
@@ -90,7 +91,12 @@ const PAGE_FN = String.raw`function (o) {
   function q(s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; }
 
   var title = clip(document.title || '', TEXT_MAX);
-  var out = ['- title: ' + q(title) + ' [url=' + location.href + ']'];
+  // 맨 앞 안내 줄(Node 쪽이 떼어 낸다): 맨 위 창의 스크롤 위치와 이 문서의 표식. 내린 뒤에는 새로 보이는 줄만 내려고 쓴다.
+  if (!window.__saDoc) window.__saDoc = Math.random().toString(36).slice(2);
+  var out = [
+    '#sa-meta scroll=' + Math.round(window.scrollX || 0) + ',' + Math.round(window.scrollY || 0) + ' doc=' + window.__saDoc,
+    '- title: ' + q(title) + ' [url=' + location.href + ']'
+  ];
 
   var root = document.body || document.documentElement;
   if (o.selector) {

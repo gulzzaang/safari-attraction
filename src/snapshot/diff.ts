@@ -2,6 +2,7 @@
 export const SNAPSHOT_LIMIT_BYTES = 16384;
 
 export const NO_CHANGE_TEXT = "변화 없음";
+export const SCROLL_NOTHING_NEW_TEXT = "새로 보이는 곳 없음(이미 읽은 곳)";
 export const TRUNCATION_NOTE = "… [16KB 에서 자름: interactive 또는 selector 로 좁히세요]";
 
 const byteLen = (s: string): number => Buffer.byteLength(s, "utf8");
@@ -79,6 +80,29 @@ export function diffSnapshot(prev: string | undefined, next: string): { text: st
   const diff = ["# 바뀐 곳만(+ 생김 · - 사라짐)", ...ops.map((o) => `${o.kind} ${o.line}`)].join("\n");
   if (byteLen(diff) >= byteLen(next)) return { text: next, mode: "full" };
   return { text: diff, mode: "diff" };
+}
+
+const TITLE_PREFIX = "- title: ";
+
+/**
+ * 내린(스크롤한) 뒤의 읽기: 이번 화면 줄 가운데 이 문서에서 아직 한 번도 보여 주지 않은 줄(seen 에 없는 줄)만 낸다.
+ * 화면 밖으로 지나간 줄은 사라진 게 아니므로 싣지 않고 개수만 머리 줄에 적는다. seen 은 바꾸지 않는다(부르는 쪽 몫).
+ * 머리의 `- title:` 줄은 개수에 넣지 않는다(바뀌었으면 새 줄로 싣는다).
+ */
+export function scrollDiffSnapshot(prev: string, next: string, seen: ReadonlySet<string>): { text: string; mode: "scroll" } {
+  const isTitle = (l: string, i: number): boolean => i === 0 && l.startsWith(TITLE_PREFIX);
+  const cur = next.split("\n");
+  const curSet = new Set(cur);
+  const fresh: string[] = [];
+  let already = 0;
+  cur.forEach((l, i) => {
+    if (!seen.has(l)) fresh.push(l);
+    else if (!isTitle(l, i)) already++;
+  });
+  const passed = prev.split("\n").filter((l, i) => !curSet.has(l) && !isTitle(l, i)).length;
+  if (fresh.length === 0) return { text: SCROLL_NOTHING_NEW_TEXT, mode: "scroll" };
+  const head = `# 내린 뒤 새로 보이는 곳만 (이미 본 줄 ${already}개 · 화면 밖으로 지나간 줄 ${passed}개 생략)`;
+  return { text: [head, ...fresh].join("\n"), mode: "scroll" };
 }
 
 /** UTF-8 로 maxBytes 를 넘지 않게, 글자를 깨뜨리지 않고 앞에서 자른다. */

@@ -25,7 +25,8 @@ Read values with console.log (the last expression is NOT printed). Errors come b
 - useAiWindow(id) — 사용자가 이미 열어 둔 창(예: 다른 프로필 창)을 AI 전용 창으로 쓴다. 이후 openAiWindow(url) 은 그 창에 새 탭을 열고, page.setViewportSize · page.screenshot 도 된다(setViewportSize 는 그 창 크기를 실제로 바꾼다). 이 창은 우리 창이 아니라서 끝나도 닫지 않고, 우리가 그 안에 연 탭만 닫는다.
   Windows: listWindows() lists Safari windows so the user can say "the second window"; useWindow(id) makes openTab open background tabs in that window (follows its profile), useWindow(null) goes back to the frontmost normal window; useAiWindow(id) uses an already-open window as the AI window (never closed by us; only tabs we opened in it are closed).
 - closeTab(page?) — 우리가 연 탭만 닫는다. 서버가 끝나면 우리가 연 탭과 AI 창은 모두 닫힌다.
-- snapshot(page?, {interactive, selector, full}) — 페이지를 읽는다. console.log(await snapshot()) 로 찍으면 "지난번과 바뀐 곳만" 나오고, 처음이거나 같으면 전체 · 「변화 없음」이 나온다. 요소 앞의 e12 같은 ref 를 locator(ref) 에 쓴다. 16KB 를 넘으면 잘린다.
+- snapshot(page?, {interactive, selector, full}) — 페이지를 읽는다. console.log(await snapshot()) 로 찍으면 "지난번과 바뀐 곳만" 나오고, 처음이거나 같으면 전체 · 「변화 없음」이 나온다. 내린(스크롤한) 뒤에는 새로 보이게 된 줄만 나온다(전부 보려면 {full: true}). 요소 앞의 e12 같은 ref 를 locator(ref) 에 쓴다. 16KB 를 넘으면 잘린다.
+  After scrolling, snapshot prints only the newly visible lines (use {full: true} for everything).
 - Page: goto(url), url(), title(), waitForLoadState(), evaluate(fn | 식, arg), locator(ref | CSS).click() / .fill(값) / .textContent(), keyboard.press("Enter") / keyboard.type(글).
   url() 은 await 없이 바로 마지막으로 알려진 주소(글)를 돌려준다 — goto · 클릭 · evaluate 뒤에는 새 주소다. title() 은 페이지에 물어야 하므로 await 가 필요하다.
   Page.url() returns the last known address immediately (a string, no await; updated after goto / clicks / evaluate); title() is async and needs await.
@@ -45,6 +46,8 @@ Read values with console.log (the last expression is NOT printed). Errors come b
 - evaluate 는 함수 하나나 식 하나만 받는다(여러 문장은 함수로 감싼다). 결과는 JSON 으로 오가 DOM · 함수는 못 받는다. 바깥 변수는 못 쓰고 arg 로 넘긴다.
 - await 뒤에서 이벤트 루프를 막는 코드(예: await x; while(true){})는 서버를 멈출 수 있다. 쓰지 말 것.
 - 사파리 스크립트는 개인정보 보호 창과 일반 창을 구별하지 못해, 맨 앞 창을 그대로 쓴다. 개인정보 보호 창이 앞에 있으면 거기에 열릴 수 있다.
+- 내린 뒤 읽기는 새로 보이는 줄만 내므로, 내리는 같은 사이에 내용이 바뀐 것(무한 스크롤 등)에서 사라진 줄은 알려 주지 않는다.
+  After a scroll, snapshot lists only new lines, so lines genuinely removed in the same step (e.g. infinite scroll) are not reported.
 - 처음 쓸 때 설정이 막히면 오류 글에 안내가 나온다. status 도구로 설정 상태를 볼 수 있다.`;
 
 export const STATUS_DESCRIPTION =

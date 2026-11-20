@@ -3,7 +3,7 @@ import { createJxaDriver } from '../../src/driver/jxa-driver.js';
 import type { SafariDriver, TabInfo } from '../../src/driver/types.js';
 import { capSnapshot, SNAPSHOT_LIMIT_BYTES } from '../../src/snapshot/diff.js';
 import { buildSnapshotSource, type SnapshotOptions } from '../../src/snapshot/inpage.js';
-import { SnapshotStore } from '../../src/snapshot/store.js';
+import { SnapshotStore, splitSnapshotMeta } from '../../src/snapshot/store.js';
 import { describeIt, fixture, startFixtures, stopFixtures } from '../helpers/it.js';
 
 // 이 파일이 연 탭에만 붙는 꼬리표. 시험은 이 꼬리표가 든 탭만 만지고 닫는다(사용자 탭은 건드리지 않는다).
@@ -55,7 +55,7 @@ describeIt('페이지 읽기(snapshot)', () => {
     const { key } = await open('basic.html');
     const text = await read(key);
     console.log(text);
-    expect(text.split('\n')[0]).toMatch(/^- title: "기본 시험 페이지" \[url=http:\/\/127\.0\.0\.1:\d+\/basic\.html\?/);
+    expect(splitSnapshotMeta(text).tree.split('\n')[0]).toMatch(/^- title: "기본 시험 페이지" \[url=http:\/\/127\.0\.0\.1:\d+\/basic\.html\?/);
     expect(text).toMatch(/- button "저장" \[ref=e\d+\]/);
     expect(text).toMatch(/- link "다음으로" \[ref=e\d+\]/);
     expect(text).toMatch(/- textbox "이름을 입력" \[ref=e\d+\]/);
@@ -128,6 +128,33 @@ describeIt('페이지 읽기(snapshot)', () => {
     const full = await read(key, { full: true });
     expect(full).toContain('위 단추');
     expect(full).toContain('아래 단추');
+  });
+
+  test('내린 뒤에는 새로 보이는 곳만, 되돌아가면 「이미 읽은 곳」', async () => {
+    const { key } = await open('scroll.html');
+    const first = store.diff(key, {}, await read(key));
+    expect(first.mode).toBe('full');
+    expect(first.text).toContain('위 단추');
+    expect(first.text).not.toContain('#sa-meta');
+    // 한 화면 넘게 내려 맨 아래가 보이게 한다
+    await d.runJs(key, 'window.scrollTo(0, document.body.scrollHeight); 0');
+    const down = store.diff(key, {}, await read(key));
+    expect(down.mode).toBe('scroll');
+    console.log(down.text);
+    expect(down.text.split('\n')[0]).toMatch(/^# 내린 뒤 새로 보이는 곳만 \(이미 본 줄 \d+개 · 화면 밖으로 지나간 줄 \d+개 생략\)$/);
+    expect(down.text).toContain('아래 단추');
+    expect(down.text).not.toContain('위 단추'); // 지나간 줄은 싣지 않는다
+    expect(down.text).not.toContain('# 바뀐 곳만'); // +/- 비교가 아니다
+    expect(down.text).not.toMatch(/^- - |^\+ /m); // 사라짐(- ) · 생김(+ ) 줄 없음
+    await d.runJs(key, 'window.scrollTo(0, 0); 0');
+    const up = store.diff(key, {}, await read(key));
+    expect(up).toEqual({ mode: 'scroll', text: '새로 보이는 곳 없음(이미 읽은 곳)' });
+    // 같은 자리에서 다시 읽으면 변화 없음
+    expect(store.diff(key, {}, await read(key))).toEqual({ mode: 'none', text: '변화 없음' });
+    // 새로고침이면 본 줄을 지운다
+    await d.runJs(key, 'location.reload(); 0');
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(store.diff(key, {}, await read(key)).mode).not.toBe('scroll');
   });
 
   test('큰 페이지도 1초 · 16KB 안', async () => {

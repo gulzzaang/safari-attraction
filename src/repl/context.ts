@@ -3,7 +3,7 @@ import vm from "node:vm";
 import { inspect } from "node:util";
 import { SafariError, type SafariDriver, type SafariErrorCode, type TabInfo } from "../driver/types.js";
 import { buildSnapshotSource, type SnapshotOptions } from "../snapshot/inpage.js";
-import { SnapshotStore } from "../snapshot/store.js";
+import { SnapshotStore, splitSnapshotMeta } from "../snapshot/store.js";
 import { Page, type AiWindowAccess } from "./page.js";
 import { OutputBuffer } from "./output.js";
 import { hoistTopLevel } from "./transform.js";
@@ -31,9 +31,9 @@ export interface ReplSession {
 /** 한 호출의 기본 제한 시간. */
 export const DEFAULT_TIMEOUT_MS = 120_000;
 
-/** snapshot() 의 결과. console.log 로 찍으면 바뀐 곳(diff) 글이 나온다(처음이면 전체, 같으면 「변화 없음」). */
+/** snapshot() 의 결과. console.log 로 찍으면 바뀐 곳(diff) 글이 나온다(처음이면 전체, 같으면 「변화 없음」, 내린 뒤면 새로 보이는 곳만). */
 export interface SnapshotResult {
-  /** 이번에 읽은 전체 글. */
+  /** 이번에 읽은 전체 글(지금 화면, 또는 full 이면 문서 전체). */
   tree: string;
   /** 지난번 읽기와 비교한 글(처음 · 많이 바뀌었으면 전체와 같다). */
   diff: string;
@@ -302,8 +302,9 @@ export function createReplSession(driver: SafariDriver): ReplSession {
   sandbox.snapshot = async (p?: Page, opts: SnapshotOptions = {}): Promise<SnapshotResult> => {
     const pg = needPage(p, "snapshot");
     const o: SnapshotOptions = { interactive: !!opts.interactive, selector: opts.selector, full: !!opts.full };
-    const tree = await driver.runJs(pg.key, buildSnapshotSource(o));
-    const d = store.diff(pg.key, o, tree);
+    const raw = await driver.runJs(pg.key, buildSnapshotSource(o));
+    const d = store.diff(pg.key, o, raw);
+    const tree = splitSnapshotMeta(raw).tree;
     const result: SnapshotResult = { tree, diff: d.text };
     // console.log(result) 는 바뀐 곳 글을 찍는다.
     Object.defineProperty(result, inspect.custom, { value: () => d.text, enumerable: false });

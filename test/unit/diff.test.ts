@@ -101,3 +101,132 @@ describe('SnapshotStore', () => {
     expect(s.last('t2', {})).toBe('B');
   });
 });
+
+describe('SnapshotStore — 내리며 읽기', () => {
+  const NOTHING = '새로 보이는 곳 없음(이미 읽은 곳)';
+  const para = (n: number) => `- paragraph "문단 ${n} 은 화면에 따라 보이는 긴 글 입니다 입니다 입니다"`;
+  const title = '- title: "시험" [url=http://x/]';
+  /** 페이지 안 읽기 코드가 내는 글 모양: 맨 앞 안내 줄 + 머리 줄 + 줄들. */
+  const page = (scrollY: number, nums: number[], doc = 'd1') => [`#sa-meta scroll=0,${scrollY} doc=${doc}`, title, ...nums.map(para)].join('\n');
+  const tree = (nums: number[]) => [title, ...nums.map(para)].join('\n');
+
+  test('처음엔 전체(안내 줄은 뺀다)', () => {
+    const s = new SnapshotStore();
+    expect(s.diff('t', {}, page(0, [1, 2, 3]))).toEqual({ mode: 'full', text: tree([1, 2, 3]) });
+  });
+
+  test('스크롤 그대로 · 내용 그대로면 변화 없음', () => {
+    const s = new SnapshotStore();
+    s.diff('t', {}, page(0, [1, 2, 3]));
+    expect(s.diff('t', {}, page(0, [1, 2, 3]))).toEqual({ mode: 'none', text: '변화 없음' });
+  });
+
+  test('스크롤 그대로 · 내용만 바뀌면 예전처럼 +/- 비교', () => {
+    const s = new SnapshotStore();
+    s.diff('t', {}, page(0, [1, 2, 3, 4, 5, 6, 7, 8]));
+    const r = s.diff('t', {}, page(0, [1, 2, 3, 4, 5, 6, 7, 9]));
+    expect(r.mode).toBe('diff');
+    expect(r.text).toContain('# 바뀐 곳만(+ 생김 · - 사라짐)');
+    expect(r.text).toContain('- ' + para(8));
+    expect(r.text).toContain('+ ' + para(9));
+  });
+
+  test('내리면 처음 보이는 줄만, 머리 줄 · 개수 정확히 · 사라짐(-) 없음', () => {
+    const s = new SnapshotStore();
+    s.diff('t', {}, page(0, [1, 2, 3, 4]));
+    const r = s.diff('t', {}, page(1000, [3, 4, 5, 6]));
+    expect(r.mode).toBe('scroll');
+    const lines = r.text.split('\n');
+    // 이미 본 줄 2개(3 · 4), 화면 밖으로 지나간 줄 2개(1 · 2) — 머리 줄(title)은 세지 않는다
+    expect(lines[0]).toBe('# 내린 뒤 새로 보이는 곳만 (이미 본 줄 2개 · 화면 밖으로 지나간 줄 2개 생략)');
+    expect(lines.slice(1)).toEqual([para(5), para(6)]);
+    expect(r.text).not.toMatch(/^- (?!paragraph)/m);
+    expect(r.text).not.toContain(para(1));
+    expect(r.text).not.toContain(para(2));
+  });
+
+  test('이미 읽은 곳으로 되돌아가면 「새로 보이는 곳 없음」', () => {
+    const s = new SnapshotStore();
+    s.diff('t', {}, page(0, [1, 2, 3, 4]));
+    s.diff('t', {}, page(1000, [3, 4, 5, 6]));
+    expect(s.diff('t', {}, page(0, [1, 2, 3, 4]))).toEqual({ mode: 'scroll', text: NOTHING });
+    // 절반만 내려도(이미 본 줄뿐) 마찬가지
+    expect(s.diff('t', {}, page(300, [2, 3, 4, 5]))).toEqual({ mode: 'scroll', text: NOTHING });
+  });
+
+  test('내린 뒤 같은 자리에서 다시 읽으면 변화 없음', () => {
+    const s = new SnapshotStore();
+    s.diff('t', {}, page(0, [1, 2]));
+    s.diff('t', {}, page(1000, [3, 4]));
+    expect(s.diff('t', {}, page(1000, [3, 4]))).toEqual({ mode: 'none', text: '변화 없음' });
+  });
+
+  test('이동 · 새로고침(문서 표식이 바뀜)이면 본 줄을 지운다', () => {
+    const s = new SnapshotStore();
+    s.diff('t', {}, page(0, [1, 2, 3, 4]));
+    s.diff('t', {}, page(1000, [5, 6, 7, 8]));
+    // 새 문서: 스크롤 위치가 달라도 「내린 뒤」로 보지 않고 예전 비교를 따른다
+    const reload = s.diff('t', {}, page(0, [1, 2, 3, 4], 'd2'));
+    expect(reload.mode).toBe('full');
+    // 지운 뒤라 1~4 는 다시 새 줄이 아니라 방금 본 줄이다: 내려서 5~6 이 나오면 새 줄
+    const r = s.diff('t', {}, page(1000, [3, 4, 5, 6], 'd2'));
+    expect(r.text.split('\n').slice(1)).toEqual([para(5), para(6)]);
+    // 새 문서에서 본 적 없는 줄이 이전 문서에서 본 줄이어도 새 줄로 나온다
+    const s2 = new SnapshotStore();
+    s2.diff('t', {}, page(0, [1, 2]));
+    s2.diff('t', {}, page(1000, [5, 6]));
+    s2.diff('t', {}, page(0, [7, 8], 'd9')); // 새 문서
+    const back = s2.diff('t', {}, page(1000, [1, 2], 'd9'));
+    expect(back.text.split('\n').slice(1)).toEqual([para(1), para(2)]);
+  });
+
+  test('탭 · 범위마다 따로: 다른 탭의 스크롤은 섞이지 않는다', () => {
+    const s = new SnapshotStore();
+    s.diff('a', {}, page(0, [1, 2]));
+    s.diff('b', {}, page(500, [3, 4]));
+    expect(s.diff('b', {}, page(500, [3, 4])).mode).toBe('none');
+    expect(s.diff('a', {}, page(0, [1, 2])).mode).toBe('none');
+    // interactive 는 같은 규칙을 따르되 기억은 따로
+    s.diff('a', { interactive: true }, page(0, [1, 2]));
+    expect(s.diff('a', { interactive: true }, page(900, [5, 6])).mode).toBe('scroll');
+  });
+
+  test('full 과 selector 는 스크롤에 상관없이 예전 그대로', () => {
+    const s = new SnapshotStore();
+    for (const o of [{ full: true }, { selector: '#x' }]) {
+      s.diff('t', o, page(0, [1, 2, 3, 4, 5, 6, 7, 8]));
+      const r = s.diff('t', o, page(1000, [1, 2, 3, 4, 5, 6, 7, 9]));
+      expect(r.mode).toBe('diff');
+      expect(r.text).toContain('- ' + para(8));
+      expect(s.diff('t', o, page(2000, [1, 2, 3, 4, 5, 6, 7, 9]))).toEqual({ mode: 'none', text: '변화 없음' });
+    }
+  });
+
+  test('안내 줄이 없는 글(옛 모양)은 예전 그대로', () => {
+    const s = new SnapshotStore();
+    s.diff('t', {}, tree([1, 2, 3, 4, 5, 6, 7, 8]));
+    expect(s.diff('t', {}, tree([1, 2, 3, 4, 5, 6, 7, 9])).mode).toBe('diff');
+  });
+
+  test('last 는 안내 줄 없는 전체 글', () => {
+    const s = new SnapshotStore();
+    s.diff('t', {}, page(0, [1, 2]));
+    expect(s.last('t', {})).toBe(tree([1, 2]));
+  });
+
+  test('섞인 경우(내리면서 내용도 바뀜)는 새 줄만, 사라진 줄은 알리지 않는다', () => {
+    const s = new SnapshotStore();
+    s.diff('t', {}, page(0, [1, 2, 3, 4]));
+    const r = s.diff('t', {}, page(1000, [4, 5, 6, 7]));
+    expect(r.text.split('\n').slice(1)).toEqual([para(5), para(6), para(7)]);
+  });
+
+  test('새 줄이 아주 많아도 16KB 를 넘지 않게 자를 수 있다', () => {
+    const s = new SnapshotStore();
+    const many = Array.from({ length: 1500 }, (_, i) => i + 100);
+    s.diff('t', {}, page(0, [1, 2]));
+    const r = s.diff('t', {}, page(1000, many));
+    expect(Buffer.byteLength(r.text)).toBeGreaterThan(SNAPSHOT_LIMIT_BYTES);
+    expect(Buffer.byteLength(capSnapshot(r.text))).toBeLessThanOrEqual(SNAPSHOT_LIMIT_BYTES);
+  });
+});

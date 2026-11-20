@@ -3,6 +3,7 @@ import { createJxaDriver } from '../../src/driver/jxa-driver.js';
 import type { SafariDriver, TabInfo } from '../../src/driver/types.js';
 import { Page } from '../../src/repl/page.js';
 import { buildSnapshotSource } from '../../src/snapshot/inpage.js';
+import { splitSnapshotMeta } from '../../src/snapshot/store.js';
 import { describeIt, fixture, startFixtures, stopFixtures } from '../helpers/it.js';
 
 // 이 파일이 연 탭에만 붙는 꼬리표. 시험은 이 꼬리표가 든 탭만 만지고 닫는다(사용자 탭은 건드리지 않는다).
@@ -42,7 +43,7 @@ describeIt('iframe · shadow DOM 안쪽', () => {
     const { tab } = await d.openTab(mine(name));
     return new Page(d, tab.key);
   };
-  const read = (page: Page) => d.runJs(page.key, buildSnapshotSource());
+  const read = async (page: Page) => splitSnapshotMeta(await d.runJs(page.key, buildSnapshotSource())).tree;
   const refOf = async (page: Page, pattern: RegExp) => {
     const snap = await read(page);
     const m = pattern.exec(snap);
