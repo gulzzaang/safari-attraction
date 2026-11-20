@@ -157,6 +157,24 @@ describeIt('페이지 읽기(snapshot)', () => {
     expect(store.diff(key, {}, await read(key)).mode).not.toBe('scroll');
   });
 
+  test('안쪽 스크롤 영역을 내려도 새로 보이는 곳만, 되돌리면 「이미 읽은 곳」', async () => {
+    const { key } = await open('inner-scroll.html');
+    const first = store.diff(key, {}, await read(key));
+    expect(first.mode).toBe('full');
+    expect(first.text).toContain('항목 1"');
+    expect(await d.runJs(key, 'String(window.scrollY)')).toBe('0'); // 창은 안 움직인다
+    const box = Number(await d.runJs(key, 'String(document.getElementById("box").clientHeight)'));
+    await d.runJs(key, `document.getElementById("box").scrollTop = ${box}; 0`);
+    const down = store.diff(key, {}, await read(key));
+    console.log(down.text);
+    expect(down.mode).toBe('scroll');
+    expect(down.text.split('\n')[0]).toMatch(/^# 내린 뒤 새로 보이는 곳만 \(이미 본 줄 \d+개 · 화면 밖으로 지나간 줄 \d+개 생략\)$/);
+    expect(down.text.split('\n').length).toBeGreaterThan(1);
+    expect(down.text).not.toMatch(/^- - |^\+ /m);
+    await d.runJs(key, 'document.getElementById("box").scrollTop = 0; 0');
+    expect(store.diff(key, {}, await read(key))).toEqual({ mode: 'scroll', text: '새로 보이는 곳 없음(이미 읽은 곳)' });
+  });
+
   test('큰 페이지도 1초 · 16KB 안', async () => {
     const { key } = await open('big.html');
     expect(await d.runJs(key, 'document.getElementsByTagName("*").length')).toBeTruthy();

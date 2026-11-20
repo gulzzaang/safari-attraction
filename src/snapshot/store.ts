@@ -1,4 +1,4 @@
-import { diffSnapshot, scrollDiffSnapshot } from "./diff.js";
+import { capSnapshot, diffSnapshot, scrollDiffSnapshot } from "./diff.js";
 import type { SnapshotOptions } from "./inpage.js";
 
 const META_PREFIX = "#sa-meta ";
@@ -12,6 +12,25 @@ export function splitSnapshotMeta(raw: string): { tree: string; scroll?: string;
   const scroll = /(?:^| )scroll=(\S+)/.exec(line)?.[1];
   const doc = /(?:^| )doc=(\S+)/.exec(line)?.[1];
   return { tree, scroll, doc };
+}
+
+/**
+ * 이번 결과 글(text)에서 Claude 가 실제로 읽게 되는 새 줄들. 16KB 로 잘리면 잘린 뒤의 줄은 뺀다(안 보여 줬으니 안 본 줄로 둔다).
+ * full → 전체 줄, diff → `+ ` 줄, scroll → 머리 줄 아래의 줄, none 이나 「새로 보이는 곳 없음」 → 없음.
+ */
+function printedLines(r: { text: string; mode: string }): string[] {
+  let items: Array<string | null>;
+  const lines = r.text.split("\n");
+  if (r.mode === "full") items = lines;
+  else if (r.mode === "diff") items = lines.map((l, i) => (i > 0 && l.startsWith("+ ") ? l.slice(2) : null));
+  else if (r.mode === "scroll" && lines[0]!.startsWith("# ")) items = lines.map((l, i) => (i > 0 ? l : null));
+  else return [];
+  const capped = capSnapshot(r.text);
+  if (capped === r.text) return items.filter((l): l is string => l !== null);
+  const kept = capped.split("\n");
+  const out: string[] = [];
+  for (let i = 0; i < items.length && i < kept.length - 1 && kept[i] === lines[i]; i++) if (items[i] !== null) out.push(items[i]!);
+  return out;
 }
 
 interface Memory {
@@ -61,7 +80,13 @@ export class SnapshotStore {
     const scrolled = viewBased && !!old && !newDoc && old.scroll !== undefined && cur.scroll !== undefined && old.scroll !== cur.scroll;
 
     const r = scrolled ? scrollDiffSnapshot(old.tree, cur.tree, seen) : diffSnapshot(old?.tree, cur.tree);
-    if (viewBased) for (const l of cur.tree.split("\n")) seen.add(l);
+    if (viewBased) {
+      // 새 문서라도 지난번과 비교해 「변화 없음」 · 바뀐 곳만으로 알린 경우, 그대로인 줄은 Claude 가 이미 읽은 줄이다.
+      if (newDoc && old && (r.mode === "none" || r.mode === "diff")) {
+        for (const l of cur.tree.split("\n")) if (old.seen.has(l)) seen.add(l);
+      }
+      for (const l of printedLines(r)) seen.add(l);
+    }
     this.mem_.set(k, { tree: cur.tree, scroll: cur.scroll, doc: cur.doc, seen });
     return r;
   }

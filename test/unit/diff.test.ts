@@ -229,4 +229,39 @@ describe('SnapshotStore — 내리며 읽기', () => {
     expect(Buffer.byteLength(r.text)).toBeGreaterThan(SNAPSHOT_LIMIT_BYTES);
     expect(Buffer.byteLength(capSnapshot(r.text))).toBeLessThanOrEqual(SNAPSHOT_LIMIT_BYTES);
   });
+  test('안쪽 스크롤 영역만 움직여 서명이 달라져도 내린 것으로 본다', () => {
+    const s = new SnapshotStore();
+    const inner = (sig: string, nums: number[]) => [`#sa-meta scroll=${sig} doc=d1`, title, ...nums.map(para)].join('\n');
+    s.diff('t', {}, inner('0,0', [1, 2, 3, 4]));
+    const r = s.diff('t', {}, inner('0,0,300', [3, 4, 5, 6]));
+    expect(r.mode).toBe('scroll');
+    expect(r.text.split('\n').slice(1)).toEqual([para(5), para(6)]);
+    // 같은 서명이면 그대로, 되돌리면 이미 읽은 곳
+    expect(s.diff('t', {}, inner('0,0,300', [3, 4, 5, 6])).mode).toBe('none');
+    expect(s.diff('t', {}, inner('0,0', [1, 2, 3, 4]))).toEqual({ mode: 'scroll', text: NOTHING });
+  });
+
+  test('16KB 에서 잘려 못 본 줄은 본 줄로 치지 않아 다음 읽기에서 나온다', () => {
+    const s = new SnapshotStore();
+    const all = Array.from({ length: 700 }, (_, i) => i + 1);
+    const first = s.diff('t', {}, page(0, all));
+    expect(first.mode).toBe('full');
+    const shown = capSnapshot(first.text).split('\n').filter((l) => l.startsWith('- paragraph')).length; // 실제로 찍힌 문단 수
+    expect(shown).toBeGreaterThan(100);
+    expect(shown).toBeLessThan(all.length);
+    // 내린 뒤: 같은 줄들이 그대로 보여도(스크롤 위치만 다름) 잘려 못 본 줄은 새 줄로 나온다
+    const r = s.diff('t', {}, page(1000, all));
+    expect(r.mode).toBe('scroll');
+    const lines = r.text.split('\n');
+    expect(lines[0]).toBe(`# 내린 뒤 새로 보이는 곳만 (이미 본 줄 ${shown}개 · 화면 밖으로 지나간 줄 0개 생략)`);
+    expect(lines[1]).toBe(para(shown + 1));
+    expect(lines.length - 1).toBe(all.length - shown);
+  });
+
+  test('새로고침 뒤 「변화 없음」이면 그대로인 줄은 읽은 줄로 둔다', () => {
+    const s = new SnapshotStore();
+    s.diff('t', {}, page(0, [1, 2, 3, 4]));
+    expect(s.diff('t', {}, page(0, [1, 2, 3, 4], 'd2')).mode).toBe('none');
+    expect(s.diff('t', {}, page(1000, [3, 4, 5, 6], 'd2')).text.split('\n').slice(1)).toEqual([para(5), para(6)]);
+  });
 });

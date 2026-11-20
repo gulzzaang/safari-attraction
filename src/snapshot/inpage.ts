@@ -91,12 +91,15 @@ const PAGE_FN = String.raw`function (o) {
   function q(s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; }
 
   var title = clip(document.title || '', TEXT_MAX);
-  // 맨 앞 안내 줄(Node 쪽이 떼어 낸다): 맨 위 창의 스크롤 위치와 이 문서의 표식. 내린 뒤에는 새로 보이는 줄만 내려고 쓴다.
+  // 맨 앞 안내 줄(Node 쪽이 떼어 낸다): 스크롤 위치 표시와 이 문서의 표식. 내린 뒤에는 새로 보이는 줄만 내려고 쓴다.
+  // 스크롤 위치 = 맨 위 창의 x,y. 걷는 동안 안쪽 스크롤 영역(scrollTop · scrollLeft 가 0 이 아닌 요소)과 같은 출처 iframe 창의
+  // 스크롤 합이 0 이 아니면 ",합" 이 이어진다(합이 0 이면 예전과 똑같다). 걷기가 끝나면 이 줄을 다시 쓴다.
   if (!window.__saDoc) window.__saDoc = Math.random().toString(36).slice(2);
-  var out = [
-    '#sa-meta scroll=' + Math.round(window.scrollX || 0) + ',' + Math.round(window.scrollY || 0) + ' doc=' + window.__saDoc,
-    '- title: ' + q(title) + ' [url=' + location.href + ']'
-  ];
+  var innerScroll = 0;
+  function metaLine() {
+    return '#sa-meta scroll=' + Math.round(window.scrollX || 0) + ',' + Math.round(window.scrollY || 0) + (innerScroll ? ',' + innerScroll : '') + ' doc=' + window.__saDoc;
+  }
+  var out = [metaLine(), '- title: ' + q(title) + ' [url=' + location.href + ']'];
 
   var root = document.body || document.documentElement;
   if (o.selector) {
@@ -266,11 +269,15 @@ const PAGE_FN = String.raw`function (o) {
     if (done) return;
     var tag = el.tagName;
     if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE') return;
+    var st = el.scrollTop, sl = el.scrollLeft;
+    if ((st || sl) && el !== el.ownerDocument.documentElement && el !== el.ownerDocument.body) innerScroll += Math.round(st) + Math.round(sl);
     if (tag === 'IFRAME') {
       if (!shown(el)) return;
       var doc = null;
       try { doc = el.contentDocument; } catch (e) {}
       if (doc && (doc.body || doc.documentElement)) {
+        var iw = doc.defaultView;
+        if (iw) innerScroll += Math.round(iw.scrollX || 0) + Math.round(iw.scrollY || 0);
         push(depth, '- iframe ' + q(clip(el.getAttribute('title') || doc.title || originOf(el), NAME_MAX)));
         walkEl(doc.body || doc.documentElement, depth + 1);
       } else {
@@ -308,5 +315,6 @@ const PAGE_FN = String.raw`function (o) {
     for (var i = 0; i < arr.length && !done; i++) walkEl(arr[i], depth);
   }
   walkEl(root, 0);
+  out[0] = metaLine();
   return out.join('\n');
 }`;
