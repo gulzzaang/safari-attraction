@@ -1,6 +1,6 @@
 {
   "name": "safari-attraction",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "평소 로그인된 사파리를 Claude 가 뒤쪽 탭으로 읽고 · 누르고 · 입력하게 하는 MCP 서버 (macOS 전용)",
   "author": {
     "name": "gulzzaang"

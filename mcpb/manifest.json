@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "safari-attraction",
   "display_name": "사파리-어트랙션",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "평소 로그인된 사파리를 Claude 가 뒤쪽 탭으로 읽고 · 누르고 · 입력하게 합니다(맥 전용)",
   "long_description": "평소 쓰는 사파리(로그인된 그대로)를 Claude 가 뒤쪽 탭으로 열어 읽고 · 누르고 · 입력하게 합니다. 내 화면을 가로채지 않습니다. 맥 전용입니다.\n\n처음 준비(한 번만)\n1. 사파리 → 설정 → 고급 → '웹 개발자용 기능 보기' 를 켭니다.\n2. 사파리 메뉴 막대 개발 → 'Apple 이벤트의 JavaScript 허용' 을 켭니다.\n3. 처음 쓸 때 macOS 가 '사파리를 제어하려 한다' 는 자동화 허락 창을 띄웁니다. 「허용」 을 누르세요.\n4. 화면 찍기를 쓸 때만: 시스템 설정 → 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음 → Claude 를 켭니다.\n\n막히면 Claude 에게 'status 도구로 점검해 줘' 라고 하세요. 빠진 준비와 고칠 곳을 알려 줍니다.",
   "author": { "name": "gulzzaang" },
