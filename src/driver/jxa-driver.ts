@@ -97,7 +97,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     }
   }
 
-  const guardArgs = (s: Spot) => ({ windowId: s.windowId, index: s.index, key: s.key, url: s.url, unstamped: s.unstamped });
+  const guardArgs = (s: Spot) => ({ windowId: s.windowId, index: s.index, key: s.key, url: s.url, unstamped: s.unstamped, altUrl: s.altUrl });
 
   // 탭 키(t1, t2 …)와 사파리 안 자리를 이어 주는 기록. 사용자가 탭을 옮겨도 같은 키가 같은 탭을 가리킨다.
   const registry = new TabRegistry({
@@ -310,6 +310,10 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     async settleTab(tabKey, o = {}) {
       const r = await registry.settle(tabKey, o);
       return { navigated: r.navigated, leaving: r.leaving, tab: toTab({ raw: r.tab, key: tabKey, owned: registry.isOwned(tabKey) }) };
+    },
+
+    async noteNavTimeout(tabKey) {
+      await registry.navTimedOut(tabKey);
     },
 
     async closeOwned() {

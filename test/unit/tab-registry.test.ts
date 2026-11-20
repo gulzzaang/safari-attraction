@@ -201,6 +201,71 @@ describe('TabRegistry', () => {
     expect(reg.urlOf(k)).toBe('http://a/y'); // 키가 그대로 남았다
   });
 
+  test('settle: 문서를 떠나는 중(same, leaving)이면 호스트가 알린 옛 문서의 주소를 기록한다 — 가는 중인 목적지로 바꾸지 않는다', async () => {
+    const sf = new FakeSafari();
+    const reg = new TabRegistry(sf);
+    const k = openOwned(sf, reg, 'http://a/old');
+    sf.tabs[0]!.url = 'http://a/dest'; // 사파리의 tab.url() 은 가는 중인 목적지를 돌려준다
+    // 호스트는 same 일 때 그 문서 자신의 location.href(옛 주소)를 tab.url 로 알린다
+    sf.settle = async (a) => ({ status: 'same', leaving: true, tab: { windowId: 1, index: a.index, title: '', url: 'http://a/old', isActive: false } });
+    const r = await reg.settle(k);
+    expect(r).toMatchObject({ navigated: false, leaving: true });
+    expect(reg.urlOf(k)).toBe('http://a/old');
+  });
+
+  test('navTimedOut: 붙인 사용자 탭은 「표시 안 한 탭」이 돼, 늦게 새 문서가 떠도(표시 없음 · 목적지 주소) 다음 일에서 다시 알아보고 키를 지킨다', async () => {
+    const sf = new FakeSafari();
+    sf.tabs.push({ url: 'http://a/old', marker: '' });
+    const reg = new TabRegistry(sf);
+    const k = reg.nextKey();
+    reg.register(k, 1, 1, 'http://a/old', { owned: false, stamped: true });
+    sf.tabs[0] = { url: 'http://a/dest', marker: reg.markerOf(k) }; // 아직 옛 문서(표시 그대로), 사파리는 목적지를 보고한다
+    await reg.navTimedOut(k);
+    expect(reg.urlOf(k)).toBe('http://a/old'); // 기록한 주소는 그대로
+    expect(reg.spot(k)).toMatchObject({ unstamped: true, altUrl: 'http://a/dest' });
+    sf.tabs[0] = { url: 'http://a/dest', marker: '' }; // 늦게 새 문서가 뜸
+    const guard = async (s: Spot): Promise<Guarded<string>> => {
+      const t = sf.tabs[s.index - 1];
+      if (!t) return { stale: true };
+      if (t.marker === s.key || (s.unstamped && t.marker === '' && (t.url === s.url || t.url === s.altUrl))) {
+        t.marker = s.key;
+        return { value: 'ok' };
+      }
+      return { stale: true };
+    };
+    expect(await reg.withTab(k, guard)).toBe('ok'); // TAB_CLOSED 없이
+    expect(sf.tabs[0]!.marker).toBe(reg.markerOf(k));
+    expect(reg.spot(k)).toMatchObject({ unstamped: false });
+  });
+
+  test('navTimedOut: 새 문서가 뜨지 않고 옛 문서 그대로면 다음 일에서 도로 표시 있는 탭이 된다', async () => {
+    const sf = new FakeSafari();
+    sf.tabs.push({ url: 'http://a/old', marker: '' });
+    const reg = new TabRegistry(sf);
+    const k = reg.nextKey();
+    reg.register(k, 1, 1, 'http://a/old', { owned: false, stamped: true });
+    sf.tabs[0] = { url: 'http://a/dest', marker: reg.markerOf(k) };
+    await reg.navTimedOut(k);
+    const guard = async (s: Spot): Promise<Guarded<string>> => (sf.tabs[s.index - 1]!.marker === s.key ? { value: 'ok' } : { stale: true });
+    expect(await reg.withTab(k, guard)).toBe('ok');
+    expect(reg.spot(k)).toMatchObject({ unstamped: false });
+    expect(reg.spot(k).altUrl).toBeUndefined();
+  });
+
+  test('navTimedOut: 우리가 연 탭이거나 표시가 이미 없는 탭은 건드리지 않는다', async () => {
+    const sf = new FakeSafari();
+    const reg = new TabRegistry(sf);
+    const k = openOwned(sf, reg, 'http://a/x');
+    sf.tabs[0]!.marker = reg.markerOf(k);
+    await reg.navTimedOut(k);
+    expect(reg.spot(k).unstamped).toBe(false); // owned
+    const k2 = reg.nextKey();
+    sf.tabs.push({ url: 'http://a/y', marker: '' });
+    reg.register(k2, 1, 2, 'http://a/y', { owned: false, stamped: true });
+    await reg.navTimedOut(k2); // 표시가 이미 없다
+    expect(reg.spot(k2).unstamped).toBe(false);
+  });
+
   test('settle: waitUntil commit 은 호스트까지 그대로 전해진다(안 주면 빈 값)', async () => {
     const sf = new FakeSafari();
     const reg = new TabRegistry(sf);

@@ -433,7 +433,7 @@ export class Page {
       }
       // 문서를 떠나는 중이면 새 문서가 올 때까지 호출한 시간만큼 기다리고(느린 서버), 그래도 안 오면 시간 초과 — 옛 문서에서 끝난 척하지 않는다.
       if (r.leaving) {
-        if (nav.expired()) throw new SafariError("TIMEOUT", navTimeoutMessage(nav.timeoutMs));
+        if (nav.expired()) await this.failNav(nav);
       } else if (Date.now() - t0 > EXPECT_NAV_GRACE_MS + 500) break; // 갈 곳이 없었다(이동 없음)
       await sleep(100);
     }
@@ -496,11 +496,21 @@ export class Page {
       }
       if (r.leaving) {
         if (nav) {
-          if (nav.expired()) throw new SafariError("TIMEOUT", navTimeoutMessage(nav.timeoutMs));
+          if (nav.expired()) await this.failNav(nav);
         } else if (Date.now() - t0 > LEAVING_MAX_MS) return;
       } else if (!expectNav || Date.now() - t0 > EXPECT_NAV_GRACE_MS) return;
       await sleep(100);
     }
+  }
+
+  /** 이동이 시간 초과로 끝났다 — 레지스트리에 알려(붙인 사용자 탭이 늦은 새 문서에서 키를 잃지 않게) 한국어 TIMEOUT 을 낸다. */
+  private async failNav(nav: NavWait): Promise<never> {
+    try {
+      await this.driver.noteNavTimeout?.(this.key);
+    } catch {
+      // 알리지 못해도 시간 초과 오류가 먼저다
+    }
+    throw new SafariError("TIMEOUT", navTimeoutMessage(nav.timeoutMs));
   }
 
   private async awaitPending(id: string): Promise<string | undefined> {

@@ -101,7 +101,7 @@ export class IdleWatch {
 
 /** goto · reload · 뒤로 · 앞으로가 새 문서를 못 받고 시간이 다 된 오류 글(서버가 느리거나 응답이 없다). */
 export function navTimeoutMessage(timeoutMs: number): string {
-  return `페이지가 ${timeoutMs}ms 안에 이동하지 않음(새 문서가 안 떠 아직 이전 페이지 — 서버가 느리거나 응답이 없음)`;
+  return `페이지가 ${timeoutMs}ms 안에 이동하지 않음(새 문서가 안 떠 아직 이전 페이지 — 서버가 느리거나 응답이 없을 수 있어요. 내려받기 · 응답 없는 주소일 수도 있어요)`;
 }
 
 /** 시간 초과 오류 글. */

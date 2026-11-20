@@ -90,7 +90,7 @@ function probeTab(windowId, index) {
 }
 
 // 요청이 가리킨 자리의 탭이 정말 그 키의 탭일 때만 돌려준다.
-// 표시가 키와 같거나, 아직 표시를 안 한 탭(args.unstamped)이면서 표시가 없고 주소가 기록과 같을 때.
+// 표시가 키와 같거나, 아직 표시를 안 한 탭(args.unstamped)이면서 표시가 없고 주소가 기록(url) 또는 대신 받아들일 주소(altUrl)와 같을 때.
 // args.urlOnly 는 JS 를 못 도는 탭(경고창이 떠 있는 탭)을 닫을 때만 쓴다 — 표시를 못 읽으니 주소만 본다.
 function guardTab(args) {
   if (args.urlOnly) {
@@ -105,7 +105,7 @@ function guardTab(args) {
   const p = probeTab(args.windowId, args.index);
   if (!p) return null;
   if (p.marker === args.key) return p;
-  if (args.unstamped && p.marker === "" && p.url === args.url) return p;
+  if (args.unstamped && p.marker === "" && (p.url === args.url || (args.altUrl && p.url === args.altUrl))) return p;
   return null;
 }
 
@@ -356,15 +356,20 @@ const ops = {
     if (p0.marker === args.key) {
       const win = Safari.windows.byId(args.windowId);
       let leaving = false; // 문서를 떠나는 중인가(beforeunload — Page 가 동작 때 심는 깃발)
+      // 아직 옛 문서의 주소는 그 문서 자신의 location.href 로 읽는다. 이동이 진행 중일 때 사파리의 tab.url() 은 가는 중인 목적지를 돌려주므로
+      // 옛 문서의 주소로 쓰면 안 된다(읽지 못하면 기록해 둔 주소를 그대로 돌려준다).
+      let url = args.url !== undefined && args.url !== null ? args.url : p0.url;
       try {
-        leaving = Safari.doJavaScript("!!window.__saLeaving", { in: p0.tab }) === true;
+        const st = JSON.parse(str(Safari.doJavaScript("JSON.stringify([!!window.__saLeaving, location.href])", { in: p0.tab })));
+        leaving = st[0] === true;
+        if (typeof st[1] === "string" && st[1] !== "") url = st[1];
       } catch (e) {
         if (isJsOffError(e)) throw e;
       }
       return {
         status: "same",
         leaving,
-        tab: { windowId: args.windowId, index: args.index, title: str(p0.tab.name()), url: p0.url, isActive: args.index === win.currentTab().index() },
+        tab: { windowId: args.windowId, index: args.index, title: str(p0.tab.name()), url, isActive: args.index === win.currentTab().index() },
       };
     }
     const r = finishRebind(args, p0.tab);

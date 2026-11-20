@@ -199,8 +199,9 @@ describeIt('열기 · 이동은 쓸 수 있을 때 돌아온다(domcontentloaded
     const r = await s.run(`
       const k2 = await openTab(${JSON.stringify(basic())});
       const t0 = Date.now();
+      const before = k2.url();
       try { await k2.goto(${JSON.stringify(basic() + '&delay=10000')}, { timeout: 3000 }); console.log('오류 없음'); }
-      catch (e) { console.log(Date.now() - t0, e.code || '', e.message); }
+      catch (e) { console.log(Date.now() - t0, e.code || '', e.message, k2.url() === before, (await k2.evaluate('location.href')) === before); }
     `);
     expect(r.error).toBeUndefined();
     expect(r.output).not.toContain('오류 없음');
@@ -209,9 +210,10 @@ describeIt('열기 · 이동은 쓸 수 있을 때 돌아온다(domcontentloaded
     expect(Number(ms)).toBeGreaterThanOrEqual(2800);
     expect(Number(ms)).toBeLessThan(6000);
     expect(line).toContain('3000ms 안에 이동하지 않음');
+    expect(line.endsWith('true true')).toBe(true); // page.url() 도 문서 안 주소도 아직 옛 페이지(가는 중인 목적지로 바뀌지 않는다)
   });
 
-  test('아직 로딩 중(load 가 3초 뒤)인 문서에서 시작한 6초 걸리는 이동 — 옛 문서의 pageshow(persisted 아님)가 「떠나는 중」을 지워 일찍 끝나지 않는다', async () => {
+  test('아직 로딩 중(load 가 3초 뒤)인 문서에서 시작한 6초 걸리는 이동도 새 문서에서 끝난다(떠나는 중 깃발 · 옛 문서의 늦은 load 에 흔들리지 않는지 확인 — pageshow persisted 수정을 가르는 시험은 아니다)', async () => {
     const out = await run(`
       const m1 = await openTab(${JSON.stringify(slow())});
       const t0 = Date.now();

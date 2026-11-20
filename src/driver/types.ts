@@ -84,6 +84,11 @@ export interface SafariDriver {
    */
   settleTab(tabKey: string, opts?: { waitUntil?: "commit"; loadBudgetMs?: number }): Promise<{ navigated: boolean; leaving: boolean; tab: TabInfo }>;
   /**
+   * 이동이 시간 초과로 끝났음을 알린다(새 문서가 아직 안 떴다). 붙인 사용자 탭이면 늦게 새 문서가 떠도 키를 잃지 않게 「표시 안 한 탭」으로 바꿔 둔다.
+   * 우리가 연 탭이거나 이미 바뀐 탭이면 아무 일도 하지 않는다. 실패해도 오류를 올리지 않는다.
+   */
+  noteNavTimeout?(tabKey: string): Promise<void>;
+  /**
    * 활성화 없이 새 창을 열고(앞 앱을 바꾸지 않는다), 크기를 맞추고, 사파리 창 순서 맨 뒤로 보내고, 페이지를 쓸 수 있을 때까지(domcontentloaded) 기다린다.
    * frontAppChanged 는 openTab 과 같은 뜻(사파리가 맨 앞으로 나왔나).
    * 창과 그 탭은 우리 것(owned). width · height 는 창 안 페이지 크기(innerWidth · innerHeight)다.

@@ -25,6 +25,8 @@ export interface Spot {
   url: string;
   /** 아직 페이지에 표시를 안 했다(주소로만 알아본다). */
   unstamped: boolean;
+  /** 표시 안 한 탭을 알아볼 때 url 말고 받아들일 주소 — 이동이 시간 초과로 끝난 탭이 늦게 새 문서로 바뀌었을 때의 목적지. */
+  altUrl?: string;
 }
 
 /** 호스트가 보낸 답 — 자리의 탭이 키와 맞지 않으면 stale. */
@@ -65,6 +67,8 @@ interface Entry {
   owned: boolean;
   /** 페이지에 표시(`dataset.saTab`)를 적었다. */
   stamped: boolean;
+  /** 이동이 시간 초과로 끝났을 때 사파리가 알려 준 가는 중인 목적지. 늦게 새 문서가 뜨면 그 주소로도 이 탭을 알아본다(표시 안 한 탭일 때만 쓴다). */
+  pendingUrl?: string;
   /** JS 에 답하지 않는 탭(경고창이 떠 있음). 표시를 읽으러 다시 들여다보지 않고 주소로만 알아본다. 다음에 일이 잘 끝나면 풀린다. */
   blocked?: boolean;
 }
@@ -141,7 +145,7 @@ export class TabRegistry {
   spot(key: string): Spot {
     const e = this.entries.get(key);
     if (!e) throw new SafariError("TAB_CLOSED", `모르는 탭 키(닫혔거나 만든 적 없음): ${key}`);
-    return { windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, unstamped: !e.stamped };
+    return { windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, unstamped: !e.stamped, altUrl: e.pendingUrl };
   }
 
   /** 지금 알고 있는 그 탭의 주소(열 때 · runJs · settle · rebind 때마다 새로 한다). 모르는 키면 undefined. */
@@ -263,6 +267,7 @@ export class TabRegistry {
     e.windowId = r.tab.windowId;
     e.index = r.tab.index;
     e.url = r.tab.url;
+    e.pendingUrl = undefined;
     e.stamped = r.stamped ?? true; // 표시를 못 적었으면 「표시 안 한 탭」으로 둬 다음에 자리 · 주소로 다시 알아본다
     e.blocked = false;
     return r.tab;
@@ -280,7 +285,10 @@ export class TabRegistry {
     if (!e.stamped) {
       // 표시를 아직 안 적은 탭 — 자리와 주소가 그대로일 때만 우리 탭이다. 이 경우 표시 없음은 이동이 아니다.
       const p = await this.backend.probe(e.windowId, e.index);
-      if (p.exists && p.marker === "" && p.url === e.url && (await this.backend.stamp(e.windowId, e.index, this.markerOf(key)))) e.stamped = true;
+      if (p.exists && p.marker === "" && (p.url === e.url || p.url === e.pendingUrl) && (await this.backend.stamp(e.windowId, e.index, this.markerOf(key)))) {
+        e.stamped = true;
+        e.pendingUrl = undefined;
+      }
     }
     const { waitUntil, loadBudgetMs } = opts;
     let r = await this.backend.settle({ windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, waitUntil, loadBudgetMs });
@@ -296,9 +304,30 @@ export class TabRegistry {
     e.windowId = r.tab.windowId;
     e.index = r.tab.index;
     e.url = r.tab.url;
+    e.pendingUrl = undefined;
     e.stamped = r.status === "navigated" ? (r.stamped ?? true) : true; // commit 에서 표시를 못 적었으면 「표시 안 한 탭」으로 둔다
     e.blocked = false;
     return { navigated: r.status === "navigated", leaving: r.status === "same" && r.leaving, tab: r.tab };
+  }
+
+  /**
+   * 이동이 시간 초과로 끝났다(새 문서가 아직 안 떴다). 우리가 연 탭은 나중에 새 문서가 떠도 settle 이 키를 지키므로 그대로 둔다.
+   * 붙인 사용자 탭(owned 아님)은 늦게 새 문서가 뜨면 표시를 잃어 TAB_CLOSED 가 될 수 있으니, 「표시 안 한 탭」으로 바꾸고 사파리가 알려 준
+   * 가는 중인 목적지를 적어 둔다 — 다음 일에서 자리 · 주소(기록한 주소 또는 목적지)로 다시 알아보고 표시를 적는다.
+   * 아직 옛 문서(표시가 이 키)일 때만 한다. 다음에 일이 잘 끝나면(confirm) 도로 표시 있는 탭이 된다.
+   */
+  async navTimedOut(key: string): Promise<void> {
+    const e = this.entries.get(key);
+    if (!e || e.owned) return;
+    let p: Probe;
+    try {
+      p = await this.backend.probe(e.windowId, e.index, PROBE_TIMEOUT_MS);
+    } catch {
+      return;
+    }
+    if (!p.exists || p.marker !== this.markerOf(key)) return; // 이미 바뀌었거나 없다 — 그건 settle · resolve 가 다룬다
+    e.stamped = false;
+    e.pendingUrl = p.url !== e.url && p.url !== "" ? p.url : undefined;
   }
 
   /** 우리가 연 탭을 모두 닫는다(사용자 탭은 건드리지 않는다). 실제로 닫은 수를 돌려준다. */
@@ -322,6 +351,7 @@ export class TabRegistry {
   confirm(key: string): void {
     const e = this.entries.get(key);
     if (e) {
+      e.pendingUrl = undefined;
       e.stamped = true;
       e.blocked = false;
     }
@@ -404,6 +434,7 @@ export class TabRegistry {
       e.windowId = t.windowId;
       e.index = t.index;
       e.url = t.url;
+      e.pendingUrl = undefined;
       return t;
     };
 
@@ -411,7 +442,7 @@ export class TabRegistry {
       // 표시 없는 탭 — 자리와 주소가 그대로일 때만 그 탭. 주소가 같은 다른 탭으로 옮겨 잡지 않는다
       // (사용자가 이 탭을 닫았을 때 주소가 같은 다른 탭을 건드리게 되므로).
       const here = at(e);
-      return here && free(here) && here.url === e.url ? take(here) : null;
+      return here && free(here) && (here.url === e.url || here.url === e.pendingUrl) ? take(here) : null;
     }
 
     // JS 에 답하지 않는 탭은 표시를 못 읽는다 — 자리와 주소가 그대로면 그 탭으로 본다.

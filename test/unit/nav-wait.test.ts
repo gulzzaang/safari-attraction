@@ -47,6 +47,14 @@ describe("goto · reload · 뒤로 · 앞으로: 떠나는 중이면 새 문서�
     expect(Date.now() - t0).toBeLessThan(2500);
     expect(log.reads).toBe(0);
   });
+  test("TIMEOUT 직전에 드라이버에 알린다(noteNavTimeout) — 붙인 탭이 늦은 새 문서에서 키를 잃지 않게", async () => {
+    const noted: string[] = [];
+    const { page } = fake(() => ({ navigated: false, leaving: true }));
+    (page as unknown as { driver: SafariDriver }).driver.noteNavTimeout = async (k: string) => void noted.push(k);
+    await expect(page.goto("http://x/new", { timeout: 300 })).rejects.toMatchObject({ code: "TIMEOUT", message: expect.stringContaining("내려받기 · 응답 없는 주소일 수도 있어요") });
+    expect(noted).toEqual(["t1"]);
+    expect(page.url()).toBe("http://x/old"); // 옛 문서의 주소 그대로
+  });
   test("goto: 같은 문서 안 이동(해시만, 이동 없음)은 기다리지 않고 끝나며 load 도 확인하지 않는다", async () => {
     const { page, log } = fake(() => ({ navigated: false, leaving: false }), { expectNav: false });
     const t0 = Date.now();
