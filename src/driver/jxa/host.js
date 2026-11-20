@@ -109,13 +109,15 @@ function guardTab(args) {
   return null;
 }
 
-// 문서를 쓸 수 있는 때인가(Playwright 의 domcontentloaded 처럼): readyState 가 complete 이거나, interactive 이면서 body 가 있을 때.
-// body 가 없는 문서(XML · SVG · 이미지 단독 문서)는 complete 가 돼야 쓸 수 있는 것으로 본다. 이미지 · 스크립트 · 아이프레임이 다 오기 전의 load 이벤트는 기다리지 않는다.
-function usableState(readyState, hasBody) {
-  return readyState === "complete" || (readyState === "interactive" && hasBody);
+// 문서를 쓸 수 있는 때인가(Playwright 의 domcontentloaded 처럼): DOMContentLoaded 이벤트가 끝났고(navigation 기록의 domContentLoadedEventEnd > 0 —
+// defer · module 스크립트까지 돈 뒤다) body 가 있을 때. navigation 기록을 못 읽으면 readyState 가 complete 일 때로 본다.
+// 이미지 · async 스크립트 · 아이프레임이 다 오기 전의 load 이벤트는 기다리지 않는다.
+const READY_PROBE = "document.readyState + ' ' + (document.body ? 1 : 0) + ' ' + (((performance.getEntriesByType('navigation')[0] || {}).domContentLoadedEventEnd || 0) > 0 ? 1 : 0)";
+function usableState(readyState, hasBody, dclDone) {
+  return readyState === "complete" || (hasBody && dclDone);
 }
 
-// 새 문서가 쓸 수 있게 될 때까지(최대 15초) 기다려 표시를 적고 탭 정보를 돌려준다(rebind · settle 이 함께 쓴다).
+// 새 문서가 쓸 수 있게 될 때까지(최대 args.loadBudgetMs, 기본 15초) 기다려 표시를 적고 탭 정보를 돌려준다(rebind · settle 이 함께 쓴다).
 // args.waitUntil === "commit" 이면 기다리지 않고 바로 표시를 적어 본다(적지 못해도 나중에 키로 다시 찾는다).
 function finishRebind(args, tab) {
   // 읽어 보아 표시가 남아 있는지 확인한다(뜨는 중에 적으면 지워질 수 있다).
@@ -126,8 +128,8 @@ function finishRebind(args, tab) {
     for (; !commitOnly; ) {
       let ready = false;
       try {
-        const st = str(Safari.doJavaScript("document.readyState + ' ' + (document.body ? 1 : 0)", { in: tab })).split(" ");
-        ready = usableState(st[0], st[1] === "1");
+        const st = str(Safari.doJavaScript(READY_PROBE, { in: tab })).split(" ");
+        ready = usableState(st[0], st[1] === "1", st[2] === "1");
       } catch (e) {
         if (isJsOffError(e)) throw e;
       }
@@ -258,7 +260,7 @@ function waitForLoad(tab, args, onJsOff) {
   for (;;) {
     let state = "";
     try {
-      state = str(Safari.doJavaScript("location.href + ' ' + document.readyState + ' ' + (document.body ? 1 : 0)", { in: tab }));
+      state = str(Safari.doJavaScript("location.href + ' ' + " + READY_PROBE, { in: tab }));
     } catch (e) {
       if (isJsOffError(e)) {
         try {
@@ -268,10 +270,11 @@ function waitForLoad(tab, args, onJsOff) {
       }
     }
     const parts = state.split(" ");
+    const dclDone = parts.pop() === "1";
     const hasBody = parts.pop() === "1";
     const readyState = parts.pop();
     const href = parts.join(" ");
-    if (usableState(readyState, hasBody) && href !== "" && (blank || href !== "about:blank")) break;
+    if (usableState(readyState, hasBody, dclDone) && href !== "" && (blank || href !== "about:blank")) break;
     if (Date.now() - t0 > budget) break;
     nap(0.05);
   }

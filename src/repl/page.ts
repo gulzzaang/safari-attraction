@@ -18,7 +18,22 @@ const DEFAULT_WAIT_MS = 30000;
 /** 「아직 아님」일 때 다시 확인하는 간격. 기다림은 Node 쪽에서 돈다 — 뒤쪽 탭에서는 사파리가 페이지의 타이머를 멈추기 때문이다. */
 const ACTION_POLL_MS = 150;
 
-type SettleOpts = { waitUntil: "commit" };
+/** 이동 하나의 기다림: 무엇을 기다리고(wait) 얼마 안에(timeoutMs, 시작 t0 부터) 끝내야 하는지. 호스트가 기다리는 시간도 남은 만큼으로 맞춘다. */
+class NavWait {
+  private readonly t0 = Date.now();
+  constructor(
+    readonly wait: WaitUntil,
+    readonly timeoutMs: number,
+  ) {}
+  /** 남은 시간(밀리초, 최소 1). */
+  remaining(): number {
+    return Math.max(1, Math.round(this.timeoutMs - (Date.now() - this.t0)));
+  }
+  /** settleTab 에 줄 인자. */
+  settleOpts(): { waitUntil?: "commit"; loadBudgetMs: number } {
+    return this.wait === "commit" ? { waitUntil: "commit", loadBudgetMs: this.remaining() } : { loadBudgetMs: this.remaining() };
+  }
+}
 
 /** 사파리 창이 줄어드는 최소 폭(대략). */
 const MIN_WINDOW_WIDTH_PX = 336;
@@ -85,9 +100,9 @@ export class Page {
    * waitUntil: 'commit'(주소가 바뀌는 즉시) · 'domcontentloaded' · 'load' · 'networkidle'. timeout 은 밀리초(기본 15초, 최대 110초).
    */
   async goto(url: string, opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<void> {
-    const wait = parseWaitUntil(opts?.waitUntil, "goto", true);
-    await this.act("goto", { url }, wait === "commit" ? { waitUntil: "commit" } : undefined);
-    await this.afterNav(wait, opts?.timeout);
+    const nav = new NavWait(parseWaitUntil(opts?.waitUntil, "goto", true), normTimeout(opts?.timeout, LOAD_TIMEOUT_MS));
+    await this.act("goto", { url }, nav);
+    await this.afterNav(nav);
   }
 
   /**
@@ -100,7 +115,11 @@ export class Page {
     await this.waitLoad(p.state, p.timeoutMs);
   }
 
-  private async waitLoad(state: LoadState, timeoutMs: number): Promise<void> {
+  /**
+   * 남은 시간(remainingMs) 안에 상태가 되길 기다린다. 시간 초과 오류에는 부른 쪽이 처음 정한 전체 시간(totalMs, 안 주면 remainingMs)을 적는다.
+   * @internal 열기(openTab)가 호스트 기다림 뒤에 이어서 기다릴 때 쓴다.
+   */
+  async waitLoad(state: LoadState, remainingMs: number, totalMs: number = remainingMs): Promise<void> {
     const source = loadPollSource(state);
     const idle = state === "networkidle" ? new IdleWatch() : null;
     const t0 = Date.now();
@@ -108,15 +127,15 @@ export class Page {
       this.checkAbort();
       const r = parseLoadReading(await this.driver.runJs(this.key, source));
       if (idle ? idle.feed(r, Date.now()) : reached(state as Exclude<LoadState, "networkidle">, r)) return;
-      if (Date.now() - t0 > timeoutMs) throw new SafariError("TIMEOUT", loadTimeoutMessage(state, timeoutMs));
+      if (Date.now() - t0 > remainingMs) throw new SafariError("TIMEOUT", loadTimeoutMessage(state, totalMs));
       await sleep(100);
     }
   }
 
   /** 이동 뒤 기다림. commit 은 이미 주소가 바뀐 것을 settleTab 이 봤으니 더 기다리지 않는다. */
-  private async afterNav(wait: WaitUntil, timeout: unknown): Promise<void> {
-    if (wait === "commit") return;
-    await this.waitLoad(wait, normTimeout(timeout, LOAD_TIMEOUT_MS));
+  private async afterNav(nav: NavWait): Promise<void> {
+    if (nav.wait === "commit") return;
+    await this.waitLoad(nav.wait, nav.remaining(), nav.timeoutMs);
   }
 
   /**
@@ -206,12 +225,14 @@ export class Page {
    */
   async waitForURL(url: string | RegExp | ((u: URL) => boolean), opts: { timeout?: number; waitUntil?: WaitUntil } = {}): Promise<void> {
     const test = urlTester(url);
-    const wait = parseWaitUntil(opts?.waitUntil, "waitForURL", true);
+    const loadNav = () => new NavWait(parseWaitUntil(opts?.waitUntil, "waitForURL", true), normTimeout(opts?.timeout, LOAD_TIMEOUT_MS));
+    loadNav(); // 잘못된 waitUntil 은 기다리기 전에 알린다
+    const commit = opts?.waitUntil === "commit";
     const timeoutMs = normTimeout(opts?.timeout, DEFAULT_WAIT_MS);
     const t0 = Date.now();
     for (;;) {
       this.checkAbort();
-      const cur = (await this.driver.settleTab(this.key, wait === "commit" ? { waitUntil: "commit" } : undefined)).tab.url;
+      const cur = (await this.driver.settleTab(this.key, commit ? { waitUntil: "commit" } : undefined)).tab.url;
       this.knownUrl = cur;
       if (test(cur)) break;
       if (Date.now() - t0 > timeoutMs) {
@@ -220,7 +241,7 @@ export class Page {
       }
       await sleep(WAIT_POLL_MS);
     }
-    await this.afterNav(wait, opts?.timeout);
+    await this.afterNav(loadNav()); // 주소가 맞은 뒤부터 센다
   }
 
   /** 지금 문서를 다시 불러온다(같은 탭 · 같은 키). waitUntil 은 goto 와 같다(기본 'domcontentloaded'). */
@@ -334,9 +355,9 @@ export class Page {
   }
 
   /** 페이지 안 동작 하나를 돌리고, 문서가 바뀌었으면 탭 키를 다시 붙인다. */
-  private async act(op: ActionOp, args: Record<string, unknown>, settleOpts?: SettleOpts) {
+  private async act(op: ActionOp, args: Record<string, unknown>, nav?: NavWait) {
     this.checkAbort();
-    return this.run(buildActionSource(op, { ...args, tok: newToken() }), false, settleOpts);
+    return this.run(buildActionSource(op, { ...args, tok: newToken() }), false, nav);
   }
 
   /** 읽기만 하는 동작 하나(이동을 일으키지 않으니 settleTab 확인은 하지 않는다). */
@@ -384,21 +405,20 @@ export class Page {
    * 주소가 바뀌었는지도 함께 본다. 갈 곳이 없으면(뒤로 갈 이력이 없음) 잠깐 기다린 뒤 그대로 끝낸다.
    */
   private async navigate(dir: "reload" | "back" | "forward", opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<void> {
-    const wait = parseWaitUntil(opts?.waitUntil, dir === "reload" ? "reload" : dir === "back" ? "goBack" : "goForward", true);
-    const settleOpts: SettleOpts | undefined = wait === "commit" ? { waitUntil: "commit" } : undefined;
+    const nav = new NavWait(parseWaitUntil(opts?.waitUntil, dir === "reload" ? "reload" : dir === "back" ? "goBack" : "goForward", true), normTimeout(opts?.timeout, LOAD_TIMEOUT_MS));
     // 이동하기 전 주소는 이동을 시키는 그 runJs 가 알려 준다(캐시가 한 박자 늦을 수 있다).
     const sent = await this.read("nav", { dir });
     const before = typeof sent.v === "string" ? sent.v : (this.driver.lastUrl?.(this.key) ?? this.knownUrl);
     const t0 = Date.now();
     for (;;) {
       this.checkAbort();
-      const r = await this.driver.settleTab(this.key, settleOpts);
+      const r = await this.driver.settleTab(this.key, nav.settleOpts());
       this.knownUrl = r.tab.url;
       if (r.navigated || (dir !== "reload" && r.tab.url !== before && !r.leaving)) break;
       if (Date.now() - t0 > (r.leaving ? LEAVING_MAX_MS : EXPECT_NAV_GRACE_MS + 500)) break;
       await sleep(100);
     }
-    await this.afterNav(wait, opts?.timeout);
+    await this.afterNav(nav);
   }
 
   /**
@@ -429,12 +449,12 @@ export class Page {
     if (this.ai?.aborted?.()) throw new Error("repl 호출이 이미 끝나서 기다림을 멈췄어요(이 코드는 더 이상 페이지에 아무것도 하지 않아요)");
   }
 
-  private async run(source: string, expectNav: boolean, settleOpts?: SettleOpts) {
+  private async run(source: string, expectNav: boolean, nav?: NavWait) {
     const raw = await this.driver.runJs(this.key, source);
     const res = JSON.parse(raw) as ActionOk | ActionErr;
     if (!res.ok) throw new Error(res.err);
     if (res.r.notReady) return res.r; // 동작하지 않았으니 이동도 없다
-    await this.settle(expectNav || !!res.r.expectNav, res.r.timerMs ?? -1, settleOpts);
+    await this.settle(expectNav || !!res.r.expectNav, res.r.timerMs ?? -1, nav);
     return res.r;
   }
 
@@ -442,12 +462,12 @@ export class Page {
    * 동작 뒤 탭이 이동했는지 settleTab(읽기 전용)으로 보고, 새 문서면 거기서 끝낸다(표시는 settleTab 이 다시 적는다).
    * 아직 옛 문서면: 문서를 떠나는 중이면 더 기다리고, 동작이 이동을 일으킬 게 분명했으면(expectNav) 잠깐 더 기다리고, 아니면 끝.
    */
-  private async settle(expectNav: boolean, timerMs: number, settleOpts?: SettleOpts): Promise<void> {
+  private async settle(expectNav: boolean, timerMs: number, nav?: NavWait): Promise<void> {
     if (timerMs >= 0 && timerMs <= TIMER_WAIT_MAX_MS) await sleep(timerMs + 80);
     const t0 = Date.now();
     for (;;) {
       this.checkAbort();
-      const r = await this.driver.settleTab(this.key, settleOpts);
+      const r = await this.driver.settleTab(this.key, nav?.settleOpts());
       if (r.navigated) return;
       const waited = Date.now() - t0;
       if (r.leaving ? waited > LEAVING_MAX_MS : !expectNav || waited > EXPECT_NAV_GRACE_MS) return;

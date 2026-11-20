@@ -63,7 +63,7 @@ export interface SafariDriver {
    * 활성 탭을 바꾸지 않고, 사파리를 앞으로 가져오지 않고 뒤쪽 탭을 연다. 페이지를 쓸 수 있을 때까지(domcontentloaded — load 이벤트까지는 아니다) 기다린다.
    * frontAppChanged: 사파리가 맨 앞으로 나왔나(부르기 전엔 사파리가 아니었고 뒤엔 사파리일 때만 true — 다른 앱이 앞으로 나온 것은 false).
    */
-  openTab(url: string, opts?: { windowId?: number }): Promise<{ tab: TabInfo; frontAppChanged: boolean }>;
+  openTab(url: string, opts?: { windowId?: number; loadBudgetMs?: number }): Promise<{ tab: TabInfo; frontAppChanged: boolean }>;
   runJs(tabKey: string, source: string, opts?: { timeoutMs?: number }): Promise<string>;
   /** 그 탭의 마지막으로 알려진 주소(동기). openTab · runJs · settleTab · rebindTab 이 새로 한다. 모르는 키(닫힘)면 undefined. */
   lastUrl(tabKey: string): string | undefined;
@@ -80,14 +80,15 @@ export interface SafariDriver {
    * 표시를 다시 적고 navigated:true. 표시가 없다는 이유로 키를 지우지 않는다 — 다른 키의 표시가 있거나 탭이 정말 없을 때만
    * TAB_CLOSED(그때만 키를 지운다). 「다 뜰 때」는 문서를 쓸 수 있게 될 때(readyState 가 interactive · complete 이고 body 가 있음 — domcontentloaded)이고,
    * opts.waitUntil 이 "commit" 이면 새 문서가 보이는 즉시 끝낸다.
+   * opts.loadBudgetMs 는 호스트가 쓸 수 있을 때를 기다리는 최대 시간(기본 15초). 넘기면 기다림만 끝내고 그대로 돌려준다(시간 초과 오류는 부른 쪽 몫).
    */
-  settleTab(tabKey: string, opts?: { waitUntil?: "commit" }): Promise<{ navigated: boolean; leaving: boolean; tab: TabInfo }>;
+  settleTab(tabKey: string, opts?: { waitUntil?: "commit"; loadBudgetMs?: number }): Promise<{ navigated: boolean; leaving: boolean; tab: TabInfo }>;
   /**
    * 활성화 없이 새 창을 열고(앞 앱을 바꾸지 않는다), 크기를 맞추고, 사파리 창 순서 맨 뒤로 보내고, 페이지가 뜰 때까지 기다린다.
    * frontAppChanged 는 openTab 과 같은 뜻(사파리가 맨 앞으로 나왔나).
    * 창과 그 탭은 우리 것(owned). width · height 는 창 안 페이지 크기(innerWidth · innerHeight)다.
    */
-  openWindow(url: string, opts?: { width?: number; height?: number }): Promise<{ windowId: number; tab: TabInfo; frontAppChanged: boolean }>;
+  openWindow(url: string, opts?: { width?: number; height?: number; loadBudgetMs?: number }): Promise<{ windowId: number; tab: TabInfo; frontAppChanged: boolean }>;
   /**
    * 우리가 연 창(또는 adoptWindow 로 고른 AI 창)의 페이지 크기(innerWidth · innerHeight)를 요청과 같게 맞춘다. 창 바깥 크기를 한 번 재고 한 번 고친다.
    * 사파리 최소 폭보다 좁거나 화면보다 크면 실제 값을 그대로 돌려준다(오류 아님). 그 밖의 창이면 SAFARI_ERROR, 닫힌 창이면 WINDOW_CLOSED.

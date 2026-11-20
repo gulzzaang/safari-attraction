@@ -11,6 +11,8 @@ vi.setConfig({ testTimeout: 40_000, hookTimeout: 30_000 });
 const RUN = `it=ready-${process.pid}-${Date.now()}`;
 let seq = 0;
 const slow = () => `${fixture('slow-load.html')}?${RUN}&n=${seq++}`;
+const deferFill = () => `${fixture('defer-fill.html')}?${RUN}&n=${seq++}`;
+const stuck = () => `${fixture('defer-stuck.html')}?${RUN}&n=${seq++}`;
 const basic = () => `${fixture('basic.html')}?${RUN}&n=${seq++}`;
 
 describeIt('열기 · 이동은 쓸 수 있을 때 돌아온다(domcontentloaded)', () => {
@@ -135,4 +137,52 @@ describeIt('열기 · 이동은 쓸 수 있을 때 돌아온다(domcontentloaded
     `);
     expect(out.split('\n')).toEqual(['true 기본 시험 페이지 true', '기본 시험 페이지']);
   });
+
+  test('defer 스크립트가 본문을 채우는 페이지: openTab 이 돌아오면 snapshot 에 채워진 글이 이미 있다(load 는 아직)', async () => {
+    const out = await run(`
+      const t0 = Date.now();
+      const i1 = await openTab(${JSON.stringify(deferFill())});
+      const ms = Date.now() - t0;
+      const sn = await snapshot(i1);
+      console.log(ms < 2500, sn.tree.includes('defer 스크립트가 채운 본문'), await i1.evaluate('window.__loaded'));
+    `);
+    expect(out).toBe('true true false');
+  });
+
+  test('defer 스크립트 페이지로 goto 해도 같다', async () => {
+    const out = await run(`
+      const i2 = await openTab(${JSON.stringify(basic())});
+      await i2.goto(${JSON.stringify(deferFill())});
+      console.log((await snapshot(i2)).tree.includes('defer 스크립트가 채운 본문'), await i2.evaluate('window.__loaded'));
+    `);
+    expect(out).toBe('true false');
+  });
+
+  test('goto {timeout:2000} 은 DOMContentLoaded 가 6초 늦는 페이지에서 2초쯤 뒤 한국어 시간 초과 오류를 낸다', async () => {
+    const r = await s.run(`
+      const j1 = await openTab(${JSON.stringify(basic())});
+      const t0 = Date.now();
+      try { await j1.goto(${JSON.stringify(stuck())}, { timeout: 2000 }); console.log('오류 없음'); }
+      catch (e) { console.log(Date.now() - t0, e.message); }
+    `);
+    expect(r.error).toBeUndefined();
+    const [ms, ...msg] = r.output.split(' ');
+    expect(Number(ms)).toBeGreaterThanOrEqual(1800);
+    expect(Number(ms)).toBeLessThan(5000);
+    expect(msg.join(' ')).toContain('2000ms 안에 쓸 수 있게 되지 않음');
+  });
+
+  test('openTab {timeout:2000} 도 마찬가지로 2초쯤 뒤 시간 초과', async () => {
+    const r = await s.run(`
+      const t0 = Date.now();
+      try { await openTab(${JSON.stringify(stuck())}, { timeout: 2000 }); console.log('오류 없음'); }
+      catch (e) { console.log(Date.now() - t0, e.message); }
+    `);
+    expect(r.error).toBeUndefined();
+    const [ms, ...msg] = r.output.split(' ');
+    expect(Number(ms)).toBeGreaterThanOrEqual(1800);
+    expect(Number(ms)).toBeLessThan(5000);
+    expect(msg.join(' ')).toContain('쓸 수 있게 되지 않음');
+  });
 });
+

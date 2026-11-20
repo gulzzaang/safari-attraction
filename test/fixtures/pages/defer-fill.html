@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>defer 스크립트 페이지</title></head>
+<body>
+  <p id="app"></p>
+  <script>
+    window.__loaded = false;
+    window.addEventListener('load', function () { window.__loaded = true; });
+  </script>
+  <!-- defer 스크립트는 파싱이 끝난 뒤(readyState 가 interactive 인 채로) 도는데, 이게 끝나야 DOMContentLoaded 가 난다 -->
+  <script defer src="/defer-fill.js?delay=800"></script>
+  <!-- async 스크립트는 load 만 늦춘다 -->
+  <script async src="/slow.js?delay=3000"></script>
+</body>
+</html>

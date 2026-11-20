@@ -35,30 +35,38 @@ describe("waitUntil · waitForLoadState 인자 풀기", () => {
 });
 
 describe("읽은 값으로 상태 판단", () => {
-  test("domcontentloaded: complete, 또는 interactive + body", () => {
-    expect(usable(parseLoadReading("loading|1"))).toBe(false);
-    expect(usable(parseLoadReading("interactive|0"))).toBe(false);
-    expect(usable(parseLoadReading("interactive|1"))).toBe(true);
-    expect(usable(parseLoadReading("complete|0"))).toBe(true); // body 없는 문서(XML 등)
+  test("domcontentloaded: DOMContentLoaded 가 끝나고 body 가 있을 때, 또는 complete", () => {
+    expect(usable(parseLoadReading("loading|1|0"))).toBe(false);
+    expect(usable(parseLoadReading("interactive|0|0"))).toBe(false);
+    expect(usable(parseLoadReading("interactive|1|0"))).toBe(false); // defer · module 스크립트가 아직 안 돈 때
+    expect(usable(parseLoadReading("interactive|1|1"))).toBe(true);
+    expect(usable(parseLoadReading("interactive|0|1"))).toBe(false); // body 없음
+    expect(usable(parseLoadReading("complete|1|0"))).toBe(true); // navigation 기록을 못 읽는 경우의 대비
+    expect(usable(parseLoadReading("complete|0|0"))).toBe(true); // body 없는 문서(XML 등)
   });
   test("load 는 complete 만", () => {
-    expect(reached("load", parseLoadReading("interactive|1"))).toBe(false);
-    expect(reached("load", parseLoadReading("complete|1"))).toBe(true);
-    expect(reached("domcontentloaded", parseLoadReading("interactive|1"))).toBe(true);
+    expect(reached("load", parseLoadReading("interactive|1|1"))).toBe(false);
+    expect(reached("load", parseLoadReading("complete|1|1"))).toBe(true);
+    expect(reached("domcontentloaded", parseLoadReading("interactive|1|1"))).toBe(true);
   });
   test("옛 꼴 답(complete 만)도 받아들인다", () => {
     expect(reached("load", parseLoadReading("complete"))).toBe(true);
+    expect(usable(parseLoadReading("interactive|1"))).toBe(true); // DCL 칸이 없으면 loading 이 아닌 것으로 본다
+  });
+  test("읽는 식: DCL 은 navigation 기록으로 본다", () => {
+    expect(loadPollSource("domcontentloaded")).toContain("domContentLoadedEventEnd");
+    expect(loadPollSource("load")).toContain("getEntriesByType('navigation')");
   });
   test("읽는 식: networkidle 만 리소스 기록을 본다", () => {
-    expect(loadPollSource("load")).not.toContain("getEntriesByType");
-    expect(loadPollSource("domcontentloaded")).not.toContain("getEntriesByType");
+    expect(loadPollSource("load")).not.toContain("getEntriesByType('resource')");
+    expect(loadPollSource("domcontentloaded")).not.toContain("getEntriesByType('resource')");
     expect(loadPollSource("networkidle")).toContain("getEntriesByType('resource')");
     for (const st of ["domcontentloaded", "load", "networkidle"] as const) expect(() => new Function(`return ${loadPollSource(st)}`)).not.toThrow();
   });
 });
 
 describe("IdleWatch(networkidle 판단)", () => {
-  const r = (state: string, sig: string) => parseLoadReading(`${state}|1|${sig}`);
+  const r = (state: string, sig: string) => parseLoadReading(`${state}|1|1|${sig}`);
   test("load 가 끝난 뒤 변화 없이 500ms 가 지나야 한다", () => {
     const w = new IdleWatch();
     expect(w.feed(r("complete", "3|10"), 0)).toBe(false); // 처음 본 값
@@ -102,14 +110,14 @@ function fake(readings: string[]) {
 
 describe("Page.waitForLoadState", () => {
   test("인자 없이 부르면 load 를 기다린다(interactive 로는 안 끝난다)", async () => {
-    const { page, log } = fake(["interactive|1", "interactive|1", "complete|1"]);
+    const { page, log } = fake(["interactive|1|1", "interactive|1|1", "complete|1|1"]);
     await page.waitForLoadState();
     expect(log.polls).toBe(3);
   });
   test("domcontentloaded 는 interactive + body 에서 끝난다", async () => {
-    const { page, log } = fake(["loading|0", "interactive|1", "complete|1"]);
+    const { page, log } = fake(["loading|0|0", "interactive|1|0", "interactive|1|1", "complete|1|1"]);
     await page.waitForLoadState("domcontentloaded");
-    expect(log.polls).toBe(2);
+    expect(log.polls).toBe(3); // defer 스크립트가 도는 중(DCL 끝나기 전)에는 안 끝난다
   });
   test("옛 숫자 꼴: 제한 시간 안에 안 뜨면 TIMEOUT", async () => {
     const { page } = fake(["interactive|1"]);
@@ -131,7 +139,7 @@ describe("Page.waitForLoadState", () => {
     await expect(page.waitForLoadState("idle" as never)).rejects.toThrow(/waitUntil 은/);
   });
   test("networkidle: complete 가 된 뒤 새 리소스가 없이 500ms 가 지나야 끝난다", async () => {
-    const { page, log } = fake(["interactive|1|2|50", "complete|1|3|90", "complete|1|3|90", "complete|1|3|90"]);
+    const { page, log } = fake(["interactive|1|1|2|50", "complete|1|1|3|90", "complete|1|1|3|90", "complete|1|1|3|90"]);
     const t0 = Date.now();
     await page.waitForLoadState("networkidle");
     expect(Date.now() - t0).toBeGreaterThanOrEqual(480);
@@ -140,7 +148,7 @@ describe("Page.waitForLoadState", () => {
   test("networkidle: 새 리소스가 계속 생기면 시간 초과", async () => {
     let n = 0;
     const tab: TabInfo = { key: "t1", windowId: 1, index: 1, title: "", url: "http://x/", isActive: false, owned: true };
-    const d = { async runJs() { return `complete|1|${++n}|${n}`; }, async settleTab() { return { navigated: false, leaving: false, tab }; } } as unknown as SafariDriver;
+    const d = { async runJs() { return `complete|1|1|${++n}|${n}`; }, async settleTab() { return { navigated: false, leaving: false, tab }; } } as unknown as SafariDriver;
     await expect(new Page(d, "t1").waitForLoadState("networkidle", { timeout: 600 })).rejects.toMatchObject({ code: "TIMEOUT", message: expect.stringContaining("networkidle") });
   });
   test("호출이 끝난(abort) 코드는 더 이상 페이지에 아무것도 하지 않는다", async () => {
@@ -161,10 +169,12 @@ describe("Page.waitForLoadState", () => {
 
 describe("Page 의 이동은 기본으로 domcontentloaded 까지만 기다린다", () => {
   test("goto: interactive 로 끝난다", async () => {
-    const { page, log } = fake(["interactive|1", "complete|1"]);
+    const { page, log } = fake(["interactive|1|1", "complete|1|1"]);
     await page.goto("http://x/next");
     expect(log.polls).toBe(1);
-    expect(log.settleOpts).toEqual([undefined]);
+    expect(log.settleOpts[0]).toMatchObject({ loadBudgetMs: expect.any(Number) });
+    expect(log.settleOpts[0]).not.toHaveProperty("waitUntil");
+    expect((log.settleOpts[0] as { loadBudgetMs: number }).loadBudgetMs).toBeLessThanOrEqual(15000);
   });
   test("goto {waitUntil:'load'} 는 load 까지 기다린다", async () => {
     const { page, log } = fake(["interactive|1", "interactive|1", "complete|1"]);
@@ -175,11 +185,20 @@ describe("Page 의 이동은 기본으로 domcontentloaded 까지만 기다린�
     const { page, log } = fake(["loading|0"]);
     await page.goto("http://x/next", { waitUntil: "commit" });
     expect(log.polls).toBe(0);
-    expect(log.settleOpts).toEqual([{ waitUntil: "commit" }]);
+    expect(log.settleOpts[0]).toMatchObject({ waitUntil: "commit" });
   });
-  test("goto {timeout}: 안 뜨면 그 시간 뒤 TIMEOUT", async () => {
-    const { page } = fake(["loading|0"]);
-    await expect(page.goto("http://x/next", { timeout: 300 })).rejects.toMatchObject({ code: "TIMEOUT" });
+  test("goto {timeout}: 안 뜨면 그 시간 뒤 한국어 TIMEOUT, 호스트에도 그 시간을 넘긴다", async () => {
+    const { page, log } = fake(["loading|0|0"]);
+    const t0 = Date.now();
+    await expect(page.goto("http://x/next", { timeout: 300 })).rejects.toMatchObject({ code: "TIMEOUT", message: expect.stringContaining("쓸 수 있게 되지 않음") });
+    expect(Date.now() - t0).toBeLessThan(1500);
+    expect((log.settleOpts[0] as { loadBudgetMs: number }).loadBudgetMs).toBeLessThanOrEqual(300);
+  });
+  test("goto {timeout} 은 최대 110초로 바로잡아 호스트에 넘긴다", async () => {
+    const { page, log } = fake(["complete|1|1"]);
+    await page.goto("http://x/next", { timeout: 9_999_999 });
+    expect((log.settleOpts[0] as { loadBudgetMs: number }).loadBudgetMs).toBeLessThanOrEqual(110_000);
+    expect((log.settleOpts[0] as { loadBudgetMs: number }).loadBudgetMs).toBeGreaterThan(100_000);
   });
   test("goto 에 잘못된 waitUntil 은 페이지를 건드리기 전에 오류", async () => {
     const { page, log } = fake(["complete|1"]);
@@ -229,7 +248,7 @@ describe("openTab 의 waitUntil", () => {
   });
   test("{waitUntil:'networkidle'}", async () => {
     const d = createFakeDriver();
-    d.answer = (_k, src) => (src.includes("getEntriesByType") ? "complete|1|2|40" : "");
+    d.answer = (_k, src) => (src.includes("getEntriesByType") ? "complete|1|1|2|40" : "");
     const s = createReplSession(d);
     const t0 = Date.now();
     await s.run('await openTab("http://a/", { waitUntil: "networkidle" })');

@@ -41,19 +41,20 @@ export function parseLoadStateArgs(a: unknown, b: unknown): { state: LoadState; 
   return { state: st, timeoutMs: normTimeout(timeout, LOAD_TIMEOUT_MS) };
 }
 
-/** 한 번 읽은 값: readyState · body 가 있는가 · 지금까지 받은 리소스 수와 마지막 리소스의 끝난 때(networkidle 이 변화를 알아보는 표). */
+/** 한 번 읽은 값: readyState · body 가 있는가 · DOMContentLoaded 이벤트가 끝났는가 · 지금까지 받은 리소스 수와 마지막 리소스의 끝난 때(networkidle 이 변화를 알아보는 표). */
 export interface LoadReading {
   readyState: string;
   hasBody: boolean;
+  dclDone: boolean;
   sig: string;
 }
 
-/** 문서를 쓸 수 있는가(host.js 의 usableState 와 같은 뜻). */
-export const usable = (r: LoadReading): boolean => r.readyState === "complete" || (r.readyState === "interactive" && r.hasBody);
+/** 문서를 쓸 수 있는가(host.js 의 usableState 와 같은 뜻): DOMContentLoaded 가 끝나고 body 가 있거나, readyState 가 complete. */
+export const usable = (r: LoadReading): boolean => r.readyState === "complete" || (r.hasBody && r.dclDone);
 
-/** 페이지 안에서 읽는 식. 결과는 `readyState|body|리소스 수|마지막 끝난 때`. networkidle 만 리소스를 본다. */
+/** 페이지 안에서 읽는 식. 결과는 `readyState|body|DCL 끝남|리소스 수|마지막 끝난 때`. networkidle 만 리소스를 본다. */
 export function loadPollSource(state: LoadState): string {
-  const base = "document.readyState + '|' + (document.body ? 1 : 0)";
+  const base = "document.readyState + '|' + (document.body ? 1 : 0) + '|' + (((performance.getEntriesByType('navigation')[0] || {}).domContentLoadedEventEnd || 0) > 0 ? 1 : 0)";
   if (state !== "networkidle") return base;
   // 리소스 기록 칸(기본 250개)이 차면 새 요청이 기록에 안 남아 변화를 못 보므로 칸을 키워 둔다.
   return `(function(){try{if(performance.setResourceTimingBufferSize)performance.setResourceTimingBufferSize(2000)}catch(e){}var r=performance.getEntriesByType('resource');var l=r[r.length-1];return ${base} + '|' + r.length + '|' + (l ? Math.round(l.responseEnd) : 0)})()`;
@@ -62,7 +63,9 @@ export function loadPollSource(state: LoadState): string {
 /** loadPollSource 의 답을 읽는다. 모르는 꼴(옛 시험 답 `complete` 등)도 앞부분만 보고 받아들인다. */
 export function parseLoadReading(raw: string): LoadReading {
   const p = String(raw).split("|");
-  return { readyState: p[0] ?? "", hasBody: p[1] === undefined ? true : p[1] === "1", sig: p.slice(2).join("|") };
+  // 옛 꼴(DCL 칸이 없는 답)은 readyState 가 loading 이 아니면 끝난 것으로 본다.
+  const dclDone = p[2] === undefined ? p[0] !== "loading" : p[2] === "1";
+  return { readyState: p[0] ?? "", hasBody: p[1] === undefined ? true : p[1] === "1", dclDone, sig: p.slice(3).join("|") };
 }
 
 /** 상태에 닿았나. networkidle 은 순서를 지켜 부른 쪽이 idle 을 따로 센다(LoadWatch). */

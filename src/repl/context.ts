@@ -4,7 +4,8 @@ import { inspect } from "node:util";
 import { SafariError, type SafariDriver, type SafariErrorCode, type TabInfo } from "../driver/types.js";
 import { buildSnapshotSource, type SnapshotOptions } from "../snapshot/inpage.js";
 import { SnapshotStore, splitSnapshotMeta } from "../snapshot/store.js";
-import { parseWaitUntil, type WaitUntil } from "./load-state.js";
+import { LOAD_TIMEOUT_MS, parseWaitUntil, type WaitUntil } from "./load-state.js";
+import { normTimeout } from "./locator.js";
 import { Page, type AiWindowAccess } from "./page.js";
 import { OutputBuffer } from "./output.js";
 import { hoistTopLevel } from "./transform.js";
@@ -162,9 +163,27 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     return w === "load" || w === "networkidle" ? w : null;
   };
 
+  /**
+   * 열기의 기다림 시간(timeout, 기본 15초, 최대 110초)을 한 번에 정한다. 드라이버(호스트)에는 이 시간을 그대로 넘기고,
+   * 돌아온 뒤 Page 가 남은 시간으로 이어서 기다린다. timeout 을 직접 줬으면 domcontentloaded 도 한 번 확인해 못 쓰면 시간 초과 오류를 낸다
+   * (안 줬으면 예전처럼 호스트 기다림이 끝난 대로 돌려준다).
+   */
+  const openWait = (opts: { timeout?: number } | undefined) => {
+    const t0 = Date.now();
+    const budget = normTimeout(opts?.timeout, LOAD_TIMEOUT_MS);
+    return {
+      budget,
+      finish: async (pg: Page, more: "load" | "networkidle" | null): Promise<void> => {
+        const state = more ?? (opts?.timeout !== undefined && opts?.timeout !== null ? "domcontentloaded" : null);
+        if (state) await pg.waitLoad(state, Math.max(1, budget - (Date.now() - t0)), budget);
+      },
+    };
+  };
+
   sandbox.openTab = async (url: string, opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<Page> => {
     if (disposed) throw new Error("openTab: 서버가 끝나는 중이라 탭을 열 수 없음");
     const more = extraWait(opts, "openTab"); // 잘못된 값이면 탭을 열기 전에 알린다
+    const wait = openWait(opts);
     const backToFront = () => {
       log("고른 창이 닫혀서 맨 앞 창으로 돌아갑니다");
       workWindowId = null;
@@ -176,12 +195,12 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     }
     let opened;
     try {
-      opened = await driver.openTab(String(url), target === undefined ? undefined : { windowId: target });
+      opened = await driver.openTab(String(url), { windowId: target, loadBudgetMs: wait.budget });
     } catch (e) {
       // 창을 확인한 뒤 열기 전에 닫혔다면 맨 앞 창에 다시 연다. 창이 살아 있으면 원래 오류 그대로.
       if (target === undefined || (await windowExists(target))) throw e;
       backToFront();
-      opened = await driver.openTab(String(url));
+      opened = await driver.openTab(String(url), { loadBudgetMs: wait.budget });
     }
     const { tab, frontAppChanged } = opened;
     if (frontAppChanged) log("주의: 사파리가 맨 앞으로 나왔어요");
@@ -192,13 +211,14 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     }
     owned.add(tab.key);
     const pg = track(new Page(driver, tab.key, aiAccess));
-    if (more) await pg.waitForLoadState(more, { timeout: opts?.timeout });
+    await wait.finish(pg, more);
     return pg;
   };
 
   sandbox.openAiWindow = async (url: string = "about:blank", opts: { width?: number; height?: number; waitUntil?: WaitUntil; timeout?: number } = {}): Promise<Page> => {
     if (disposed) throw new Error("openAiWindow: 서버가 끝나는 중이라 창을 열 수 없음");
     const more = extraWait(opts, "openAiWindow");
+    const wait = openWait(opts);
     const explicit = opts?.width !== undefined || opts?.height !== undefined;
     const width = opts?.width ?? 1280;
     const height = opts?.height ?? 800;
@@ -210,7 +230,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     let front: boolean;
     let winId: number;
     if (aiWindowId === null) {
-      const r = await driver.openWindow(String(url), { width: Math.round(width), height: Math.round(height) });
+      const r = await driver.openWindow(String(url), { width: Math.round(width), height: Math.round(height), loadBudgetMs: wait.budget });
       if (disposed) {
         await driver.closeWindow(r.windowId).catch(() => {});
         throw new Error("openAiWindow: 서버가 끝나는 중이라 창을 열 수 없음");
@@ -220,7 +240,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       front = r.frontAppChanged;
     } else {
       const id = (winId = aiWindowId);
-      const r = await driver.openTab(String(url), { windowId: id });
+      const r = await driver.openTab(String(url), { windowId: id, loadBudgetMs: wait.budget });
       if (disposed) {
         await driver.closeTab(r.tab.key).catch(() => {});
         throw new Error("openAiWindow: 서버가 끝나는 중이라 창을 열 수 없음");
@@ -234,7 +254,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     owned.add(key);
     aiKeys.set(key, winId);
     const pg = track(new Page(driver, key, aiAccess));
-    if (more) await pg.waitForLoadState(more, { timeout: opts?.timeout });
+    await wait.finish(pg, more);
     return pg;
   };
 
