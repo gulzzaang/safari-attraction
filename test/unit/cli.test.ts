@@ -11,8 +11,8 @@ function makeIo(stdinIsTTY: boolean) {
 }
 
 describe("명령줄(runCli)", () => {
-  test("VERSION 은 0.1.0", () => {
-    expect(VERSION).toBe("0.1.0");
+  test("VERSION 은 x.y.z 모양(자리마다 같은지는 version-sync 시험이 본다)", () => {
+    expect(VERSION).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
   test("인자 없음 + 터미널 → 도움말을 찍고 0 (서버가 멈춘 것처럼 보이지 않게)", async () => {
@@ -38,7 +38,7 @@ describe("명령줄(runCli)", () => {
     for (const flag of ["--version", "-v"]) {
       const { out, io } = makeIo(true);
       expect(await runCli([flag], io)).toBe(0);
-      expect(out.join("\n").trim()).toBe("0.1.0");
+      expect(out.join("\n").trim()).toBe(VERSION);
     }
   });
 

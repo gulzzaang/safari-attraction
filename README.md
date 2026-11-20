@@ -52,7 +52,7 @@ safari-attraction setup
 
 ### 길 3. Claude 앱 확장(`.mcpb`)
 
-1. 이 저장소의 GitHub 릴리스 페이지(v0.1.0)에서 `safari-attraction-0.1.0.mcpb` 를 받는다(받아서 전달받아도 된다).
+1. 이 저장소의 GitHub 릴리스 페이지(최신 버전)에서 `safari-attraction-<버전>.mcpb` 를 받는다(받아서 전달받아도 된다).
 2. 파일을 더블클릭하면 Claude 앱이 열리며 설치 창이 뜬다. **「설치」** 를 누른다.
 3. Claude 앱을 새로 시작하면 도구가 보인다.
 
