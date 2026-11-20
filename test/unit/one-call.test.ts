@@ -1,6 +1,7 @@
 import vm from "node:vm";
 import { describe, expect, test } from "vitest";
 import { buildGuardedSource, expressionError, type GuardedReading } from "../../src/driver/guarded-source.js";
+import { sameUrl, urlForms } from "../../src/driver/url.js";
 import { createJxaDriver, opError } from "../../src/driver/jxa-driver.js";
 import { HostError, HostTimeoutError } from "../../src/driver/jxa-host.js";
 import { ACTION_OPS, buildActionSource, buildEvalSource, buildPendingReadSource } from "../../src/repl/inpage-actions.js";
@@ -151,6 +152,13 @@ describe("runJs 소스는 식 하나다(탭 확인 스크립트가 `(소스)` �
     expect(() => new Function("return (" + src + ")")).not.toThrow();
   });
 
+  test("[M1] 식 둘레를 닫고 문장을 끼워 넣는 소스도 걸러낸다(감싼 꼴로 봐서 `(0); x(); (0)` 이 통과하지 않는다)", () => {
+    expect(expressionError("0); x(); (0")).not.toBeNull();
+    expect(expressionError("0)]; x(); [(0")).not.toBeNull();
+    expect(expressionError("0 /* 주석 */")).toBeNull();
+    expect(expressionError("a, b")).toBeNull(); // 쉼표식은 식 하나
+  });
+
   test("문장 · 선언은 식이 아니라고 걸러낸다", () => {
     expect(expressionError("var a = 1; a")).not.toBeNull();
     expect(expressionError("window.scrollTo(0, 0); 0")).not.toBeNull();
@@ -238,13 +246,45 @@ describe("호스트 runJsFast · runJs · showTab (가짜 사파리, 이벤트 �
     expect(jsEvents(h)).toBe(2);
   });
 
-  test("소스가 던진 뒤 자리 확인에서 표시가 안 맞으면 stale", () => {
+  test("소스가 던진 뒤 자리 확인에서 표시가 안 맞아도 stale 로 되돌리지 않는다(다른 문서에서 다시 돌리지 않는다)", () => {
     const h = createHarness();
     const [tab] = h.addWindow(7, { url: "http://x/", marker: KEY });
     const throwing = "(function(){ document.documentElement.dataset.saTab = 'other'; throw new Error('boom') })()";
     expect(tab!.page.dataset.saTab).toBe(KEY);
-    // 가짜 문서의 dataset 은 vm 안에서 바뀌므로 곧바로 어긋난다
-    expect(h.ops.runJsFast!(args({}, throwing))).toEqual({ stale: true });
+    expect(h.ops.runJsFast!(args({}, throwing))).toEqual({ value: "" });
+  });
+
+  test("[I1] 소스가 돈 뒤 doJavaScript 가 시간 초과(-1712) 같은 오류를 올리면 그대로 올리고 소스는 한 번만 돈 채다(느린 길로 안 간다)", () => {
+    const h = createHarness();
+    const [tab] = h.addWindow(7, { url: "http://x/", marker: KEY });
+    tab!.page.throwAfterRun = { message: "AppleEvent timed out.", number: -1712 };
+    expect(() => h.ops.runJsFast!(args({}, "(window.runs = (window.runs || 0) + 1)"))).toThrow(/timed out/);
+    expect(tab!.page.ctx!.runs).toBe(1);
+    expect(jsEvents(h)).toBe(1); // 느린 길 · 자리 확인을 하지 않았다
+  });
+
+  test("[I1] 변환 오류(-10000 등) · 알 수 없는 오류도 그대로 올린다", () => {
+    const h = createHarness();
+    const [tab] = h.addWindow(7, { url: "http://x/", marker: KEY });
+    tab!.page.throwAfterRun = { message: "Can't convert types.", number: -1700 };
+    expect(() => h.ops.runJsFast!(args())).toThrow(/convert/);
+  });
+
+  test("[I1] 답 글이 깨졌거나(페이지가 JSON.stringify 를 바꿔 둠) 모르는 꼴이면 돈 것으로 보고 빈 값 — 소스를 다시 돌리지 않는다", () => {
+    for (const stringify of [() => "깨진{", () => '{"hello":1}', () => "[1]", () => "123"]) {
+      const h = createHarness();
+      const [tab] = h.addWindow(7, { url: "http://x/", marker: KEY, globals: { JSON: { stringify, parse: JSON.parse } } });
+      expect(h.ops.runJsFast!(args({}, "(window.runs = (window.runs || 0) + 1)"))).toEqual({ value: "" });
+      expect(tab!.page.ctx!.runs).toBe(1);
+    }
+  });
+
+  test("[I1] 표시 불일치({ok:false}) · 탭 없음(-1728 · -1719 · Invalid index)만 소스가 안 돈 것으로 보고 {fallback}", () => {
+    const h = createHarness();
+    const [tab] = h.addWindow(7, { url: "http://x/", marker: "t3.other" });
+    expect(h.ops.runJsFast!(args({}, "(window.runs = 1)"))).toEqual({ fallback: true });
+    expect(tab!.page.ctx!.runs).toBeUndefined();
+    expect(h.ops.runJsFast!(args({ index: 9 }))).toEqual({ fallback: true });
   });
 
   test("문법이 틀린 소스(식 아님): 스크립트가 안 돌아 표시도 안 적히므로, 표시 안 한 탭이면 느린 확인이 표시를 적는다", () => {
@@ -279,6 +319,35 @@ describe("호스트 runJsFast · runJs · showTab (가짜 사파리, 이벤트 �
     delete a.script;
     expect(h.ops.showTab!(a)).toEqual({ value: null });
     expect(h.windows.get(7)!.current).toBe(tabs[0]);
+  });
+});
+
+describe("[M3] 주소 꼴 차이(끝 슬래시 · 퍼센트 인코딩)", () => {
+  test("sameUrl · urlForms", () => {
+    expect(sameUrl("https://a.com", "https://a.com/")).toBe(true);
+    expect(sameUrl("https://ko.wikipedia.org/wiki/서울", "https://ko.wikipedia.org/wiki/%EC%84%9C%EC%9A%B8")).toBe(true);
+    expect(sameUrl("http://a/%ea%b0%80", "http://a/%EA%B0%80")).toBe(true);
+    expect(sameUrl("http://a/x", "http://a/y")).toBe(false);
+    expect(sameUrl("http://a/#1", "http://a/#2")).toBe(false);
+    expect(sameUrl("about:blank", "about:blank")).toBe(true);
+    expect(sameUrl(undefined, "http://a/")).toBe(false);
+    expect(urlForms(["https://a.com", undefined, "https://a.com/"])).toEqual(["https://a.com", "https://a.com/"]);
+  });
+
+  test("표시 안 한 탭: 기록한 주소와 문서 주소의 꼴이 달라도(끝 슬래시 · 한글 인코딩) 알아본다", () => {
+    const a = runPage(buildGuardedSource(spec({ unstamped: true, url: "https://a.com" }), "1"), { href: "https://a.com/" });
+    expect(a.reading.ok).toBe(true);
+    const b = runPage(buildGuardedSource(spec({ unstamped: true, url: "https://ko.wikipedia.org/wiki/서울" }), "1"), { href: "https://ko.wikipedia.org/wiki/%EC%84%9C%EC%9A%B8" });
+    expect(b.reading.ok).toBe(true);
+    const c = runPage(buildGuardedSource(spec({ unstamped: true, url: "https://a.com/x" }), "1"), { href: "https://a.com/y" });
+    expect(c.reading.ok).toBe(false);
+  });
+
+  test("느린 길 guardTab: tab.url() 이 기록한 주소의 정규화한 꼴이면 알아본다(args.urls)", () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://x/" });
+    const r = h.ops.runJs!({ windowId: 7, index: 1, key: KEY, url: "http://x", unstamped: true, urls: ["http://x", "http://x/"], source: "1 + 1" });
+    expect(r).toMatchObject({ value: "2" });
   });
 });
 
@@ -357,9 +426,9 @@ describe("드라이버 runJs: 빠른 길 → 안 되면 느린 길(가짜 호스
       return undefined;
     });
     const { tab } = await d.openTab("http://x/");
-    expect(await d.runJsDetailed!(tab.key, "1")).toEqual({ value: "a", url: "http://x/#h", leaving: false, urlBefore: "http://x/" });
+    expect(await d.runJsDetailed!(tab.key, "1")).toEqual({ value: "a", url: "http://x/#h", leaving: false, urlBefore: "http://x/", owned: true });
     // 첫 호출이 주소를 #h 로 새로 했으니 다음 호출의 urlBefore 는 그 주소
-    expect(await d.runJsDetailed!(tab.key, "1")).toEqual({ value: "b", url: "http://x/", leaving: undefined, urlBefore: "http://x/#h" });
+    expect(await d.runJsDetailed!(tab.key, "1")).toEqual({ value: "b", url: "http://x/", leaving: undefined, urlBefore: "http://x/#h", owned: true });
   });
 
   test("{fallback} 이면 느린 길 runJs 로 소스를 보낸다", async () => {

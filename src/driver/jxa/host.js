@@ -92,12 +92,18 @@ function probeTab(windowId, index) {
 // 요청이 가리킨 자리의 탭이 정말 그 키의 탭일 때만 돌려준다.
 // 표시가 키와 같거나, 아직 표시를 안 한 탭(args.unstamped)이면서 표시가 없고 주소가 기록(url) 또는 대신 받아들일 주소(altUrl)와 같을 때.
 // args.urlOnly 는 JS 를 못 도는 탭(경고창이 떠 있는 탭)을 닫을 때만 쓴다 — 표시를 못 읽으니 주소만 본다.
+function urlIs(u, args) {
+  // Node 쪽이 같은 주소의 여러 꼴(기록한 그대로 · 정규화한 것)을 args.urls 로 보낸다. 없는 옛 요청은 url · altUrl.
+  const forms = args.urls || [args.url, args.altUrl];
+  return forms.indexOf(u) >= 0;
+}
+
 function guardTab(args) {
   if (args.urlOnly) {
     let tab;
     try {
       tab = tabOf(args);
-      return str(tab.url()) === args.url ? { tab, marker: "" } : null;
+      return (args.urlForms || [args.url]).indexOf(str(tab.url())) >= 0 ? { tab, marker: "" } : null; // 기록한 주소(altUrl 은 안 본다)의 여러 꼴
     } catch (e) {
       return null;
     }
@@ -105,16 +111,24 @@ function guardTab(args) {
   const p = probeTab(args.windowId, args.index);
   if (!p) return null;
   if (p.marker === args.key) return p;
-  if (args.unstamped && p.marker === "" && (p.url === args.url || (args.altUrl && p.url === args.altUrl))) return p;
+  if (args.unstamped && p.marker === "" && urlIs(p.url, args)) return p;
   return null;
 }
 
 // 탭 확인 · 표시 · 일을 한 번의 doJavaScript 로 한다(args.script = Node 쪽 buildGuardedSource 가 만든 글. 자리의 탭을 주소로 읽지 않는다).
+// 소스가 돌았을 수 있는 한 느린 길로 넘기지 않는다 — 느린 길은 소스를 다시 돌리므로 동작(클릭 · 제출 · 입력)이 두 번 일어난다.
 // 돌려주는 것:
-//   {kind: "ok", tab, value, url}  표시가 맞아 소스가 돌았다(url 은 문서 자신의 location.href).
-//   {kind: "threw", tab}           사파리가 null 을 돌려줬다 — 소스가 오류를 던졌거나(사파리는 던진 오류를 오류로 올리지 않는다) 문법이 틀렸다. 소스를 다시 돌리면 안 된다.
-//   {kind: "fallback"}             자리를 못 읽었거나 표시가 안 맞아 소스가 안 돌았다 — 느린 길(guardTab)로 다시 확인한다.
-// 「Apple 이벤트에서 JavaScript 허용」이 꺼진 오류는 그대로 올린다.
+//   {kind: "ok", tab, value, url, leaving}  표시가 맞아 소스가 돌았다(url 은 문서 자신의 location.href).
+//   {kind: "fallback"}  소스가 돌지 않았다는 게 확실할 때만: 자리를 못 가리켰거나 스크립트가 표시 불일치({ok:false})를 알렸거나, 탭 · 창이 없다는 Apple Event 오류(-1728 · -1719 · Invalid index · Can't get).
+//                       느린 길(guardTab)로 다시 확인한다.
+//   {kind: "ran", tab}  돌았을 수 있다 — 사파리가 null 을 돌려줬거나(소스가 오류를 던졌다. 사파리는 페이지 안 오류를 오류로 올리지 않는다) 답 글을 읽을 수 없다(페이지가 JSON 을 바꿔 놓음 등). 소스를 다시 돌리면 안 된다.
+// 그 밖의 doJavaScript 오류(시간 초과 -1712 · 변환 오류 …)는 예전 runJs 처럼 그대로 올린다.
+function isTabGoneError(e) {
+  const n = e && e.errorNumber;
+  const m = String((e && e.message) || e);
+  return n === -1728 || n === -1719 || /Can't get|Invalid index|가져올 수 없|유효하지 않은 인덱스/i.test(m);
+}
+
 function guardedRun(args) {
   let tab;
   try {
@@ -126,17 +140,18 @@ function guardedRun(args) {
   try {
     raw = Safari.doJavaScript(args.script, { in: tab });
   } catch (e) {
-    if (isJsOffError(e)) throw e;
-    return { kind: "fallback" }; // 탭 · 창이 없다(-1728 · -1719) 거나 JS 를 못 도는 문서 — 느린 길이 판단한다
+    if (isTabGoneError(e) && !isJsOffError(e)) return { kind: "fallback" }; // 탭 · 창이 없다 — 느린 길이 판단한다
+    throw e;
   }
-  if (typeof raw !== "string") return { kind: "threw", tab };
+  if (typeof raw !== "string") return { kind: "ran", tab };
   let r;
   try {
     r = JSON.parse(raw);
   } catch (e) {
-    return { kind: "fallback" };
+    return { kind: "ran", tab };
   }
-  if (!r || r.ok !== true) return { kind: "fallback" };
+  if (r && r.ok === false) return { kind: "fallback" }; // 스크립트가 표시 불일치를 알렸다 — 소스는 안 돌았다
+  if (!r || r.ok !== true) return { kind: "ran", tab };
   return { kind: "ok", tab, value: typeof r.value === "string" ? r.value : "", url: typeof r.url === "string" ? r.url : undefined, leaving: r.leaving === true };
 }
 
@@ -630,15 +645,14 @@ const ops = {
     return { value, url };
   },
 
-  // runJs 의 빠른 길: 탭 확인 · 표시 · 일이 doJavaScript 한 번이다(args.script). 느린 길(runJs, 소스는 args 에 없다)로 가야 하면 {fallback: true}.
-  // 소스가 던진 오류로 사파리가 null 을 돌려준 때는 소스를 다시 돌리지 않는다 — 자리가 맞는지만 느린 길로 확인해, 맞으면 예전처럼 빈 값, 아니면 stale.
+  // runJs 의 빠른 길: 탭 확인 · 표시 · 일이 doJavaScript 한 번이다(args.script). 소스가 안 돈 게 확실할 때만 {fallback: true}(느린 길 runJs 가 소스를 보낸다).
+  // 소스가 돌았을 수 있으면(null · 못 읽는 답) 다시 돌리지 않고 빈 값을 돌려준다 — 자리 확인(guardTab)은 표시를 안 적은 탭에 표시를 적기 위한 것뿐이고, 어긋나도 stale 로 되돌리지 않는다.
   runJsFast(args) {
     const f = guardedRun(args);
     if (f.kind === "ok") return { value: f.value, url: f.url, leaving: f.leaving };
-    if (f.kind === "threw") {
+    if (f.kind === "ran") {
       const g = guardTab(args);
-      if (!g) return { stale: true };
-      if (g.marker !== args.key) stampTab(g.tab, args.key); // 문법 오류로 글이 안 돌았으면 표시도 안 적혔다
+      if (g && g.marker !== args.key) stampTab(g.tab, args.key); // 문법 오류로 글이 안 돌았으면 표시도 안 적혔다
       return { value: "" };
     }
     return { fallback: true };
@@ -647,7 +661,12 @@ const ops = {
   // 자리의 탭을 그 창의 현재 탭으로 만든다(창을 앞으로 가져오지 않는다). args.script 가 있으면 확인은 doJavaScript 한 번(빠른 길)이고, 안 되면 예전 확인으로 돌아간다.
   showTab(args) {
     if (args.script) {
-      const f = guardedRun(args);
+      let f = { kind: "fallback" };
+      try {
+        f = guardedRun(args); // 소스는 null — 부작용이 없으니 어떤 오류든 예전 확인으로 돌아가 판단한다(JS 꺼짐만 올린다)
+      } catch (e) {
+        if (isJsOffError(e)) throw e;
+      }
       if (f.kind === "ok") {
         Safari.windows.byId(args.windowId).currentTab = f.tab;
         return { value: null };

@@ -65,6 +65,8 @@ export interface RunJsDetail {
   urlBefore: string;
   /** 돌린 뒤 문서를 떠나는 중(beforeunload 깃발)인가. 빠른 길만 안다 — 모르면 undefined(이동 확인을 줄이지 말 것). */
   leaving?: boolean;
+  /** 우리가 연 탭인가(붙인 사용자 탭이 아니다). */
+  owned: boolean;
 }
 
 export interface SafariDriver {

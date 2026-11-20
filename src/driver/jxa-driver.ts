@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { captureWindowPng } from "./capture.js";
 import { buildGuardedSource, expressionError } from "./guarded-source.js";
+import { urlForms } from "./url.js";
 import { HostError, HostTimeoutError, JxaHost } from "./jxa-host.js";
 import { TabRegistry, type Guarded, type Probe, type RawTab, type RebindResult, type SettleResult, type Spot } from "./tab-registry.js";
 import { SafariError, type RunJsDetail, type SafariDriver, type TabInfo, type WindowBounds, type WindowInfo } from "./types.js";
@@ -101,7 +102,17 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     }
   }
 
-  const guardArgs = (s: Spot) => ({ windowId: s.windowId, index: s.index, key: s.key, url: s.url, unstamped: s.unstamped, altUrl: s.altUrl });
+  // urls · urlForms: 같은 주소의 여러 꼴(기록한 그대로 · 정규화) — 호스트가 tab.url() 과 견줄 때 후보로 쓴다(urlForms 는 altUrl 을 뺀 것).
+  const guardArgs = (s: Spot) => ({
+    windowId: s.windowId,
+    index: s.index,
+    key: s.key,
+    url: s.url,
+    unstamped: s.unstamped,
+    altUrl: s.altUrl,
+    urls: urlForms([s.url, s.altUrl]),
+    urlForms: urlForms([s.url]),
+  });
   const guardSpec = (s: Spot) => ({ key: s.key, unstamped: s.unstamped, url: s.url, altUrl: s.altUrl });
 
   // 탭 키(t1, t2 …)와 사파리 안 자리를 이어 주는 기록. 사용자가 탭을 옮겨도 같은 키가 같은 탭을 가리킨다.
@@ -222,7 +233,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
       if (!("fallback" in fast)) return fast;
       return call<Guarded<string>>("runJs", { ...guardArgs(s), source }, o.timeoutMs); // 느린 길은 떠나는 중인지 모른다(leaving 없음)
     });
-    return { value: r.value, url: r.url, urlBefore: r.urlBefore, leaving: r.leaving };
+    return { value: r.value, url: r.url, urlBefore: r.urlBefore, leaving: r.leaving, owned: r.owned };
   }
 
   return {

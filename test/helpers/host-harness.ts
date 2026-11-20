@@ -22,6 +22,10 @@ export interface FakePage {
   jsOff?: boolean;
   /** document.documentElement 가 없다. */
   noRoot?: boolean;
+  /** 스크립트를 돌린 뒤(부작용은 일어난 뒤) 사파리가 이 오류를 올린다(예: Apple Event 시간 초과 -1712). */
+  throwAfterRun?: { message: string; number: number };
+  /** 페이지가 돌리는 동안 쌓이는 상태(소스가 `(window.runs = (window.runs || 0) + 1)` 처럼 센다). 한 페이지에 문맥 하나 — 호출을 넘어 이어진다. */
+  ctx?: Record<string, any>;
 }
 
 export interface FakeTab {
@@ -84,22 +88,33 @@ export function createHarness(): Harness {
       const p = tab.page;
       if (p.jsOff) throw new Error("Safari에서 Apple 이벤트의 JavaScript를 허용하지 않습니다.");
       if (p.noJs) return null;
-      const ctx = vm.createContext({
-        document: {
-          title: p.title ?? "",
-          get documentElement() {
-            if (p.noRoot) return null;
-            return { dataset: p.dataset };
+      if (!p.ctx) {
+        p.ctx = vm.createContext({
+          document: {
+            get title() {
+              return p.title ?? "";
+            },
+            get documentElement() {
+              if (p.noRoot) return null;
+              return { dataset: p.dataset };
+            },
           },
-        },
-        location: { href: p.href },
-        ...p.globals,
-      });
-      (ctx as Record<string, unknown>).window = ctx; // window.__saLeaving 처럼 전역을 window 로 읽는 코드용
+          location: {
+            get href() {
+              return p.href;
+            },
+          },
+          ...p.globals,
+        });
+        p.ctx.window = p.ctx; // window.__saLeaving 처럼 전역을 window 로 읽는 코드용
+      }
+      const ctx = p.ctx;
       try {
         const v = vm.runInContext(script, ctx);
+        if (p.throwAfterRun) throw Object.assign(new Error(p.throwAfterRun.message), { errorNumber: p.throwAfterRun.number, hostError: true });
         return v === undefined ? null : v;
-      } catch {
+      } catch (e) {
+        if ((e as { hostError?: boolean }).hostError) throw e;
         return null; // 사파리는 페이지 안에서 던진 오류(문법 오류 포함)를 오류로 올리지 않는다
       }
     },

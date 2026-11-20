@@ -16,6 +16,8 @@
  * 엄격한 CSP 에서도 돈다. 이 글의 지역 이름은 `__sa` 로 시작해 페이지 전역 · 소스 안의 이름과 부딪치지 않게 한다.
  */
 
+import { urlForms } from "./url.js";
+
 export interface GuardSpec {
   /** 페이지 안에 적는 탭 표시(TabRegistry.markerOf). */
   key: string;
@@ -34,9 +36,8 @@ export type ValueType = "string" | "number" | "boolean" | "null" | "object" | "f
 export type GuardedReading = { ok: true; type: ValueType; value: string; url: string; /** 문서를 떠나는 중인가(`window.__saLeaving`, beforeunload 때 Page 의 동작 코드가 세운 깃발). */ leaving: boolean } | { ok: false; marker: string; url: string };
 
 export function buildGuardedSource(g: GuardSpec, source: string): string {
-  const here = g.unstamped
-    ? `__saM === '' && (location.href === ${JSON.stringify(g.url)}${g.altUrl ? ` || location.href === ${JSON.stringify(g.altUrl)}` : ""})`
-    : "false";
+  // 문서 주소(location.href)는 기록한 주소와 꼴이 다를 수 있어(끝 슬래시 · 퍼센트 인코딩) 같은 주소의 여러 꼴 중 하나와 같으면 된다.
+  const here = g.unstamped ? `__saM === '' && ${JSON.stringify(urlForms([g.url, g.altUrl]))}.indexOf(location.href) >= 0` : "false";
   return `(function(__saK){
 var __saM = '';
 try { __saM = String(document.documentElement.dataset.saTab || ''); } catch (__saE) {}
@@ -52,10 +53,14 @@ return JSON.stringify({ ok: true, type: __saT, value: typeof __saS === 'string' 
 })(${JSON.stringify(g.key)})`;
 }
 
-/** 소스가 식 하나인가(buildGuardedSource 가 `(소스\n)` 로 끼우는 꼴로 문법을 본다 — 실행하지 않는다). 아니면 오류 메시지. */
+/**
+ * 소스가 식 하나인가 — buildGuardedSource 가 끼우는 꼴 그대로 문법을 본다(실행하지 않는다). 식 둘레를 닫고 문장을 끼워 넣는 소스(`0); x(); (0`)도 걸러내려고
+ * 감싼 함수 꼴 `var v = (소스\n);` 와 배열 꼴 `[(소스\n)]` 가 모두 문법에 맞아야 한다(앞의 것만으로는 `(0); x(); (0)` 이 통과한다). 아니면 오류 메시지.
+ */
 export function expressionError(source: string): string | null {
   try {
-    new Function(`return (${source}\n)`);
+    new Function(`var __saV = (${source}\n);`);
+    new Function(`return [(${source}\n)];`);
     return null;
   } catch (e) {
     return (e as Error).message;

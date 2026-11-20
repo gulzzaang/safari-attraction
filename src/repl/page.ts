@@ -1,4 +1,5 @@
 import { SafariError, type SafariDriver } from "../driver/types.js";
+import { sameUrl } from "../driver/url.js";
 import {
   buildActionSource,
   buildEvalSource,
@@ -71,14 +72,17 @@ const NAVIGATING_SRC =
   /\blocation\b(\s*\.\s*href)?\s*=(?!=)|\.\s*(assign|replace|reload|submit|click|requestSubmit)\s*\(|\bhistory\s*\.\s*(back|forward|go)\s*\(|\bwindow\s*\.\s*open\s*\(/;
 
 /**
- * 동작 뒤 settleTab(탭이 이동했는지 확인, 약 35~100ms)을 건너뛸 수 있는 동작. 실제 사파리에서 동작이 돌아온 순간 이동 신호를 재 봤더니(시나리오마다 12번)
- *   - 문서를 떠나는 중 깃발(beforeunload, `window.__saLeaving`)은 진짜 이동에서도 한 번도 서 있지 않았다 → 신호로 못 쓴다.
+ * 동작 뒤 settleTab(탭이 이동했는지 확인, 약 50ms)을 건너뛸 수 있는 동작. 실제 사파리에서 동작이 돌아온 순간 이동 신호를 재 봤더니(시나리오마다 12번)
+ *   - 문서를 떠나는 중 깃발(beforeunload, `window.__saLeaving`)은 진짜 이동에서도 한 번도 서 있지 않았다 → 「깃발이 서 있지 않다」는 아무 뜻이 없다
+ *     (동작 코드가 같은 스크립트 첫머리에서 깃발을 내리기도 한다). 깃발이 서 있으면 그건 이동 신호로만 쓴다.
  *   - 동작 코드의 expectNav 는 링크 클릭 · 폼 제출(엔터 · 단추) · 클릭 핸들러의 location.href= 에서는 12/12 로 알렸지만,
- *     클릭 핸들러의 location.reload() 는 신호가 없었다(진짜 이동인데).
+ *     클릭 핸들러의 location.reload() 는 신호가 없었다(진짜 이동인데). form.submit() · location.assign/replace · 값이 바뀌면 제출하는 핸들러도 같다고 본다.
  *   - evaluate 는 `() => go()` · `() => clicklink()` 처럼 식 밖에서 일으키는 이동이 신호가 전혀 없다(주소 · 깃발 · expectNav 모두).
  * 그래서 이동을 일으키려고 하는 동작(click · press · type · select · check · evaluate · goto · nav)은 언제나 settleTab 을 한다.
- * 값을 넣거나 보이게만 하는 동작(fill · hover · focus · scroll)만, 신호가 하나도 없을 때(떠나는 중 아님 · expectNav 아님 · 잡힌 짧은 타이머 없음 ·
- * 돌려받은 문서 주소가 시키기 전 주소와 #해시 빼고 같음) 건너뛴다. 해시만 바뀐 건 같은 문서 안 이동이라 드라이버가 기록한 주소만 새로 한다.
+ * 값을 넣거나 보이게만 하는 동작(fill · hover · focus · scroll)만 건너뛸 수 있고, 그것도 **우리가 연 탭**일 때만이다 — 신호 없이 놓친 이동은 우리 탭이면
+ * 다음 호출이 표시가 사라진 걸 보고 settle 로 스스로 고치지만, 붙인 사용자 탭은 표시를 잃은 채 TAB_CLOSED 가 된다. 우리 탭이어도 신호가 하나라도 있으면
+ * (깃발이 서 있음 · expectNav · 잡힌 짧은 타이머 · 돌려받은 문서 주소가 시키기 전 주소와 #해시 빼고 다름) 확인한다. 해시만 바뀐 건 같은 문서 안 이동이라
+ * 드라이버가 기록한 주소만 새로 한다.
  */
 const SETTLE_FREE_OPS: ReadonlySet<ActionOp> = new Set<ActionOp>(["fill", "hover", "focus", "scroll"]);
 
@@ -441,7 +445,7 @@ export class Page {
       this.checkAbort();
       const r = await this.driver.settleTab(this.key, nav.settleOpts());
       this.knownUrl = r.tab.url;
-      if (r.navigated || (dir !== "reload" && r.tab.url !== before && !r.leaving)) {
+      if (r.navigated || (dir !== "reload" && !sameUrl(r.tab.url, before) && !r.leaving)) {
         replaced = true;
         break;
       }
@@ -490,8 +494,8 @@ export class Page {
     if (!res.ok) throw new Error(res.err);
     if (res.r.notReady) return res.r; // 동작하지 않았으니 이동도 없다
     if (detail && !nav && !expectNav && !res.r.expectNav && !(res.r.timerMs !== undefined && res.r.timerMs >= 0 && res.r.timerMs <= TIMER_WAIT_MAX_MS)) {
-      const sameDoc = detail.leaving === false && detail.url !== undefined && withoutHash(detail.url) === withoutHash(detail.urlBefore);
-      if (sameDoc) return res.r; // 이동 신호가 하나도 없다 — 확인을 건너뛴다(주소는 드라이버가 이미 새로 해 뒀다)
+      const sameDoc = detail.owned && detail.leaving !== true && detail.url !== undefined && sameUrl(withoutHash(detail.url), withoutHash(detail.urlBefore));
+      if (sameDoc) return res.r; // 우리 탭이고 이동 신호가 하나도 없다 — 확인을 건너뛴다(주소는 드라이버가 이미 새로 해 뒀다)
     }
     await this.settle(expectNav || !!res.r.expectNav, res.r.timerMs ?? -1, nav);
     return res.r;

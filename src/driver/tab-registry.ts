@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { SafariError } from "./types.js";
+import { sameUrl } from "./url.js";
 
 /** 사파리가 알려 주는 탭 한 칸(키는 아직 없다). */
 export interface RawTab {
@@ -33,7 +34,7 @@ export interface Spot {
 export type Guarded<T> = { stale: true } | { value: T; /** 일을 마친 뒤의 탭 주소(알면). */ url?: string; /** 일을 마친 뒤 문서를 떠나는 중인가(beforeunload 깃발, 빠른 길만 안다). */ leaving?: boolean };
 
 /** withTabDetail 의 결과: 호스트가 돌려준 것과, 일을 시키기 전에 기록해 둔 주소. */
-export type Detailed<T> = { value: T; url?: string; leaving?: boolean; urlBefore: string };
+export type Detailed<T> = { value: T; url?: string; leaving?: boolean; urlBefore: string; /** 우리가 연 탭인가(붙인 사용자 탭이 아니다). */ owned: boolean };
 
 /** 호스트의 rebind 답. gone = 그 자리에 탭 없음, other = 그 자리에 다른 키의 표시가 있는 탭. */
 export type RebindResult = { status: "ok"; tab: RawTab; /** 표시가 실제로 적혔는가(안 주면 적힌 것으로 본다). */ stamped?: boolean } | { status: "gone" } | { status: "other" };
@@ -130,7 +131,7 @@ export class TabRegistry {
   async adopt(windowId: number, index: number): Promise<string> {
     const p = await this.backend.probe(windowId, index);
     if (!p.exists) throw new SafariError("TAB_CLOSED", `그 자리에 탭이 없음: 창 ${windowId} · ${index}번째`);
-    const known = [...this.entries.values()].find((e) => (p.marker !== "" ? this.markerOf(e.key) === p.marker : sameSpot(e, { windowId, index }) && e.url === p.url));
+    const known = [...this.entries.values()].find((e) => (p.marker !== "" ? this.markerOf(e.key) === p.marker : sameSpot(e, { windowId, index }) && sameUrl(e.url, p.url)));
     if (known) {
       known.windowId = windowId;
       known.index = index;
@@ -214,7 +215,7 @@ export class TabRegistry {
         const e = this.entries.get(key);
         if (e) e.url = r.url; // 같은 문서 안 이동(SPA)으로 바뀐 주소
       }
-      return { value: r.value, url: r.url, leaving: r.leaving, urlBefore: spot.url };
+      return { value: r.value, url: r.url, leaving: r.leaving, urlBefore: spot.url, owned: this.isOwned(key) };
     } catch (err) {
       if (err instanceof SafariError && (err.code === "ALERT_BLOCKED" || err.code === "TIMEOUT")) this.markBlocked(key);
       throw err;
@@ -295,7 +296,7 @@ export class TabRegistry {
     if (!e.stamped) {
       // 표시를 아직 안 적은 탭 — 자리와 주소가 그대로일 때만 우리 탭이다. 이 경우 표시 없음은 이동이 아니다.
       const p = await this.backend.probe(e.windowId, e.index);
-      if (p.exists && p.marker === "" && (p.url === e.url || p.url === e.pendingUrl) && (await this.backend.stamp(e.windowId, e.index, this.markerOf(key)))) {
+      if (p.exists && p.marker === "" && (sameUrl(p.url, e.url) || sameUrl(p.url, e.pendingUrl)) && (await this.backend.stamp(e.windowId, e.index, this.markerOf(key)))) {
         e.stamped = true;
         e.pendingUrl = undefined;
       }
@@ -337,7 +338,7 @@ export class TabRegistry {
     }
     if (!p.exists || p.marker !== this.markerOf(key)) return; // 이미 바뀌었거나 없다 — 그건 settle · resolve 가 다룬다
     e.stamped = false;
-    e.pendingUrl = p.url !== e.url && p.url !== "" ? p.url : undefined;
+    e.pendingUrl = !sameUrl(p.url, e.url) && p.url !== "" ? p.url : undefined;
   }
 
   /** 우리가 연 탭을 모두 닫는다(사용자 탭은 건드리지 않는다). 실제로 닫은 수를 돌려준다. */
@@ -452,19 +453,19 @@ export class TabRegistry {
       // 표시 없는 탭 — 자리와 주소가 그대로일 때만 그 탭. 주소가 같은 다른 탭으로 옮겨 잡지 않는다
       // (사용자가 이 탭을 닫았을 때 주소가 같은 다른 탭을 건드리게 되므로).
       const here = at(e);
-      return here && free(here) && (here.url === e.url || here.url === e.pendingUrl) ? take(here) : null;
+      return here && free(here) && (sameUrl(here.url, e.url) || sameUrl(here.url, e.pendingUrl)) ? take(here) : null;
     }
 
     // JS 에 답하지 않는 탭은 표시를 못 읽는다 — 자리와 주소가 그대로면 그 탭으로 본다.
     if (e.blocked) {
       const here = at(e);
-      if (here && free(here) && here.url === e.url) return take(here);
+      if (here && free(here) && sameUrl(here.url, e.url)) return take(here);
     }
 
     // 표시를 적은 탭 — 표시가 키와 같은 탭. 기록한 자리를 먼저, 그다음 같은 주소 탭(같은 창 먼저).
     const here = at(e);
     const rest = raw
-      .filter((t) => free(t) && t.url === e.url && !(here && sameSpot(t, here)))
+      .filter((t) => free(t) && sameUrl(t.url, e.url) && !(here && sameSpot(t, here)))
       .sort((a, b) => Number(b.windowId === e.windowId) - Number(a.windowId === e.windowId));
     const tryOrder = [...(here && free(here) ? [here] : []), ...rest];
     for (const t of tryOrder) {
@@ -473,7 +474,7 @@ export class TabRegistry {
         p = await this.backend.probe(t.windowId, t.index, PROBE_TIMEOUT_MS);
       } catch (err) {
         // 멈춘 탭(경고창 등)은 표시를 못 읽는다 — 주소가 같으면 그 탭으로 본다.
-        if (err instanceof SafariError && (err.code === "TIMEOUT" || err.code === "ALERT_BLOCKED") && t.url === e.url) {
+        if (err instanceof SafariError && (err.code === "TIMEOUT" || err.code === "ALERT_BLOCKED") && sameUrl(t.url, e.url)) {
           e.blocked = true;
           return take(t);
         }

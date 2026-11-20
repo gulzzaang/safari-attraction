@@ -309,6 +309,16 @@ describe('TabRegistry', () => {
     expect(sf.tabs).toHaveLength(2); // B 는 그대로
   });
 
+  test('[M3] 표시 없는 탭은 주소 꼴이 달라도(끝 슬래시) 같은 탭으로 알아본다', async () => {
+    const sf = new FakeSafari();
+    const reg = new TabRegistry(sf);
+    sf.tabs.push({ url: 'https://a.com', marker: '' });
+    const [a] = await reg.sync(await sf.list());
+    sf.tabs[0]!.url = 'https://a.com/'; // 문서 자신의 주소(location.href)로 기록이 바뀐 것과 같은 꼴 차이
+    const again = await reg.sync(await sf.list());
+    expect(again[0]!.key).toBe(a!.key);
+  });
+
   test('닫기가 시간 초과한 뒤 탭이 이미 없으면 성공으로 센다', async () => {
     const sf = new FakeSafari();
     const reg = new TabRegistry(sf);

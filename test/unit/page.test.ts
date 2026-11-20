@@ -278,7 +278,7 @@ describe('Page.url() 은 await 없이 마지막으로 알려진 주소를 돌려
 });
 
 describe('Page: 이동 신호가 없을 때 settleTab 을 건너뛰는 동작(fill · hover · focus · scroll 만)', () => {
-  type Detail = { value: string; url?: string; urlBefore: string; leaving?: boolean };
+  type Detail = { value: string; url?: string; urlBefore: string; leaving?: boolean; owned: boolean };
   /** runJsDetailed 가 있는 가짜 드라이버. detail 은 동작 결과(글)에 붙여 돌려줄 주소 · 깃발. */
   function fakeDetailed(r: object, detail: Partial<Detail> = {}) {
     const log = { settle: 0, detailed: 0, plain: 0 };
@@ -290,7 +290,7 @@ describe('Page: 이동 신호가 없을 때 settleTab 을 건너뛰는 동작(fi
       },
       async runJsDetailed() {
         log.detailed++;
-        return { value: ok(r), url: 'http://x/', urlBefore: 'http://x/', leaving: false, ...detail };
+        return { value: ok(r), url: 'http://x/', urlBefore: 'http://x/', leaving: false, owned: true, ...detail };
       },
       async settleTab() {
         log.settle++;
@@ -324,12 +324,32 @@ describe('Page: 이동 신호가 없을 때 settleTab 을 건너뛰는 동작(fi
     await page.locator('e1').fill('값');
     expect(log.settle).toBe(1);
   });
-  test('떠나는 중 · 모름(느린 길) · 주소 모름이면 확인한다', async () => {
-    for (const detail of [{ leaving: true }, { leaving: undefined }, { url: undefined }]) {
+  test('깃발이 서 있거나(양의 신호) 주소를 모르면 확인한다. 깃발 모름(느린 길)은 신호가 아니다 — 깃발이 없다는 말은 아무 뜻이 없으니 건너뛴다', async () => {
+    for (const detail of [{ leaving: true }, { url: undefined }]) {
       const { page, log } = fakeDetailed({}, detail);
       await page.locator('e1').fill('값');
       expect(log.settle).toBe(1);
     }
+    const { page, log } = fakeDetailed({}, { leaving: undefined });
+    await page.locator('e1').fill('값');
+    expect(log.settle).toBe(0);
+  });
+  test('[I2] 붙인 사용자 탭(owned 아님)은 신호가 없어도 fill · hover · focus · scroll 뒤에 늘 확인한다', async () => {
+    for (const run of [
+      (p: Page) => p.locator('e1').fill('값'),
+      (p: Page) => p.locator('e1').hover(),
+      (p: Page) => p.locator('e1').focus(),
+      (p: Page) => p.locator('e1').scrollIntoViewIfNeeded(),
+    ]) {
+      const { page, log } = fakeDetailed({}, { owned: false });
+      await run(page);
+      expect(log.settle).toBe(1);
+    }
+  });
+  test('[I2] 우리가 연 탭의 fill 은 신호가 없으면 건너뛴다', async () => {
+    const { page, log } = fakeDetailed({}, { owned: true });
+    await page.locator('e1').fill('값');
+    expect(log.settle).toBe(0);
   });
   test('동작이 expectNav 를 알리거나 짧은 타이머를 잡았으면 확인한다', async () => {
     const a = fakeDetailed({ expectNav: true });
@@ -356,10 +376,10 @@ describe('Page: 이동 신호가 없을 때 settleTab 을 건너뛰는 동작(fi
       expect(log.settle).toBe(1);
       expect(log.detailed).toBe(0);
     }
-    const { page, log } = fakeDetailed({ ok: true, r: {} });
-    log.settle = 0;
-    await page.evaluate(() => 1 + 1).catch(() => undefined);
-    expect(log.detailed).toBe(0);
+    // evaluate: 결과를 받고(오류를 삼키지 않는다) 늘 settleTab 을 한 번 한다 — runJsDetailed 는 쓰지 않는다
+    const e = fakeDetailed({ s: '2', timerMs: -1 });
+    expect(await e.page.evaluate(() => 1 + 1)).toBe(2);
+    expect(e.log).toEqual({ settle: 1, detailed: 0, plain: 1 });
   });
   test('runJsDetailed 가 없는 드라이버는 늘 확인한다', async () => {
     const { page, log } = fake(() => ok({}), [same]);
