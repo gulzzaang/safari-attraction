@@ -1,7 +1,7 @@
 class SafariAttraction < Formula
   desc "평소 로그인된 사파리를 Claude 가 쓰게 하는 MCP 서버"
   homepage "https://github.com/gulzzaang/safari-attraction"
-  url "https://github.com/gulzzaang/safari-attraction.git", tag: "v0.1.1"
+  url "https://github.com/gulzzaang/safari-attraction.git", tag: "v0.1.2"
 
   depends_on :macos
   depends_on "node"
