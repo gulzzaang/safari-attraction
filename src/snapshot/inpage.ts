@@ -8,7 +8,7 @@ export interface SnapshotOptions {
 }
 
 /**
- * 페이지 안에서 돌릴 자바스크립트 원문. 값은 글(문자열)이다 — 맨 앞 안내 줄 `#sa-meta scroll=x,y doc=아이디`(store.ts 의
+ * 페이지 안에서 돌릴 자바스크립트 원문. 값은 글(문자열)이다 — 맨 앞 안내 줄 `#sa-meta scroll=표시 doc=아이디`(store.ts 의
  * splitSnapshotMeta 가 떼어 낸다) 다음에 머리 줄 `- title: "…" [url=…]` 다음에
  * 대화형 요소 `- <역할> "<이름>" [ref=eN]` 과 글 덩어리 `- <종류> "<글>"` 가 문서 순서대로 이어진다.
  * ref 는 요소에 `data-sa-ref` 로 붙어 같은 문서 안에서는 다시 읽어도 같다.
@@ -91,13 +91,20 @@ const PAGE_FN = String.raw`function (o) {
   function q(s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; }
 
   var title = clip(document.title || '', TEXT_MAX);
-  // 맨 앞 안내 줄(Node 쪽이 떼어 낸다): 스크롤 위치 표시와 이 문서의 표식. 내린 뒤에는 새로 보이는 줄만 내려고 쓴다.
-  // 스크롤 위치 = 맨 위 창의 x,y. 걷는 동안 안쪽 스크롤 영역(scrollTop · scrollLeft 가 0 이 아닌 요소)과 같은 출처 iframe 창의
-  // 스크롤 합이 0 이 아니면 ",합" 이 이어진다(합이 0 이면 예전과 똑같다). 걷기가 끝나면 이 줄을 다시 쓴다.
+  // 맨 앞 안내 줄(Node 쪽이 떼어 낸다): 스크롤 표시와 이 문서의 표식. 내린 뒤에는 새로 보이는 줄만 내려고 쓴다.
+  // 스크롤 표시 = 맨 위 창의 x,y. 걷는 동안 화면에 보이는 안쪽 스크롤 영역(scrollTop · scrollLeft 가 0 이 아닌 요소, 입력칸 제외)과
+  // 같은 출처 iframe 창의 스크롤이 있으면 |번호:위,왼쪽;… 이 이어진다(없으면 x,y 만이라 창 스크롤만 쓰는 페이지는 예전과 같다).
+  // 화면 밖 요소 · 입력칸 · 자동으로 넘어가는 화면 밖 캐러셀은 세지 않는다. 걷기가 끝나면 이 줄을 다시 쓴다.
   if (!window.__saDoc) window.__saDoc = Math.random().toString(36).slice(2);
-  var innerScroll = 0;
+  var scrollers = [];
+  function scrollerId(el) {
+    var m = window.__saSc || (window.__saSc = new WeakMap());
+    var id = m.get(el);
+    if (!id) { id = (window.__saScN = (window.__saScN || 0) + 1); m.set(el, id); }
+    return id;
+  }
   function metaLine() {
-    return '#sa-meta scroll=' + Math.round(window.scrollX || 0) + ',' + Math.round(window.scrollY || 0) + (innerScroll ? ',' + innerScroll : '') + ' doc=' + window.__saDoc;
+    return '#sa-meta scroll=' + Math.round(window.scrollX || 0) + ',' + Math.round(window.scrollY || 0) + (scrollers.length ? '|' + scrollers.join(';') : '') + ' doc=' + window.__saDoc;
   }
   var out = [metaLine(), '- title: ' + q(title) + ' [url=' + location.href + ']'];
 
@@ -270,14 +277,16 @@ const PAGE_FN = String.raw`function (o) {
     var tag = el.tagName;
     if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE') return;
     var st = el.scrollTop, sl = el.scrollLeft;
-    if ((st || sl) && el !== el.ownerDocument.documentElement && el !== el.ownerDocument.body) innerScroll += Math.round(st) + Math.round(sl);
+    if ((st || sl) && tag !== 'TEXTAREA' && tag !== 'INPUT' && tag !== 'SELECT' && el !== el.ownerDocument.documentElement && el !== el.ownerDocument.body && shown(el)) {
+      scrollers.push(scrollerId(el) + ':' + Math.round(st) + ',' + Math.round(sl));
+    }
     if (tag === 'IFRAME') {
       if (!shown(el)) return;
       var doc = null;
       try { doc = el.contentDocument; } catch (e) {}
       if (doc && (doc.body || doc.documentElement)) {
         var iw = doc.defaultView;
-        if (iw) innerScroll += Math.round(iw.scrollX || 0) + Math.round(iw.scrollY || 0);
+        if (iw && (iw.scrollX || iw.scrollY)) scrollers.push(scrollerId(el) + ':' + Math.round(iw.scrollY || 0) + ',' + Math.round(iw.scrollX || 0));
         push(depth, '- iframe ' + q(clip(el.getAttribute('title') || doc.title || originOf(el), NAME_MAX)));
         walkEl(doc.body || doc.documentElement, depth + 1);
       } else {

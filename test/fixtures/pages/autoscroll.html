@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>저절로 움직이는 것 시험 페이지</title>
+<style>body{margin:0}#car{position:absolute;top:5000px;left:0;width:100px;overflow:hidden;white-space:nowrap}#car span{display:inline-block;width:100px}</style></head>
+<body>
+  <p id="msg">상태: 처음</p>
+  <p>설명 문단 1 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <p>설명 문단 2 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <p>설명 문단 3 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <p>설명 문단 4 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <p>설명 문단 5 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <p>설명 문단 6 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <p>설명 문단 7 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <p>설명 문단 8 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <p>설명 문단 9 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <p>설명 문단 10 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <p>설명 문단 11 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <p>설명 문단 12 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <p>설명 문단 13 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <p>설명 문단 14 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <p>설명 문단 15 번째 줄입니다 길게 길게 적어 둡니다</p>
+  <textarea id="ta" rows="2" cols="20"></textarea>
+  <div id="car"><span>하나</span><span>둘</span><span>셋</span><span>넷</span></div>
+  <script>
+    setInterval(function () { var c = document.getElementById('car'); c.scrollLeft = (c.scrollLeft + 37) % 300; }, 50);
+  </script>
+</body>
+</html>

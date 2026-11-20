@@ -303,11 +303,21 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     const pg = needPage(p, "snapshot");
     const o: SnapshotOptions = { interactive: !!opts.interactive, selector: opts.selector, full: !!opts.full };
     const raw = await driver.runJs(pg.key, buildSnapshotSource(o));
-    const d = store.diff(pg.key, o, raw);
+    // 읽기만으로는 기억이 바뀌지 않는다. 결과를 찍을 때(console.log) 「읽은 줄」로 올리고, 호출이 끝날 때 실제로
+    // 찍힌 출력(16KB 로 잘렸을 수도 있다)에 맞춰 맞춘다. 찍지 않고 .tree 만 쓰면 아무것도 읽은 것으로 치지 않는다.
+    const pending = store.read(pg.key, o, raw);
     const tree = splitSnapshotMeta(raw).tree;
-    const result: SnapshotResult = { tree, diff: d.text };
+    const result: SnapshotResult = { tree, diff: pending.text };
+    slots.getStore()?.buf.watch(pending); // console.log(result.diff) 처럼 글로 찍은 것도 호출이 끝날 때 알아본다
     // console.log(result) 는 바뀐 곳 글을 찍는다.
-    Object.defineProperty(result, inspect.custom, { value: () => d.text, enumerable: false });
+    Object.defineProperty(result, inspect.custom, {
+      value: () => {
+        pending.commit();
+        slots.getStore()?.buf.watch(pending);
+        return pending.text;
+      },
+      enumerable: false,
+    });
     return result;
   };
 

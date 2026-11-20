@@ -170,6 +170,61 @@ describe("REPL 세부", () => {
     expect((await s.run("console.log(await snapshot(page))")).output).toBe("새로 보이는 곳 없음(이미 읽은 곳)");
   });
 
+  describe("snapshot: 찍힌 것만 읽은 줄로 친다", () => {
+    const mk = (y: number, nums: number[]) => `#sa-meta scroll=0,${y} doc=d1\n- title: "a" [url=http://a/]\n` + nums.map((n) => `- paragraph "문단 ${n} 문단 ${n} 문단 ${n}"`).join("\n");
+    let text = "";
+    const start = async () => {
+      d.answer = () => text;
+      await s.run('await openTab("http://a/")');
+    };
+
+    test("찍지 않고 .tree 만 쓰면 읽은 것으로 치지 않아, 내린 뒤에도 첫 화면 줄이 그대로 나온다", async () => {
+      text = mk(0, [1, 2, 3]);
+      await start();
+      await s.run("const un = await snapshot(page); console.log(un.tree.length > 0)");
+      text = mk(1000, [3, 4, 5]);
+      const r = await s.run("console.log(await snapshot(page))");
+      expect(r.output).toContain("문단 3"); // 아무것도 읽은 것으로 치지 않았으니 전체가 나온다
+      expect(r.output).not.toContain("내린 뒤 새로 보이는 곳만");
+    });
+
+    test("찍은 뒤 내리면 이미 읽은 줄은 빠진다", async () => {
+      text = mk(0, [1, 2, 3]);
+      await start();
+      await s.run("console.log(await snapshot(page))");
+      text = mk(1000, [3, 4, 5]);
+      const r = await s.run("console.log(await snapshot(page))");
+      expect(r.output).toContain("내린 뒤 새로 보이는 곳만");
+      expect(r.output).not.toContain("문단 3");
+      expect(r.output).toContain("문단 5");
+    });
+
+    test("console.log(r.diff) 처럼 글로 찍어도 읽은 것으로 친다", async () => {
+      text = mk(0, [1, 2, 3]);
+      await start();
+      await s.run("const r0 = await snapshot(page); console.log(r0.diff)");
+      text = mk(1000, [3, 4, 5]);
+      expect((await s.run("console.log(await snapshot(page))")).output).not.toContain("문단 3");
+    });
+
+    test("같은 호출에서 찍은 뒤 다시 읽어도 앞 읽기가 반영된다", async () => {
+      text = mk(0, [1, 2, 3]);
+      await start();
+      const r = await s.run("console.log(await snapshot(page)); await sleep(1); console.log(await snapshot(page))");
+      expect(r.output.split("\n").at(-1)).toBe("변화 없음");
+    });
+
+    test("호출 전체 출력이 16KB 에서 잘려 snapshot 글이 안 보였으면 읽은 것으로 치지 않는다", async () => {
+      text = mk(0, [1, 2, 3]);
+      await start();
+      const r = await s.run('console.log("가".repeat(20000)); console.log(await snapshot(page))');
+      expect(r.output).not.toContain("문단 1");
+      text = mk(1000, [3, 4, 5]);
+      const r2 = await s.run("console.log(await snapshot(page))");
+      expect(r2.output).toContain("문단 3"); // 앞에서 안 보였으니 전체로 나온다
+    });
+  });
+
   test("snapshot 에 선택지가 JSON 소스로 전달된다", async () => {
     d.answer = () => "x";
     await s.run('await openTab("http://a/"); await snapshot(page, { interactive: true })');

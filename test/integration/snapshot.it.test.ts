@@ -175,6 +175,49 @@ describeIt('페이지 읽기(snapshot)', () => {
     expect(store.diff(key, {}, await read(key))).toEqual({ mode: 'scroll', text: '새로 보이는 곳 없음(이미 읽은 곳)' });
   });
 
+  test('표: 같은 글의 칸(Active · 0원)이 반복돼도 내린 뒤 새 행의 칸이 모두 나온다', async () => {
+    const { key } = await open('table.html');
+    const first = store.diff(key, {}, await read(key));
+    expect(first.text).toContain('사용자 1 번');
+    const vh = Number(await d.runJs(key, 'String(window.innerHeight)'));
+    const y = 40 * Math.floor(vh / 40); // 행 높이의 배수만큼 내려 맨 위 행이 온전하게
+    await d.runJs(key, `window.scrollTo(0, ${y}); 0`);
+    const down = store.diff(key, {}, await read(key));
+    expect(down.mode).toBe('scroll');
+    const body = down.text.split('\n').slice(1);
+    expect(body.length).toBeGreaterThanOrEqual(3);
+    expect(body.length % 3).toBe(0);
+    for (let i = 0; i < body.length; i += 3) {
+      expect(body[i]).toMatch(/^- cell "사용자 \d+ 번"$/);
+      expect(body[i + 1]).toMatch(/^- cell "(Active|Pending)"$/);
+      expect(body[i + 2]).toBe('- cell "0원"');
+    }
+  });
+
+  test('같은 문서 안에서 주소가 바뀌면(pushState) 내린 뒤 읽기 맨 앞에 새 주소 줄이 나온다', async () => {
+    const { key } = await open('scroll.html');
+    store.diff(key, {}, await read(key));
+    await d.runJs(key, "history.pushState(null, '', '#다른곳'); window.scrollTo(0, document.body.scrollHeight); 0");
+    const r = store.diff(key, {}, await read(key));
+    expect(r.mode).toBe('scroll');
+    const lines = r.text.split('\n');
+    expect(lines[1]).toMatch(/^- title: .*#%EB%8B%A4%EB%A5%B8%EA%B3%B3|^- title: .*#다른곳/);
+    expect(r.text).toContain('아래 단추');
+  });
+
+  test('저절로 움직이는 화면 밖 캐러셀 · 입력칸 스크롤은 내린 것으로 세지 않아 바뀐 곳을 +/- 로 알린다', async () => {
+    const { key } = await open('autoscroll.html');
+    const first = store.diff(key, {}, await read(key));
+    expect(first.mode).toBe('full');
+    await new Promise((r) => setTimeout(r, 300)); // 캐러셀이 움직이게
+    await d.runJs(key, "var t = document.getElementById('ta'); t.value = Array(60).join('긴 줄\\n'); t.scrollTop = 50; document.getElementById('msg').textContent = '상태: 바뀜'; 0");
+    const r = store.diff(key, {}, await read(key));
+    expect(r.mode).toBe('diff');
+    expect(r.text).toContain('- - paragraph "상태: 처음"');
+    expect(r.text).toContain('+ - paragraph "상태: 바뀜"');
+    expect(r.text).not.toContain('내린 뒤');
+  });
+
   test('큰 페이지도 1초 · 16KB 안', async () => {
     const { key } = await open('big.html');
     expect(await d.runJs(key, 'document.getElementsByTagName("*").length')).toBeTruthy();

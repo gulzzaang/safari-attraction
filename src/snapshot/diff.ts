@@ -10,7 +10,8 @@ const byteLen = (s: string): number => Buffer.byteLength(s, "utf8");
 /** 줄 수가 이보다 많아 보이면 정밀한 비교(LCS) 대신 빠른 비교로 간다. */
 const LCS_CELL_LIMIT = 4_000_000;
 
-type Op = { kind: "+" | "-"; line: string };
+/** idx: `-` 는 지난번 글의 줄 번호, `+` 는 이번 글의 줄 번호(0부터). */
+type Op = { kind: "+" | "-"; line: string; idx: number };
 
 /** 줄 단위로 비교해 사라진 줄(-)과 생긴 줄(+)을 문서 순서대로 낸다. */
 function lineOps(prev: string[], next: string[]): Op[] {
@@ -22,7 +23,7 @@ function lineOps(prev: string[], next: string[]): Op[] {
   const a = prev.slice(head, prev.length - tail);
   const b = next.slice(head, next.length - tail);
 
-  if (a.length * b.length > LCS_CELL_LIMIT) return setOps(a, b);
+  if (a.length * b.length > LCS_CELL_LIMIT) return setOps(a, b, head);
 
   // 가장 긴 공통 부분열. dp[i][j] = a[i..], b[j..] 의 길이.
   const w = b.length + 1;
@@ -39,33 +40,45 @@ function lineOps(prev: string[], next: string[]): Op[] {
     if (a[i] === b[j]) {
       i++;
       j++;
-    } else if (dp[(i + 1) * w + j]! >= dp[i * w + j + 1]!) ops.push({ kind: "-", line: a[i++]! });
-    else ops.push({ kind: "+", line: b[j++]! });
+    } else if (dp[(i + 1) * w + j]! >= dp[i * w + j + 1]!) ops.push({ kind: "-", line: a[i]!, idx: head + i++ });
+    else ops.push({ kind: "+", line: b[j]!, idx: head + j++ });
   }
-  while (i < a.length) ops.push({ kind: "-", line: a[i++]! });
-  while (j < b.length) ops.push({ kind: "+", line: b[j++]! });
+  while (i < a.length) ops.push({ kind: "-", line: a[i]!, idx: head + i++ });
+  while (j < b.length) ops.push({ kind: "+", line: b[j]!, idx: head + j++ });
   return ops;
 }
 
 /** 아주 긴 글용 빠른 비교: 줄의 개수만 맞춰 본다(순서는 보지 않는다). */
-function setOps(a: string[], b: string[]): Op[] {
+function setOps(a: string[], b: string[], head: number): Op[] {
   const count = new Map<string, number>();
   for (const l of a) count.set(l, (count.get(l) ?? 0) + 1);
   const ops: Op[] = [];
   const keep = new Map(count);
-  for (const l of b) {
+  b.forEach((l, j) => {
     const n = keep.get(l) ?? 0;
     if (n > 0) keep.set(l, n - 1);
-    else ops.push({ kind: "+", line: l });
-  }
+    else ops.push({ kind: "+", line: l, idx: head + j });
+  });
   const seen = new Map<string, number>();
   for (const l of b) seen.set(l, (seen.get(l) ?? 0) + 1);
-  for (const l of a) {
+  a.forEach((l, i) => {
     const n = seen.get(l) ?? 0;
     if (n > 0) seen.set(l, n - 1);
-    else ops.push({ kind: "-", line: l });
-  }
+    else ops.push({ kind: "-", line: l, idx: head + i });
+  });
   return ops;
+}
+
+export type DiffMode = "full" | "diff" | "none";
+
+/** diffSnapshot 에 비교에 쓴 줄 정보를 더한 것. ops 는 prev 가 있고 달라졌을 때만 있다(full 로 돌아가도 있다). */
+export function diffDetailed(prev: string | undefined, next: string): { text: string; mode: DiffMode; ops?: Op[] } {
+  if (prev === undefined) return { text: next, mode: "full" };
+  if (prev === next) return { text: NO_CHANGE_TEXT, mode: "none" };
+  const ops = lineOps(prev.split("\n"), next.split("\n"));
+  const diff = ["# 바뀐 곳만(+ 생김 · - 사라짐)", ...ops.map((o) => `${o.kind} ${o.line}`)].join("\n");
+  if (byteLen(diff) >= byteLen(next)) return { text: next, mode: "full", ops };
+  return { text: diff, mode: "diff", ops };
 }
 
 /**
@@ -73,36 +86,33 @@ function setOps(a: string[], b: string[]): Op[] {
  * 같으면 none, 바뀐 곳만 적은 글이 전체보다 짧으면 diff(`+ 줄` 생김 · `- 줄` 사라짐), 아니면 full(next 그대로).
  * 자르기(capSnapshot)는 부르는 쪽이 한다 — 비교는 자르지 않은 전체로 해야 맞다.
  */
-export function diffSnapshot(prev: string | undefined, next: string): { text: string; mode: "full" | "diff" | "none" } {
-  if (prev === undefined) return { text: next, mode: "full" };
-  if (prev === next) return { text: NO_CHANGE_TEXT, mode: "none" };
-  const ops = lineOps(prev.split("\n"), next.split("\n"));
-  const diff = ["# 바뀐 곳만(+ 생김 · - 사라짐)", ...ops.map((o) => `${o.kind} ${o.line}`)].join("\n");
-  if (byteLen(diff) >= byteLen(next)) return { text: next, mode: "full" };
-  return { text: diff, mode: "diff" };
+export function diffSnapshot(prev: string | undefined, next: string): { text: string; mode: DiffMode } {
+  const { text, mode } = diffDetailed(prev, next);
+  return { text, mode };
 }
 
-const TITLE_PREFIX = "- title: ";
-
 /**
- * 내린(스크롤한) 뒤의 읽기: 이번 화면 줄 가운데 이 문서에서 아직 한 번도 보여 주지 않은 줄(seen 에 없는 줄)만 낸다.
- * 화면 밖으로 지나간 줄은 사라진 게 아니므로 싣지 않고 개수만 머리 줄에 적는다. seen 은 바꾸지 않는다(부르는 쪽 몫).
- * 머리의 `- title:` 줄은 개수에 넣지 않는다(바뀌었으면 새 줄로 싣는다).
+ * 내린(스크롤한) 뒤의 읽기: 이번 화면 줄 가운데 아직 보여 주지 않은 줄만 낸다(보여 줬는지는 isSeen(줄, 줄 번호) 이 안다).
+ * 화면 밖으로 지나간 줄은 사라진 게 아니므로 싣지 않고 개수만 머리 줄에 적는다.
+ * 맨 앞 줄(`- title:` · 주소)은 지난번 읽기의 맨 앞 줄과 다르면 늘 싣고, 같으면 싣지도 세지도 않는다.
+ * freshIdx: 실은 줄들의 번호(이번 글 기준) — 글의 머리 줄 다음 줄들과 차례가 같다.
  */
-export function scrollDiffSnapshot(prev: string, next: string, seen: ReadonlySet<string>): { text: string; mode: "scroll" } {
-  const isTitle = (l: string, i: number): boolean => i === 0 && l.startsWith(TITLE_PREFIX);
+export function scrollDiffSnapshot(prev: string, next: string, isSeen: (line: string, idx: number) => boolean): { text: string; mode: "scroll"; freshIdx: number[] } {
   const cur = next.split("\n");
+  const prevLines = prev.split("\n");
   const curSet = new Set(cur);
-  const fresh: string[] = [];
+  const freshIdx: number[] = [];
   let already = 0;
   cur.forEach((l, i) => {
-    if (!seen.has(l)) fresh.push(l);
-    else if (!isTitle(l, i)) already++;
+    if (i === 0) {
+      if (l !== prevLines[0]) freshIdx.push(0);
+    } else if (isSeen(l, i)) already++;
+    else freshIdx.push(i);
   });
-  const passed = prev.split("\n").filter((l, i) => !curSet.has(l) && !isTitle(l, i)).length;
-  if (fresh.length === 0) return { text: SCROLL_NOTHING_NEW_TEXT, mode: "scroll" };
+  const passed = prevLines.filter((l, i) => i > 0 && !curSet.has(l)).length;
+  if (freshIdx.length === 0) return { text: SCROLL_NOTHING_NEW_TEXT, mode: "scroll", freshIdx };
   const head = `# 내린 뒤 새로 보이는 곳만 (이미 본 줄 ${already}개 · 화면 밖으로 지나간 줄 ${passed}개 생략)`;
-  return { text: [head, ...fresh].join("\n"), mode: "scroll" };
+  return { text: [head, ...freshIdx.map((i) => cur[i]!)].join("\n"), mode: "scroll", freshIdx };
 }
 
 /** UTF-8 로 maxBytes 를 넘지 않게, 글자를 깨뜨리지 않고 앞에서 자른다. */

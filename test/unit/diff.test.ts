@@ -264,4 +264,109 @@ describe('SnapshotStore — 내리며 읽기', () => {
     expect(s.diff('t', {}, page(0, [1, 2, 3, 4], 'd2')).mode).toBe('none');
     expect(s.diff('t', {}, page(1000, [3, 4, 5, 6], 'd2')).text.split('\n').slice(1)).toEqual([para(5), para(6)]);
   });
+  // ---- 리뷰 반영: 줄 정체 · 사라진 뒤 다시 나타남 · 찍힌 것만 ----
+  const raw = (sig: string, lines: string[], doc = 'd1', ttl = title) => [`#sa-meta scroll=${sig} doc=${doc}`, ttl, ...lines].join('\n');
+  const cellsOf = (rows: number[]) => rows.flatMap((n) => [`- cell "사용자 ${n} 번"`, '- cell "Active"', '- cell "0원"']);
+
+  test('I1: 같은 글의 칸(Active · 0원)이 다른 행에 또 나와도 새 행의 칸은 나온다', () => {
+    const s = new SnapshotStore();
+    s.diff('t', {}, raw('0,0', cellsOf([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])));
+    const r = s.diff('t', {}, raw('0,500', cellsOf([8, 9, 10, 11, 12, 13])));
+    expect(r.mode).toBe('scroll');
+    expect(r.text.split('\n').slice(1)).toEqual(cellsOf([11, 12, 13]));
+  });
+
+  test('I2-A: 체크박스 상태가 바뀐 채 돌아오면 바뀐 줄을 다시 보여 준다(ref 줄은 글까지 같아야 본 줄)', () => {
+    const s = new SnapshotStore();
+    const box = (checked: boolean) => `- checkbox "동의" [ref=e5]${checked ? ' [checked]' : ''}`;
+    s.diff('t', {}, raw('0,0', [box(true), para(1), para(2)]));
+    s.diff('t', {}, raw('0,500', [para(3), para(4)]));
+    const back = s.diff('t', {}, raw('0,0', [box(false), para(1), para(2)]));
+    expect(back.text.split('\n').slice(1)).toEqual([box(false)]);
+  });
+
+  test('I2-A2/C: 바뀐 곳으로 「사라짐」을 알린 줄은 다시 나타나면 새 줄로 보여 준다(토스트 · 탭 내용)', () => {
+    const s = new SnapshotStore();
+    const toast = '- button "닫기" [ref=e9]';
+    const base = [1, 2, 3, 4, 5, 6, 7, 8].map(para);
+    s.diff('t', {}, raw('0,0', [toast, ...base]));
+    const gone = s.diff('t', {}, raw('0,0', base));
+    expect(gone.mode).toBe('diff');
+    expect(gone.text).toContain('- ' + toast);
+    const back = s.diff('t', {}, raw('0,300', [toast, ...base]));
+    expect(back.mode).toBe('scroll');
+    expect(back.text.split('\n').slice(1)).toEqual([toast]);
+    // 글 줄(ref 없음)도 마찬가지
+    const s2 = new SnapshotStore();
+    s2.diff('t', {}, raw('0,0', [...base, para(9)]));
+    s2.diff('t', {}, raw('0,0', base)); // 문단 9 사라짐
+    expect(s2.diff('t', {}, raw('0,300', [...base, para(9)])).text.split('\n').slice(1)).toEqual([para(9)]);
+  });
+
+  test('I2-B: 주소 · 제목이 바뀌었으면(같은 문서의 pushState) 내린 뒤 첫 줄을 늘 보여 주고, 같으면 안 보여 준다', () => {
+    const s = new SnapshotStore();
+    const tA = '- title: "A" [url=http://x/a]';
+    const tB = '- title: "A" [url=http://x/b]';
+    s.diff('t', {}, raw('0,0', [para(1), para(2)], 'd1', tA));
+    const toB = s.diff('t', {}, raw('0,500', [para(1), para(2)], 'd1', tB));
+    expect(toB.text.split('\n')).toEqual(['# 내린 뒤 새로 보이는 곳만 (이미 본 줄 2개 · 화면 밖으로 지나간 줄 0개 생략)', tB]);
+    const backA = s.diff('t', {}, raw('0,0', [para(1), para(2)], 'd1', tA));
+    expect(backA.text.split('\n')[1]).toBe(tA);
+    expect(s.diff('t', {}, raw('0,500', [para(1), para(2)], 'd1', tA)).text).toBe(NOTHING); // 같은 주소면 안 보여 준다
+  });
+
+  test('I3: read 만으로는 기억이 바뀌지 않고, commit 해야 올라간다', () => {
+    const s = new SnapshotStore();
+    const p1 = s.read('t', {}, raw('0,0', [para(1), para(2)]));
+    expect(s.last('t', {})).toBeUndefined();
+    p1.commit();
+    expect(s.last('t', {})).toBe(tree([1, 2]));
+    const p2 = s.read('t', {}, raw('0,500', [para(2), para(3)]));
+    expect(s.last('t', {})).toBe(tree([1, 2])); // 아직 그대로
+    p2.settle('아무 상관 없는 출력'); // 하나도 안 보였다 → 올리지 않는다
+    expect(s.last('t', {})).toBe(tree([1, 2]));
+    p2.settle(p2.text); // 통째로 보였다
+    expect(s.last('t', {})).toBe(tree([2, 3]));
+  });
+
+  test('I3: 앞부분만 보였으면 그 줄들만 읽은 것으로 치고, 잘려 못 본 줄은 다음에 나온다', () => {
+    const s = new SnapshotStore();
+    s.diff('t', {}, raw('0,0', [para(1)]));
+    const p = s.read('t', {}, raw('0,500', [para(10), para(11), para(12), para(13)]));
+    p.settle(p.text.split('\n').slice(0, 3).join('\n')); // 머리 줄 + 문단 10 · 11 만 보임
+    const next = s.diff('t', {}, raw('0,900', [para(10), para(11), para(12), para(13)]));
+    expect(next.text.split('\n').slice(1)).toEqual([para(12), para(13)]);
+  });
+
+  test('I4: 스크롤 표시가 그대로면(자동으로 넘어가는 것이 화면 밖이라 표시에 안 든 경우) 내용이 바뀐 것은 +/- 로 알린다', () => {
+    const s = new SnapshotStore();
+    const lines = [1, 2, 3, 4, 5, 6, 7, 8].map(para);
+    s.diff('t', {}, raw('0,0', lines));
+    const r = s.diff('t', {}, raw('0,0', [...lines.slice(0, 7), para(99)]));
+    expect(r.mode).toBe('diff');
+    expect(r.text).toContain('- ' + para(8));
+    expect(r.text).toContain('+ ' + para(99));
+  });
+
+  test('M2: 본 줄은 최대 50,000개까지만 기억하고 오래된 것부터 잊는다', () => {
+    const s = new SnapshotStore();
+    const link = (n: number) => `- link "항목 ${n}" [ref=e${n}]`;
+    const all = Array.from({ length: 60000 }, (_, i) => link(i + 1));
+    s.read('t', {}, raw('0,0', all)).commit(); // 자르기를 거치지 않고 통째로 읽은 것으로
+    const r = s.diff('t', {}, raw('0,500', [link(1), link(60000)]));
+    expect(r.text.split('\n').slice(1)).toEqual([link(1)]); // 맨 처음 것은 잊었고, 최근 것은 안다
+  });
+
+  test('M3: 새 문서에서 그대로인 줄을 이월하는 것은 맨 앞 줄(제목 · 주소)이 같을 때만', () => {
+    const lines = [1, 2, 3, 4, 5, 6, 7, 8].map(para);
+    const run = (ttl2: string) => {
+      const s = new SnapshotStore();
+      s.diff('t', {}, raw('0,0', lines));
+      const reload = s.diff('t', {}, raw('0,0', [...lines.slice(0, 7), para(9)], 'd2', ttl2));
+      expect(reload.mode).toBe('diff');
+      return s.diff('t', {}, raw('0,500', [...lines.slice(2, 7), para(9)], 'd2', ttl2)).text;
+    };
+    expect(run(title)).toBe(NOTHING); // 같은 주소의 새로고침: 이월
+    expect(run('- title: "다른" [url=http://y/]').split('\n').slice(1)).toContain(para(3)); // 다른 문서: 이월 안 함
+  });
 });

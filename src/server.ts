@@ -46,8 +46,8 @@ Read values with console.log (the last expression is NOT printed). Errors come b
 - evaluate 는 함수 하나나 식 하나만 받는다(여러 문장은 함수로 감싼다). 결과는 JSON 으로 오가 DOM · 함수는 못 받는다. 바깥 변수는 못 쓰고 arg 로 넘긴다.
 - await 뒤에서 이벤트 루프를 막는 코드(예: await x; while(true){})는 서버를 멈출 수 있다. 쓰지 말 것.
 - 사파리 스크립트는 개인정보 보호 창과 일반 창을 구별하지 못해, 맨 앞 창을 그대로 쓴다. 개인정보 보호 창이 앞에 있으면 거기에 열릴 수 있다.
-- 내린 뒤 읽기는 새로 보이는 줄만 내므로, 내리는 같은 사이에 내용이 바뀐 것(무한 스크롤 등)에서 사라진 줄은 알려 주지 않는다.
-  After a scroll, snapshot lists only new lines, so lines genuinely removed in the same step (e.g. infinite scroll) are not reported.
+- 내린 뒤 읽기는 새로 보이는 줄만 내므로, 내리는 같은 사이에 내용이 바뀐 것(무한 스크롤 등)에서 사라진 줄은 알려 주지 않는다. 내렸는지는 창과 화면에 보이는 안쪽 스크롤 영역(입력칸 제외)의 위치로 알아본다. 모달이 body 를 고정해 창 위치가 바뀌는 경우에도 내린 것으로 보이니, 그때는 {full: true}. 찍지 않은 읽기는 읽은 것으로 치지 않는다.
+  After a scroll, snapshot lists only new lines, so lines genuinely removed in the same step (e.g. infinite scroll) are not reported; scrolling is detected from the window and visible inner scroll areas (not form fields), so a modal that fixes the body can look like a scroll (use {full: true}); a snapshot you never print does not count as read.
 - 처음 쓸 때 설정이 막히면 오류 글에 안내가 나온다. status 도구로 설정 상태를 볼 수 있다.`;
 
 export const STATUS_DESCRIPTION =

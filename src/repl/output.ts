@@ -9,9 +9,20 @@ export function formatArgs(args: unknown[]): string {
 /** 한 호출에 붙일 수 있는 이미지 수. */
 export const MAX_IMAGES = 4;
 
+/** 최종 출력을 보고 자기 기억을 맞추는 것(읽기 결과: 실제로 찍힌 만큼만 「읽은 줄」로 친다). */
+export interface Settlable {
+  settle(output: string): void;
+}
+
 /** 한 호출에서 찍은 줄을 모은다. */
 export class OutputBuffer {
   private lines: string[] = [];
+  private readonly watched = new Set<Settlable>();
+
+  /** 이 호출의 최종 출력이 정해지면 settle 을 불러 줄 것들을 등록한다. */
+  watch(p: Settlable): void {
+    this.watched.add(p);
+  }
   /** display() 로 붙인 이미지(PNG). */
   readonly images: Buffer[] = [];
 
@@ -36,6 +47,9 @@ export class OutputBuffer {
 
   /** 줄을 이어 붙이고 16KB 에서 자른다(읽기 결과와 같은 자르기). */
   text(): string {
-    return capSnapshot(this.lines.join("\n"));
+    const out = capSnapshot(this.lines.join("\n"));
+    for (const p of this.watched) p.settle(out);
+    this.watched.clear();
+    return out;
   }
 }
