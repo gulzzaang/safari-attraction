@@ -36,7 +36,7 @@ export interface FakeTab {
   url(): string;
 }
 
-export type Event = { kind: "doJavaScript"; script: string } | { kind: "tabUrl" } | { kind: "setCurrentTab"; windowId: number } | { kind: "currentTab" };
+export type Event = { kind: "doJavaScript"; script: string } | { kind: "tabUrl" } | { kind: "setCurrentTab"; windowId: number } | { kind: "currentTab" } | { kind: "bulkUrl" };
 
 export interface Harness {
   ops: Record<string, (args: Record<string, unknown>) => any>;
@@ -93,7 +93,8 @@ export function createHarness(): Harness {
             if (p === "url") {
               return () => {
                 harnessRef.onBulkUrl?.(++bulkUrlCount);
-                return (w?.tabs ?? []).map((t) => t.url());
+                events.push({ kind: "bulkUrl" }); // 창의 탭 주소 전부를 한 번에 읽는 Apple Event 하나
+                return (w?.tabs ?? []).map((t) => t.dest ?? t.page.href);
               };
             }
             if (p === "name") return () => (w?.tabs ?? []).map((t) => t.page.title ?? "");

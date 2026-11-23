@@ -244,3 +244,94 @@ describe("[I2a] 표시 읽기: 페이지 JS 가 오류를 내는 탭은 읽지 �
     expect(urls(h)).toEqual(["http://u.example/doc.pdf"]);
   });
 });
+
+// R12: 표시를 다시 적을 때 견주는 모습은 긴 기록이 아니라 「우리 표시를 마지막으로 확인한 바로 그때」의 것이다(확인한 호스트 호출이 함께 알려 준다).
+describe("[R12] 바로 앞 확인 모습과 견줘 표시 적기", () => {
+  test("(a) 사용자가 창 끝에 탭을 연 뒤에 Claude 가 우리 탭에서 동작해(확인) 새 문서가 떠도 표시를 다시 적는다 — TAB_CLOSED 없이", async () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/1" });
+    const { d } = driverOn(h);
+    const { tab } = await d.openTab("http://a.example/x", { windowId: 7, loadBudgetMs: 20 });
+    tabsOf(h).push(h.newTab("http://user.example/late")); // 사용자가 열어 둔 탭(열기 뒤 · 창 모습 기록 뒤)
+    await d.runJs(tab.key, "1"); // 우리 표시를 확인한다 — 그때의 창 모습이 새 기준이 된다
+    navigate(h, 1, "http://a.example/y"); // 링크를 눌러 새 문서
+    expect(await d.settleTab(tab.key, FAST)).toMatchObject({ navigated: true, tab: { index: 2 } });
+    expect(markers(h)).toEqual(["", expect.stringMatching(/^t\d+\./), ""]);
+  });
+
+  test("(b) 확인한 뒤 우리 탭이 이동하는 도중에 사용자가 앞에 탭을 끼우면 표시를 적지 않는다(우리 탭은 남고 사용자 탭은 그대로)", async () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/1" });
+    const { d } = driverOn(h);
+    const { tab } = await d.openTab("http://a.example/x", { windowId: 7, loadBudgetMs: 20 });
+    await d.runJs(tab.key, "1");
+    navigate(h, 1, "http://a.example/y");
+    tabsOf(h).splice(1, 0, h.newTab("http://user.example/new"));
+    await expect(d.settleTab(tab.key, FAST)).rejects.toMatchObject({ code: "TAB_CLOSED" });
+    expect(markers(h)).toEqual(["", "", ""]);
+    expect(urls(h)).toEqual(["http://user/1", "http://user.example/new", "http://a.example/y"]);
+  });
+
+  test("(b) 표시가 그대로인 채 앞에 탭이 끼면(V1) 표시로 우리 탭을 찾고, 그 확인이 새 기준이 돼 다음 이동은 다시 적는다", async () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/1" });
+    const { d } = driverOn(h);
+    const { tab } = await d.openTab("http://a.example/x", { windowId: 7, loadBudgetMs: 20 });
+    tabsOf(h).splice(1, 0, h.newTab("http://user.example/new"));
+    await d.settleTab(tab.key, FAST);
+    navigate(h, 2, "http://a.example/y");
+    expect(await d.settleTab(tab.key, FAST)).toMatchObject({ navigated: true, tab: { index: 3 } });
+    expect(markers(h)[1]).toBe("");
+  });
+
+  test("(c) waitFor 처럼 settle 을 되풀이할 때마다 기준이 새로워져, 우리 탭에서 먼 사용자 탭이 늘어도 그 뒤 이동은 다시 적는다", async () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/1" });
+    const { d } = driverOn(h);
+    const { tab } = await d.openTab("http://a.example/x", { windowId: 7, loadBudgetMs: 20 });
+    for (let i = 0; i < 3; i++) {
+      tabsOf(h).push(h.newTab(`http://user.example/far${i}`));
+      await d.settleTab(tab.key, FAST); // 확인(same) — 기준 갱신
+    }
+    navigate(h, 1, "http://a.example/y");
+    expect((await d.settleTab(tab.key, FAST)).navigated).toBe(true);
+    expect(await d.closeOwned()).toBe(1);
+    expect(urls(h)).toEqual(["http://user/1", "http://user.example/far0", "http://user.example/far1", "http://user.example/far2"]);
+  });
+
+  test("호스트: 표시를 확인한 호출은 창의 탭 수와 바로 앞 · 뒤 주소를 함께 돌려준다(settle same · runJsFast)", () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/1" }, { url: "http://a.example/x", marker: KEY }, { url: "http://user/3" });
+    const a = { windowId: 7, index: 2, key: KEY, url: "http://a.example/x", loadBudgetMs: 20 };
+    expect(h.ops.settle!(a)).toMatchObject({ status: "same", around: { count: 3, prev: "http://user/1", next: "http://user/3" } });
+  });
+});
+
+// R13: 끝낼 때 표시 읽기 요청 한 번도 남은 시간 안에 끝나야 한다.
+describe("[R13] 끝낼 때 표시 읽기 요청 시간", () => {
+  test("드라이버: closeOwned 안의 readMarkers 요청 시간은 5초 마감을 넘지 않는다(보통은 탭 수 × 0.5초 + 5초)", async () => {
+    const timeouts: Array<number | undefined> = [];
+    const tabs = Array.from({ length: 30 }, (_, i) => ({ windowId: 1, index: i + 1, title: "", url: `http://user/${i + 1}`, isActive: i === 0 }));
+    const host = {
+      async call(op: string, args: object = {}, timeoutMs?: number) {
+        const a = args as { spots?: Array<{ windowId: number; index: number }> };
+        switch (op) {
+          case "openTab": return { windowId: 1, index: 1, title: "", url: "http://a/x", isActive: false, stamped: true };
+          case "closeTab": return { stale: true };
+          case "settle": return { status: "gone" };
+          case "probe": return { exists: true, url: "http://user/1", marker: "" };
+          case "listTabs": return tabs;
+          case "readMarkers": timeouts.push(timeoutMs); return a.spots!.map((s) => ({ ...s, url: `http://user/${s.index}`, marker: "" }));
+          default: throw new Error(`모르는 op ${op}`);
+        }
+      },
+      async close() {},
+    };
+    const d = createJxaDriver({ host, warn: () => {} });
+    await d.openTab("http://a/x");
+    await d.closeOwned();
+    expect(timeouts.length).toBeGreaterThan(0);
+    for (const t of timeouts) expect(t).toBeLessThanOrEqual(5_000);
+    for (const t of timeouts) expect(t).toBeGreaterThanOrEqual(1_000);
+  });
+});

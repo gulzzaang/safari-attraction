@@ -133,7 +133,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     settle: (a) => call<SettleResult>("settle", { ...stampArgs(a), loadBudgetMs: clampBudget(a.loadBudgetMs) }, withBudget(a.loadBudgetMs)),
     close: (spot, urlOnly, timeoutMs) => call<Guarded<null>>("closeTab", { ...guardArgs(spot), urlOnly }, timeoutMs),
     // 표시 읽기는 읽기 전용. 호스트가 탭 하나에 쓸 시간(timeoutMs)을 지키고, 한 탭이 멈추면 요청 시간 제한이 끊는다.
-    readMarkers: (spots, timeoutMs) => call<MarkerRead[]>("readMarkers", { spots, timeoutMs }, spots.length * timeoutMs + READ_MARKERS_SLACK_MS),
+    readMarkers: (spots, timeoutMs, requestMs) => call<MarkerRead[]>("readMarkers", { spots, timeoutMs }, Math.min(requestMs ?? Infinity, spots.length * timeoutMs + READ_MARKERS_SLACK_MS)),
   });
 
   // 우리가 openWindow 로 연 창(창 번호). 이 안의 창만 setWindowSize · closeWindow 가 만진다.
@@ -262,7 +262,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
       const before = await frontBundleId();
       const key = registry.nextKey();
       const args = { url, windowId: o.windowId, key: registry.markerOf(key), loadBudgetMs: clampBudget(o.loadBudgetMs) }; // 페이지에는 서버마다 다른 표시를 적는다
-      let raw: RawTab & { stamped: boolean; windowUrls?: string[] };
+      let raw: RawTab & { stamped: boolean; windowUrls?: string[]; around?: Around };
       try {
         raw = await call("openTab", args, withBudget(o.loadBudgetMs));
       } catch (e) {
@@ -270,9 +270,9 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
         await launchSafari();
         raw = await call("openTab", args, withBudget(o.loadBudgetMs));
       }
-      registry.register(key, raw.windowId, raw.index, raw.url, { owned: true, stamped: raw.stamped });
+      registry.register(key, raw.windowId, raw.index, raw.url, { owned: true, stamped: raw.stamped, around: raw.around });
       if (raw.windowUrls) registry.noteWindow(raw.windowId, raw.windowUrls, key); // 연 직후 창의 모습(늦게 스스로 옮겨 간 탭을 되찾는 데 쓴다)
-      const { stamped: _stamped, windowUrls: _windowUrls, ...rest } = raw;
+      const { stamped: _stamped, windowUrls: _windowUrls, around: _around, ...rest } = raw;
       const tab = toTab({ raw: rest, key, owned: true });
       const after = await frontBundleId();
       return { tab, frontAppChanged: safariCameForward(before, after) };

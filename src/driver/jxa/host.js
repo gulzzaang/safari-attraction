@@ -98,8 +98,20 @@ function urlIs(u, args) {
   return forms.indexOf(u) >= 0;
 }
 
+// 우리 표시를 확인한 호출이 함께 돌려주는 창 모습: 탭 수와 그 자리 바로 앞 · 뒤 탭의 주소(없으면 null). Node 쪽이 항목마다 「마지막으로 확인한 모습」으로 기억해
+// 두었다가, 나중에 그 자리의 표시 없는 탭에 표시를 적기 전에 지금 모습과 견준다(mayStamp). 창의 탭 주소를 한 번에 읽는다. 못 읽으면 undefined.
+function aroundOf(windowId, index) {
+  try {
+    const urls = Safari.windows.byId(windowId).tabs.url().map(str);
+    if (index < 1 || index > urls.length) return undefined;
+    return { count: urls.length, prev: index > 1 ? urls[index - 2] : null, next: index < urls.length ? urls[index] : null };
+  } catch (e) {
+    return undefined;
+  }
+}
+
 // settle · rebind 가 자리의 「표시 없는 탭」에 표시를 적어도 되는가. 표시 없음은 우리 탭이 새 문서가 된 것일 수도, 사용자가 우리 탭 앞에 탭을 끼워 그 자리로 밀려 온 사용자 탭일 수도 있다.
-// Node 쪽이 기록해 둔 창 모습(args.shape: 탭 수 · 바로 앞 · 뒤 탭 주소의 여러 꼴)이 지금과 같을 때만 우리 탭으로 본다. 모습을 모르면(shape 없음) 그 탭의 주소가
+// Node 쪽이 우리 표시를 마지막으로 확인했을 때 받아 둔 창 모습(args.shape: 탭 수 · 바로 앞 · 뒤 탭 주소의 여러 꼴)이 지금과 같을 때만 우리 탭으로 본다. 모습을 모르면(shape 없음) 그 탭의 주소가
 // 기록한 주소(또는 가는 중이던 주소 args.altUrl)와 정확히 같을 때만 본다. 아니면 적지 않는다 — 호출한 쪽이 표시로 우리 탭을 다시 찾는다.
 function mayStamp(args, url) {
   const g = args.shape;
@@ -166,7 +178,7 @@ function guardedRun(args) {
   }
   if (r && r.ok === false) return { kind: "fallback" }; // 스크립트가 표시 불일치를 알렸다 — 소스는 안 돌았다
   if (!r || r.ok !== true) return { kind: "ran", tab };
-  return { kind: "ok", tab, value: typeof r.value === "string" ? r.value : "", url: typeof r.url === "string" ? r.url : undefined, leaving: r.leaving === true };
+  return { kind: "ok", tab, value: typeof r.value === "string" ? r.value : "", url: typeof r.url === "string" ? r.url : undefined, leaving: r.leaving === true, around: aroundOf(args.windowId, args.index) };
 }
 
 // settle 의 빠른 길: 표시 · 떠나는 중 깃발 · 문서 자신의 주소 · 제목을 doJavaScript 한 번으로 읽는다(예전에는 tab.url() · 표시 읽기 · 깃발 읽기 · tab.name() 이 따로였다).
@@ -201,6 +213,7 @@ function settleFast(args) {
     status: "same",
     leaving: r.lv === true,
     tab: { windowId: args.windowId, index: args.index, title: str(r.t), url: r.href, isActive },
+    around: aroundOf(args.windowId, args.index),
   };
 }
 
@@ -249,6 +262,7 @@ function finishRebind(args, tab) {
   return {
     status: "ok",
     stamped,
+    around: stamped ? aroundOf(args.windowId, args.index) : undefined,
     tab: {
       windowId: args.windowId,
       index: args.index,
@@ -582,11 +596,12 @@ const ops = {
         status: "same",
         leaving,
         tab: { windowId: args.windowId, index: args.index, title: str(p0.tab.name()), url, isActive: args.index === win.currentTab().index() },
+        around: aroundOf(args.windowId, args.index),
       };
     }
     if (!mayStamp(args, p0.url)) return { status: "gone" }; // 표시 없는 탭이 우리 탭이라는 증거가 없다 — 사용자 탭이 밀려 왔을 수 있어 아무것도 적지 않는다
     const r = finishRebind(args, p0.tab);
-    return r.status === "ok" ? { status: "navigated", tab: r.tab, stamped: r.stamped } : r;
+    return r.status === "ok" ? { status: "navigated", tab: r.tab, stamped: r.stamped, around: r.around } : r;
   },
 
   // 자리의 탭에 표시를 적는다(탭 붙잡기).
@@ -672,6 +687,7 @@ const ops = {
       url: str(tab.url()),
       isActive: index === current,
       stamped,
+      around: stamped ? aroundOf(windowId, index) : undefined, // 우리 표시를 확인한 바로 그때의 창 모습
       windowUrls: windowUrlsOf(win), // 연 직후 창의 모습(Node 쪽이 늦게 스스로 옮겨 간 탭을 되찾을 때 견준다)
     };
   },
@@ -811,7 +827,7 @@ const ops = {
       // 이동했을 수 있으니 지금 주소도 돌려준다(Node 쪽 기록을 새로 한다). 문서 자신의 주소 — tab.url() 은 이동 중이면 가는 중인 목적지다.
       url = str(Safari.doJavaScript("location.href", { in: g.tab }));
     } catch (e) {}
-    return { value, url };
+    return { value, url, around: aroundOf(args.windowId, args.index) };
   },
 
   // runJs 의 빠른 길: 탭 확인 · 표시 · 일이 doJavaScript 한 번이다(args.script). 소스가 안 돈 게 확실할 때만 {fallback: true}(느린 길 runJs 가 소스를 보낸다).
@@ -819,7 +835,7 @@ const ops = {
   // 자리 확인이 실패했을 때는 문서가 JS 를 못 도는지만 가린다(JS 를 못 도는 문서면 소스가 안 돈 것이니 stale).
   runJsFast(args) {
     const f = guardedRun(args);
-    if (f.kind === "ok") return { value: f.value, url: f.url, leaving: f.leaving };
+    if (f.kind === "ok") return { value: f.value, url: f.url, leaving: f.leaving, around: f.around };
     if (f.kind === "ran") {
       const g = guardTab(args);
       if (g) {
@@ -850,14 +866,14 @@ const ops = {
       }
       if (f.kind === "ok") {
         Safari.windows.byId(args.windowId).currentTab = f.tab;
-        return { value: null };
+        return { value: null, around: f.around };
       }
     }
     const g = guardTab(args);
     if (!g) return { stale: true };
     const w = Safari.windows.byId(args.windowId);
     w.currentTab = g.tab;
-    return { value: null };
+    return { value: null, around: aroundOf(args.windowId, args.index) };
   },
 
   closeTab(args) {

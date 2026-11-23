@@ -183,7 +183,7 @@ describe("호스트 runJsFast · runJs · showTab (가짜 사파리, 이벤트 �
     const h = createHarness();
     h.addWindow(7, { url: "http://x/", marker: KEY });
     const r = h.ops.runJsFast!(args());
-    expect(r).toEqual({ value: "2", url: "http://x/", leaving: false });
+    expect(r).toEqual({ value: "2", url: "http://x/", leaving: false, around: expect.anything() });
     expect(jsEvents(h)).toBe(1);
     expect(urlEvents(h)).toBe(0);
   });
@@ -192,14 +192,14 @@ describe("호스트 runJsFast · runJs · showTab (가짜 사파리, 이벤트 �
     const h = createHarness();
     const [tab] = h.addWindow(7, { url: "http://x/old", marker: KEY });
     tab!.dest = "http://x/new";
-    expect(h.ops.runJsFast!(args({ url: "http://x/old" }))).toEqual({ value: "2", url: "http://x/old", leaving: false });
+    expect(h.ops.runJsFast!(args({ url: "http://x/old" }))).toEqual({ value: "2", url: "http://x/old", leaving: false, around: expect.anything() });
     expect(urlEvents(h)).toBe(0);
   });
 
   test("표시 안 한 탭이 주소로 알아봐지면 한 번에 표시를 적고 돈다", () => {
     const h = createHarness();
     const [tab] = h.addWindow(7, { url: "http://x/" });
-    expect(h.ops.runJsFast!(args({ unstamped: true }))).toEqual({ value: "2", url: "http://x/", leaving: false });
+    expect(h.ops.runJsFast!(args({ unstamped: true }))).toEqual({ value: "2", url: "http://x/", leaving: false, around: expect.anything() });
     expect(tab!.page.dataset.saTab).toBe(KEY);
     expect(jsEvents(h)).toBe(1);
   });
@@ -217,7 +217,7 @@ describe("호스트 runJsFast · runJs · showTab (가짜 사파리, 이벤트 �
     const [tab] = h.addWindow(7, { url: "http://x/" }); // 표시 없음
     tab!.dest = "http://x/";
     const r = h.ops.runJs!({ ...args({ unstamped: true }), source: "1 + 1" });
-    expect(r).toEqual({ value: "2", url: "http://x/" }); // 느린 길은 떠나는 중인지 모른다
+    expect(r).toEqual({ value: "2", url: "http://x/", around: expect.anything() }); // 느린 길은 떠나는 중인지 모른다
     expect(tab!.page.dataset.saTab).toBe(KEY);
   });
 
@@ -321,7 +321,7 @@ describe("호스트 runJsFast · runJs · showTab (가짜 사파리, 이벤트 �
     const h = createHarness();
     const tabs = h.addWindow(7, { url: "http://x/a" }, { url: "http://x/", marker: KEY });
     const r = h.ops.showTab!({ ...args({ index: 2 }, "null") });
-    expect(r).toEqual({ value: null });
+    expect(r).toEqual({ value: null, around: expect.anything() });
     expect(h.windows.get(7)!.current).toBe(tabs[1]);
     expect(jsEvents(h)).toBe(1);
     expect(urlEvents(h)).toBe(0);
@@ -339,7 +339,7 @@ describe("호스트 runJsFast · runJs · showTab (가짜 사파리, 이벤트 �
     const tabs = h.addWindow(7, { url: "http://x/", marker: KEY });
     const a = args({}, "null") as Record<string, unknown>;
     delete a.script;
-    expect(h.ops.showTab!(a)).toEqual({ value: null });
+    expect(h.ops.showTab!(a)).toEqual({ value: null, around: expect.anything() });
     expect(h.windows.get(7)!.current).toBe(tabs[0]);
   });
 });
@@ -403,7 +403,7 @@ describe("호스트 settle 빠른 길(같은 문서면 doJavaScript 한 번 + cu
     tab!.page.title = "제목";
     tab!.dest = "http://x/목적지"; // 이동 중이라 tab.url() 은 목적지 — 쓰지 않는다
     const r = h.ops.settle!(sargs());
-    expect(r).toEqual({ status: "same", leaving: true, tab: { windowId: 7, index: 1, title: "제목", url: "http://x/a", isActive: true } });
+    expect(r).toEqual({ status: "same", leaving: true, tab: { windowId: 7, index: 1, title: "제목", url: "http://x/a", isActive: true }, around: expect.anything() });
     expect(count(h, "doJavaScript")).toBe(1);
     expect(count(h, "currentTab")).toBe(1);
     expect(count(h, "tabUrl")).toBe(0);

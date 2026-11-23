@@ -54,7 +54,10 @@ class FakeSafari implements TabBackend {
   readError: SafariError | null = null;
   /** 표시 읽기가 한 번 끝날 때마다(읽은 탭 수) — 시험이 가짜 시계를 흘려보낸다. */
   onRead?: (n: number) => void;
-  readMarkers = async (spots: Array<{ windowId: number; index: number }>, _timeoutMs: number): Promise<MarkerRead[]> => {
+  /** readMarkers 가 받은 요청 시간(끝낼 때만 남은 마감으로 줄어든다). */
+  readRequestMs: Array<number | undefined> = [];
+  readMarkers = async (spots: Array<{ windowId: number; index: number }>, _timeoutMs: number, requestMs?: number): Promise<MarkerRead[]> => {
+    this.readRequestMs.push(requestMs);
     this.readCalls.push(spots.length);
     for (const sp of spots) this.readSpotLog.push(`${sp.windowId}:${sp.index}`);
     if (this.readError) throw this.readError;
@@ -1157,6 +1160,30 @@ describe('TabRegistry', () => {
       expect(sf.readSpotLog.length).toBeLessThanOrEqual(30);
       expect(r.missing).toBeGreaterThan(0);
       expect(sf.tabs.filter((t) => t.marker === '')).toHaveLength(60); // 사용자 탭에는 아무것도 안 적었다
+    });
+
+    test('[R13] 끝낼 때 표시 읽기 요청 시간은 남은 마감(최소 1초)으로 줄어든다 — 멈춘 묶음 하나가 8초를 넘기지 않는다', async () => {
+      const { sf, reg, advance } = await manyGone();
+      sf.onRead = () => advance(1_500);
+      await reg.closeOwned();
+      const reqs = sf.readRequestMs.filter((x): x is number => x !== undefined);
+      expect(reqs.length).toBeGreaterThan(1);
+      expect(reqs[0]).toBeLessThanOrEqual(5_000);
+      for (let i = 1; i < reqs.length; i++) expect(reqs[i]).toBeLessThan(reqs[i - 1]!); // 시간이 갈수록 줄어든다
+      for (const r of reqs) expect(r).toBeGreaterThanOrEqual(1_000);
+    });
+
+    test('[R13] 끝낼 때가 아닌 sync 의 표시 읽기는 요청 시간을 따로 정하지 않는다', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf);
+      for (let i = 0; i < 5; i++) sf.tabs.push({ url: `http://u/${i}`, marker: '' });
+      const k = openOwned(sf, reg, 'http://a.example/x');
+      sf.tabs[5]!.url = 'http://a.example/moved';
+      sf.tabs.unshift({ url: 'http://u/front', marker: '' });
+      await reg.sync(await sf.list());
+      expect(sf.readRequestMs.length).toBeGreaterThan(0);
+      expect(sf.readRequestMs.every((x) => x === undefined)).toBe(true);
+      expect(reg.isOwned(k)).toBe(true);
     });
 
     test('[I3] 훑는 도중 우리 탭을 닫아 순번이 당겨져도 읽어 둔 결과가 어긋나지 않는다(앞쪽 사용자 탭 사이에 우리 탭 여럿)', async () => {
