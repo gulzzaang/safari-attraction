@@ -92,8 +92,6 @@ interface Entry {
   lost?: boolean;
   /** 마지막으로 못 찾았을 때의 탭 목록 모양(sync 가 같은 목록을 되풀이해 훑지 않게 한다). */
   scanSig?: string;
-  /** 마지막 표시 훑기가 모든 탭을 다 봤는가(false 면 우리 표시의 탭이 안 본 탭 어딘가에 있을 수 있다). 훑은 적 없으면 undefined. */
-  scanComplete?: boolean;
 }
 
 /** 다른 탭을 들여다보다 멈출 때(경고창이 떠 있는 탭 등)를 기다리는 시간. */
@@ -213,32 +211,21 @@ export class TabRegistry {
   }
 
   /**
-   * 자리의 탭이 키의 탭이 아니라고 했을 때 탭을 다시 찾는다. 우리가 연 탭은 표시가 사라졌어도(예기치 못한 이동으로
-   * 새 문서가 뜸) 키를 지키는 settle 로 표시를 다시 적고, 그 밖의 탭 · JS 에 답하지 않는 탭은 resolve 로 찾는다.
+   * 자리의 탭이 키의 탭이 아니라고 했을 때 탭을 다시 찾는다. 자리의 탭에 이 키의 표시가 그대로면 settle 로 상태만 맞추고(표시를 새로 적지 않는다),
+   * 그 밖에는 표시로만 찾는다(resolve). 표시 없는 탭에 우리 표시를 적지 않는다 — 사용자 탭이 우리 옛 자리로 밀려 온 것일 수 있어서다.
+   * 새 문서가 돼 표시를 잃은 우리 탭은 이동을 시킨 쪽이 바로 rebind · settle 로 되살린다(진행 중인 동작 바로 뒤).
    */
   private async relocate(key: string): Promise<void> {
     const e = this.entries.get(key);
-    if (e && e.owned && !e.blocked && !e.lost) {
-      // 기록한 자리에 표시 없는 탭이 와 있으면 「우리 탭이 새 문서가 됐다」인지 「사용자 탭이 밀려 들어왔다」인지 모른다.
-      // settle 은 표시 없는 탭에 우리 표시를 적으므로(사용자 탭에 적으면 나중에 우리 탭으로 닫힌다), 먼저 표시로 다른 자리에서 찾는다.
-      if (await this.markerlessAtSpot(e)) {
-        const raw = await this.backend.list();
-        if (await this.locate(e, raw, new Set(), new Map())) return;
-        if (e.scanComplete === false) {
-          // 다 훑지 못했다 — 우리 표시의 탭이 못 본 곳에 있을 수 있어, 자리의 표시 없는 탭에 표시를 적지 않는다(잃어버림으로 두고 closeOwned 가 다시 찾는다).
-          this.drop(key);
-          throw tabClosed(key);
-        }
-      }
-      await this.settle(key);
-    } else await this.resolve(key);
+    if (e && e.owned && !e.blocked && !e.lost && (await this.markerAtSpot(e))) await this.settle(key);
+    else await this.resolve(key);
   }
 
-  /** 기록한 자리에 탭이 있고 표시가 없는가(읽기 전용). 읽지 못하면 false(예전처럼 settle 로 간다). */
-  private async markerlessAtSpot(e: Entry): Promise<boolean> {
+  /** 기록한 자리의 탭에 이 키의 표시가 있는가(읽기 전용). 읽지 못하면 false. */
+  private async markerAtSpot(e: Entry): Promise<boolean> {
     try {
       const p = await this.backend.probe(e.windowId, e.index, PROBE_TIMEOUT_MS);
-      return p.exists && p.marker === "";
+      return p.exists && p.marker === this.markerOf(e.key);
     } catch (err) {
       if (isStuck(err)) return false;
       throw err;
@@ -552,21 +539,13 @@ export class TabRegistry {
     // 표시를 적은 탭을 먼저 맞춘다(표시가 가장 믿을 만하다).
     const order = [...this.entries.values()].sort((a, b) => Number(b.stamped) - Number(a.stamped));
     for (const e of order) {
-      const wasLost = e.lost === true; // 이미 잃어버린 탭은 표시로만 돌아온다(settle 로 표시를 적지 않는다)
       const found = await this.locate(e, raw, claimed, cache, true);
       if (found) {
         claimed.add(spotId(found));
         bySpot.set(spotId(found), e.key);
       } else {
-        // 우리가 연 탭이 표시를 잃었을 수 있다(예기치 못한 이동으로 새 문서가 뜸) — 기록한 자리가 비어 있으면 settle 로 이어 본다.
-        const here = raw.find((t) => sameSpot(t, e));
-        const kept = e.owned && !e.blocked && !wasLost && e.scanComplete !== false && here && !claimed.has(spotId(here)) ? await this.settleQuietly(e.key) : null;
-        if (kept) {
-          claimed.add(spotId(kept.tab));
-          bySpot.set(spotId(kept.tab), e.key);
-        } else {
-          this.drop(e.key);
-        }
+        // 못 찾았다 — 사용자 탭은 잊고, 우리 탭은 잃어버림으로 둔다(표시 없는 탭에 표시를 적어 이어 붙이지 않는다).
+        this.drop(e.key);
       }
     }
     return raw.map((t) => {
@@ -577,16 +556,6 @@ export class TabRegistry {
       }
       return { raw: t, key, owned: this.isOwned(key) };
     });
-  }
-
-  /** settle 하되 탭을 못 찾으면(TAB_CLOSED) null — 그때 settle 이 이미 키를 지웠다. 다른 오류는 올린다. */
-  private async settleQuietly(key: string): Promise<{ tab: RawTab } | null> {
-    try {
-      return await this.settle(key);
-    } catch (err) {
-      if (err instanceof SafariError && err.code === "TAB_CLOSED") return null;
-      throw err;
-    }
   }
 
   /** 한 탭이 지금 어디 있는지 찾아 기록을 새로 한다. 못 찾으면 null(기록은 건드리지 않는다). */
@@ -600,7 +569,6 @@ export class TabRegistry {
       e.pendingUrl = undefined;
       e.lost = false;
       e.scanSig = undefined;
-      e.scanComplete = undefined;
       return t;
     };
 
@@ -648,15 +616,13 @@ export class TabRegistry {
     const sig = raw.map((t) => `${t.windowId}:${t.index}:${t.url}`).join("|");
     if (fromSync && e.lost && e.scanSig === sig) return null; // 지난번 훑은 때와 탭 목록이 같다 — 되풀이해 들여다보지 않는다
     const candidates = this.priorityOrder(raw.filter((t) => free(t) && !tried.has(spotId(t))), [e]);
-    const complete = await this.readMarkersOf(candidates, cache);
+    await this.readMarkersOf(candidates, cache);
     const mark = this.markerOf(e.key);
     for (const t of candidates.slice(0, SCAN_MAX_TABS)) {
       const r = cache.get(spotId(t));
       if (r && r.marker === mark) return take({ ...t, url: r.url });
     }
     e.scanSig = sig;
-    // 이미 잡힌(claimed) 탭은 우리 탭이 아니니 안 본 걸로 세지 않는다. 안 읽은 탭이 남았으면 못 찾은 것이 「닫힘」이라고 단정할 수 없다.
-    e.scanComplete = complete;
     return null;
   }
 }

@@ -435,17 +435,21 @@ describe("드라이버 runJs: 빠른 길 → 안 되면 느린 길(가짜 호스
   type Call = { op: string; args: Record<string, any> };
   function setup(script: (op: string, args: Record<string, any>) => unknown) {
     const calls: Call[] = [];
+    let marker = ""; // openTab 이 받은 페이지 안 표시
     const tab = { windowId: 5, index: 1, title: "", url: "http://x/", isActive: false };
     const host = {
       async call(op: string, a: object = {}) {
         calls.push({ op, args: a as Record<string, any> });
-        if (op === "openTab") return { ...tab, stamped: true };
+        if (op === "openTab") {
+          marker = String((a as Record<string, unknown>).key);
+          return { ...tab, stamped: true };
+        }
         if (op === "openWindow") return { windowId: 5, windowIndex: 1, tab, stamped: true };
         return script(op, a as Record<string, any>);
       },
       async close() {},
     };
-    return { calls, d: createJxaDriver({ host }) };
+    return { calls, marker: () => marker, d: createJxaDriver({ host }) };
   }
 
   test("정상: runJsFast 한 번만 부르고 느린 길은 부르지 않는다. 주소 기록도 돌려준 값으로 새로 한다", async () => {
@@ -482,13 +486,13 @@ describe("드라이버 runJs: 빠른 길 → 안 되면 느린 길(가짜 호스
     expect(calls[2]!.args.script).toBeUndefined();
   });
 
-  test("느린 길도 stale 이면 탭을 다시 찾고(우리 탭은 settle) 처음부터 다시 한다", async () => {
+  test("느린 길도 stale 이면 탭을 다시 찾고(우리 표시가 그대로면 settle) 처음부터 다시 한다", async () => {
     let fastCalls = 0;
-    const { calls, d } = setup((op) => {
+    const { calls, d, marker } = setup((op) => {
       if (op === "runJsFast") return ++fastCalls === 1 ? { fallback: true } : { value: "ok", url: "http://x/" };
       if (op === "runJs") return { stale: true };
-      if (op === "probe") return { exists: true, url: "http://x/", marker: "t9.other" }; // 자리에 표시 있는 탭(표시 없는 탭이면 settle 전에 표시로 먼저 찾는다)
-      if (op === "settle") return { status: "navigated", tab: { windowId: 5, index: 1, title: "", url: "http://x/", isActive: false }, stamped: true };
+      if (op === "probe") return { exists: true, url: "http://x/", marker: marker() }; // 자리의 탭에 우리 표시가 그대로일 때만 settle(표시 없는 탭에는 표시를 적지 않는다)
+      if (op === "settle") return { status: "same", leaving: false, tab: { windowId: 5, index: 1, title: "", url: "http://x/", isActive: false } };
       return undefined;
     });
     const { tab } = await d.openTab("http://x/");
@@ -498,9 +502,9 @@ describe("드라이버 runJs: 빠른 길 → 안 되면 느린 길(가짜 호스
 
   test("빠른 길이 stale 이면(소스가 던진 뒤 자리 확인 실패) 탭을 다시 찾는다", async () => {
     let n = 0;
-    const { calls, d } = setup((op) => {
+    const { calls, d, marker } = setup((op) => {
       if (op === "runJsFast") return ++n === 1 ? { stale: true } : { value: "ok" };
-      if (op === "probe") return { exists: true, url: "http://x/", marker: "t9.other" };
+      if (op === "probe") return { exists: true, url: "http://x/", marker: marker() };
       if (op === "settle") return { status: "same", leaving: false, tab: { windowId: 5, index: 1, title: "", url: "http://x/", isActive: false } };
       return undefined;
     });

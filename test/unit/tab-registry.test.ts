@@ -376,44 +376,45 @@ describe('TabRegistry', () => {
   });
 
   describe('예기치 못한 이동으로 표시가 사라진 우리 탭', () => {
-    test('withTab: 키를 지키고 표시를 다시 적은 뒤 일을 마친다', async () => {
+    test('withTab: 새 문서로 표시를 잃은 탭에는 표시를 다시 적지 않는다(TAB_CLOSED, 표시 없는 탭은 그대로)', async () => {
       const sf = new FakeSafari();
       const reg = new TabRegistry(sf);
       const k = openOwned(sf, reg, 'http://a/x');
       sf.tabs[0] = { url: 'http://a/after', marker: '' }; // XHR 뒤 늦은 이동 · JS 리다이렉트: 새 문서라 표시가 없다
-      const ran: string[] = [];
-      const v = await reg.withTab(k, async (s) => {
-        const t = sf.tabs[s.index - 1];
-        if (!t || (t.marker !== s.key && !(s.unstamped && t.marker === '' && t.url === s.url))) return { stale: true };
-        ran.push(t.url);
-        return { value: 'ok' };
-      });
-      expect(v).toBe('ok');
-      expect(ran).toEqual(['http://a/after']);
-      expect(reg.ownedKeys()).toEqual([k]);
-      expect(sf.tabs[0]!.marker).toBe(reg.markerOf(k));
-      expect((await reg.closeOwned()).closed).toBe(1);
-      expect(sf.tabs).toHaveLength(0);
+      const run = async (s: Spot): Promise<Guarded<string>> => (sf.tabs[s.index - 1]?.marker === s.key ? { value: 'ok' } : { stale: true });
+      await expect(reg.withTab(k, run)).rejects.toMatchObject({ code: 'TAB_CLOSED' });
+      expect(sf.tabs).toEqual([{ url: 'http://a/after', marker: '' }]);
+      expect(reg.ownedKeys()).toEqual([]); // 보이는 목록에서는 빠진다(잃어버림)
     });
 
-    test('sync(listTabs) 가 키를 지우지 않는다', async () => {
-      const sf = new FakeSafari();
-      const reg = new TabRegistry(sf);
-      const k = openOwned(sf, reg, 'http://a/x');
-      sf.tabs[0] = { url: 'http://a/after', marker: '' };
-      const listed = await reg.sync(await sf.list());
-      expect(listed).toHaveLength(1);
-      expect(listed[0]).toMatchObject({ key: k, owned: true });
-      expect(reg.ownedKeys()).toEqual([k]);
-      expect((await reg.closeOwned()).closed).toBe(1);
-    });
-
-    test('closeTab(종료 때 closeOwned)이 이어서 닫는다', async () => {
+    test('sync(listTabs): 표시를 잃은 우리 탭은 목록에서 빠지고 표시 없는 탭에 표시를 적지 않는다', async () => {
       const sf = new FakeSafari();
       const reg = new TabRegistry(sf);
       openOwned(sf, reg, 'http://a/x');
       sf.tabs[0] = { url: 'http://a/after', marker: '' };
-      expect((await reg.closeOwned()).closed).toBe(1);
+      const listed = await reg.sync(await sf.list());
+      expect(listed).toHaveLength(1);
+      expect(listed[0]!.owned).toBe(false);
+      expect(sf.tabs).toEqual([{ url: 'http://a/after', marker: '' }]);
+    });
+
+    test('closeOwned: 표시를 잃은(표시 없는) 탭은 자리 · 주소가 비슷해도 닫지 않고, 표시가 있는 우리 탭만 닫는다', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf);
+      openOwned(sf, reg, 'http://a/x');
+      sf.tabs[0] = { url: 'http://a/after', marker: '' };
+      openOwned(sf, reg, 'http://a/y'); // 표시가 있는 우리 탭
+      expect(await reg.closeOwned()).toEqual({ closed: 1, missing: 0 });
+      expect(sf.tabs).toEqual([{ url: 'http://a/after', marker: '' }]);
+    });
+
+    test('표시를 잃었다가 이동을 시킨 쪽이 rebind 하면 우리 탭으로 되살아나 닫힌다(진행 중인 동작 바로 뒤)', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf);
+      const k = openOwned(sf, reg, 'http://a/x');
+      sf.tabs[0] = { url: 'http://a/after', marker: '' };
+      await reg.rebind(k);
+      expect(await reg.closeOwned()).toEqual({ closed: 1, missing: 0 });
       expect(sf.tabs).toHaveLength(0);
     });
 
@@ -571,9 +572,8 @@ describe('TabRegistry', () => {
       expect(sf.tabs.every((t) => t.marker === '')).toBe(true);
     });
 
-    // 알려진 한계(결정 필요): 사용자 탭이 우리 탭의 옛 자리에 와 있으면, 「우리 탭이 새 문서가 돼 표시를 잃었다」(기존 시험 'closeTab(종료 때 closeOwned)이 이어서 닫는다')와
-    // 겉으로 똑같아 settle 이 표시를 적고 닫는다. 둘을 가를 방법이 없어 test.fails 로 남긴다(고쳐지면 이 시험이 통과해 test.fails 가 실패로 알린다).
-    test.fails('[포커스 3 — 미해결] 우리 탭 뒤에 사용자 탭이 있었고 우리 탭이 닫혔어도, 밀려 온 표시 없는 사용자 탭은 닫지 않는다', async () => {
+    // 끝낼 때는 우리 표시가 있는 탭만 닫는다 — 우리 옛 자리로 밀려 온 표시 없는 사용자 탭은 「우리 탭이 새 문서가 돼 표시를 잃은 것」과 겉으로 같아도 건드리지 않는다.
+    test('[포커스 3] 우리 탭 뒤에 사용자 탭이 있었고 우리 탭이 닫혔어도, 밀려 온 표시 없는 사용자 탭은 닫지도 표시를 적지도 않는다', async () => {
       const sf = new FakeSafari();
       const reg = new TabRegistry(sf);
       sf.tabs.push({ url: 'http://user/1', marker: '' });
@@ -581,7 +581,7 @@ describe('TabRegistry', () => {
       sf.tabs.push({ url: 'http://user/2', marker: '' });
       sf.tabs.splice(1, 1); // 사용자가 우리 탭을 닫음 — user/2 가 우리 옛 자리로 당겨짐
       expect(await reg.closeOwned()).toEqual({ closed: 0, missing: 0 });
-      expect(sf.tabs.map((t) => t.url)).toEqual(['http://user/1', 'http://user/2']);
+      expect(sf.tabs).toEqual([{ url: 'http://user/1', marker: '' }, { url: 'http://user/2', marker: '' }]);
     });
 
     test('[포커스 4] 탭이 150개일 때 우리 탭이 60개 밖에 있어 못 봤으면 못 찾음(missing 1)이고 아무 탭도 닫지 않는다', async () => {
