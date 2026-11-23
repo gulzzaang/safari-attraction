@@ -148,6 +148,18 @@ describe("진짜 안내서 목록 검사", () => {
     ];
     for (const [url, id] of cases) expect(guideFor(url)?.id, url).toBe(id);
   });
+  test("유튜브 · 노션 · 깃허브 안내서 호스트 짝", () => {
+    const cases: Array<[string, string]> = [
+      ["https://www.youtube.com/results?search_query=x", "youtube"],
+      ["https://m.youtube.com/watch?v=abc", "youtube"],
+      ["https://app.notion.com/", "notion"],
+      ["https://www.notion.so/abc", "notion"],
+      ["https://www.notion.com/ko", "notion"],
+      ["https://github.com/gulzzaang/safari-attraction/issues", "github"],
+      ["https://gist.github.com/x", "github"],
+    ];
+    for (const [url, id] of cases) expect(guideFor(url)?.id, url).toBe(id);
+  });
   test("개인 정보 · 민감 값이 없다", () => {
     for (const g of GUIDES) {
       const text = fullText(g);
