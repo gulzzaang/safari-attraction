@@ -5,6 +5,8 @@ import { formatDoctor, runDoctor } from "./doctor.js";
 import { toKorean } from "./errors-ko.js";
 import { ActivityLog, type Touch } from "./memory/activity.js";
 import { MemoryHome, resolveHome } from "./memory/home.js";
+import { MemoryIndex } from "./memory/search.js";
+import { runMemoryTool } from "./memory/tool-memory.js";
 import { createReplSession } from "./repl/context.js";
 import { SNAPSHOT_LIMIT_BYTES } from "./snapshot/diff.js";
 import { VERSION } from "./version.js";
@@ -56,6 +58,17 @@ Read values with console.log (the last expression is NOT printed). Errors come b
 
 export const STATUS_DESCRIPTION =
   "빠진 준비를 한국어로 점검한다 — 사파리 실행, 자동화 허락, 「Apple 이벤트의 JavaScript 허용」, 화면 기록(찍기용). 항목마다 ✓ / ✗ / ? 와 고칠 곳을 보여 준다. 막혔을 때 먼저 부른다. 빈 탭을 잠깐 열었다 닫는다. / Reports Safari connection status.";
+
+export const MEMORY_DESCRIPTION = `사파리-어트랙션 전용 기억(폴더에 마크다운으로 쌓임, 아이클라우드면 다른 맥과도 공유). 「기억해」「잊어줘」「지난번에 본 … 찾아 줘」「기억 정리해 줘」일 때 쓴다. 사파리 조작은 repl.
+Attraction-only memory kept as markdown files. Use it to remember, search, read, forget, tidy the daily logs, or pause logging.
+
+action:
+- remember: text 를 기억(about: "나"(기본) | "사이트:<주소>" | "프로젝트"(열린 프로젝트 메모)). 비밀번호 · 카드 · 토큰은 거절.
+- search: query 로 기억 · 일지 · 프로젝트를 찾는다(보관된 것 포함).
+- read: path(예 "기억/나.md")를 8KB 까지 읽는다. 비우면 폴더 목록.
+- forget: text 가 든 줄을 나.md · 사이트 메모에서 지운다(여러 줄이면 목록만 보여 줌).
+- tidy: 지난 날 일지를 받아 온다 → 짧게 요약해 tidy_save(text)로 보내면 보관한다.
+- pause: on=true 면 이번 대화 동안 하루 기록을 멈춘다.`;
 
 /**
  * repl 한 번이 끝난 뒤의 기억 쪽 일: 하루 기록을 쓰고, 응답 끝에 붙일 글(사이트 메모 → 정리 안내 → 쓰기 실패 안내)을 모은다.
@@ -142,6 +155,8 @@ export interface SafariServer {
   home: MemoryHome;
   /** 대화 상태 · 하루 기록 · 사이트 메모 붙이기 · 정리 안내. 도구 호출이 시작될 때 touch() 를 부른다. */
   activity: ActivityLog;
+  /** 기억 · 프로젝트 글 색인(서버마다 하나). */
+  index: MemoryIndex;
 }
 
 /**
@@ -149,7 +164,9 @@ export interface SafariServer {
  */
 export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHome; now?: () => Date; memoryTimeoutMs?: number } = {}): SafariServer {
   const home = opts.home ?? new MemoryHome(resolveHome().dir);
-  const activity = new ActivityLog(home, opts.now);
+  const now = opts.now ?? (() => new Date());
+  const activity = new ActivityLog(home, now);
+  const index = new MemoryIndex(home, { now });
   const memoryTimeoutMs = opts.memoryTimeoutMs ?? MEMORY_TIMEOUT_MS;
   const session = createReplSession(driver);
   const server = new McpServer({ name: "safari-attraction", version: VERSION });
@@ -187,5 +204,26 @@ export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHo
     },
   );
 
-  return { server, home, activity, shutdown: () => session.dispose(), handleStray: (reason, kind) => session.handleStray(reason, kind) };
+  server.registerTool(
+    "memory",
+    {
+      title: "기억 (남기기 · 찾기 · 정리)",
+      description: MEMORY_DESCRIPTION,
+      inputSchema: {
+        action: z.enum(["remember", "search", "read", "forget", "tidy", "tidy_save", "pause"]).describe("할 일"),
+        text: z.string().optional().describe("remember · forget · tidy_save 에 쓰는 글"),
+        about: z.string().optional().describe('remember 의 대상: "나"(기본) · "사이트:<주소>" · "프로젝트"'),
+        query: z.string().optional().describe("search 로 찾을 말"),
+        path: z.string().optional().describe('read 할 파일 · 폴더(기억 폴더 기준, 예 "기억/나.md")'),
+        on: z.boolean().optional().describe("pause: true 면 기록 멈춤, false 면 다시 기록"),
+      },
+    },
+    async (input) => {
+      const r = await runMemoryTool({ home, index, activity, now }, input);
+      const content = [{ type: "text" as const, text: r.text }];
+      return r.isError ? { isError: true, content } : { content };
+    },
+  );
+
+  return { server, home, activity, index, shutdown: () => session.dispose(), handleStray: (reason, kind) => session.handleStray(reason, kind) };
 }

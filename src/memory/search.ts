@@ -250,10 +250,10 @@ export class MemoryIndex {
 
 // ───────────────────────── 보여 주기 ─────────────────────────
 
-const bytes = (s: string) => Buffer.byteLength(s, "utf8");
+export const bytes = (s: string) => Buffer.byteLength(s, "utf8");
 
 /** 글자 경계를 지키며 UTF-8 `max` 바이트 안으로 앞에서부터 자른다. */
-function cutBytes(s: string, max: number): string {
+export function cutBytes(s: string, max: number): string {
   let used = 0;
   let out = "";
   for (const ch of s) {

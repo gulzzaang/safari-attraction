@@ -31,10 +31,20 @@ afterEach(async () => {
 const textOf = (r: unknown): string => ((r as { content: Array<{ text: string }> }).content[0]?.text) ?? "";
 
 describe("MCP 서버", () => {
-  test("도구 목록은 repl 과 status 둘", async () => {
+  test("도구 목록은 repl · status · memory", async () => {
     const c = await connect(createFakeDriver());
     const { tools } = await c.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(["repl", "status"]);
+    expect(tools.map((t) => t.name).sort()).toEqual(["memory", "repl", "status"]);
+  });
+
+  test("memory 설명은 800자 이하이고 언제 쓰는지 · 영어 한 줄 · 모든 action 을 알려 준다", async () => {
+    const c = await connect(createFakeDriver());
+    const mem = (await c.listTools()).tools.find((t) => t.name === "memory")!;
+    const d = mem.description ?? "";
+    expect([...d].length).toBeLessThanOrEqual(800);
+    for (const w of ["기억해", "찾아 줘", "정리", "remember", "search", "read", "forget", "tidy", "tidy_save", "pause"]) expect(d).toContain(w);
+    expect(d.split("\n").filter((l) => /^[A-Z][^가-힣]*$/.test(l))).toHaveLength(1); // 영어 한 줄
+    expect(mem.title).toMatch(/기억/);
   });
 
   test("repl 설명이 쓰는 법과 알려진 한계를 알려 준다", async () => {
@@ -316,5 +326,67 @@ describe("repl 응답에 기록 · 메모 · 안내 붙이기", () => {
     } finally {
       process.off("unhandledRejection", onStray);
     }
+  });
+});
+
+describe("memory 도구(MCP 로 부르기)", () => {
+  const NOW = new Date(2026, 10, 23, 14, 5, 0);
+  let tmp: Awaited<ReturnType<typeof makeTempHome>>;
+  let home: MemoryHome;
+  let clock: Date;
+  beforeEach(async () => {
+    tmp = await makeTempHome();
+    home = new MemoryHome(tmp.dir);
+    clock = new Date(NOW);
+  });
+  afterEach(async () => {
+    await client?.close();
+    await srv?.shutdown();
+    client = undefined;
+    srv = undefined;
+    await tmp.remove();
+  });
+  const mem = (c: Client, args: Record<string, unknown>) => c.callTool({ name: "memory", arguments: args });
+
+  test("기억해 → 찾기 · 서버는 index 를 내놓는다", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    expect(srv!.index).toBeDefined();
+    const a = await mem(c, { action: "remember", text: "LG 그램 노트북 비교", about: "나" });
+    expect(textOf(a)).toBe("기억했어요: 기억/나.md");
+    expect(a.isError).toBeFalsy();
+    const b = await mem(c, { action: "search", query: "노트북" });
+    expect(textOf(b)).toContain("LG 그램");
+  });
+
+  test("오류는 isError 로, 열린 프로젝트는 첫 줄에", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    srv!.activity.state.openProject = "이사 준비";
+    const r = await mem(c, { action: "remember" });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe("열린 프로젝트: 이사 준비\n기억할 내용(text)을 알려 주세요.");
+  });
+
+  test("action 이 목록에 없으면 MCP 가 거절한다", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    const r = await mem(c, { action: "해줘" }).catch((e: unknown) => e);
+    const failed = r instanceof Error || (r as { isError?: boolean }).isError === true;
+    expect(failed).toBe(true);
+  });
+
+  test("pause 는 서버의 repl 기록을 멈춘다", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    await mem(c, { action: "pause", on: true });
+    await c.callTool({ name: "repl", arguments: { title: "멈춤", code: 'await openTab("https://a.example/")' } });
+    expect(await home.read(`기억/일지/2026-11-23-${machineName()}.md`)).toBeNull();
+  });
+
+  test("쓸 수 없는 기억 폴더: memory 는 한 줄 오류, repl 은 그대로", async () => {
+    await writeFile(tmp.dir + "/막힘", "파일");
+    const c = await connect(createFakeDriver(), { home: new MemoryHome(tmp.dir + "/막힘/아래"), now: () => clock });
+    const r = await mem(c, { action: "remember", text: "가나다" });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toMatch(/^기억 폴더에 쓸 수 없어요: .*막힘\/아래 — /);
+    const ok = await c.callTool({ name: "repl", arguments: { title: "더하기", code: "console.log(1+2)" } });
+    expect(textOf(ok).split("\n")[0]).toBe("3");
   });
 });

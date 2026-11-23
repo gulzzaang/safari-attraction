@@ -16,7 +16,8 @@
   },
   "tools": [
     { "name": "repl", "description": "사파리를 자바스크립트로 조작한다 — 뒤쪽 탭 열기 · 읽기 · 누르기 · 입력하기 · 찍기." },
-    { "name": "status", "description": "빠진 준비(사파리 설정 · 자동화 허락 · 화면 기록)를 한국어로 점검한다. 막혔을 때 먼저 부른다." }
+    { "name": "status", "description": "빠진 준비(사파리 설정 · 자동화 허락 · 화면 기록)를 한국어로 점검한다. 막혔을 때 먼저 부른다." },
+    { "name": "memory", "description": "사파리-어트랙션 전용 기억 — 기억해 · 지난번에 본 것 찾기 · 읽기 · 잊기 · 하루 정리 · 기록 멈추기." }
   ],
   "compatibility": {
     "platforms": ["darwin"],
