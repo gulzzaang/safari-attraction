@@ -122,6 +122,32 @@ describe("진짜 안내서 목록 검사", () => {
       expect(g.checked, `${g.id} checked`).toMatch(/^(로그인 화면까지만\(미확인\) )?\d{4}-\d{2}-\d{2}$/);
     }
   });
+  test("본문 절 순서: 화면 구조 · 찾기와 읽기 · 자주 하는 일 · 함정 · 사용자 확인이 꼭 필요한 일", () => {
+    const order = ["## 화면 구조", "## 찾기와 읽기", "## 자주 하는 일", "## 함정", "## 사용자 확인이 꼭 필요한 일"];
+    for (const g of GUIDES) {
+      const text = fullText(g);
+      const at = order.map((h) => text.indexOf(`\n${h}\n`));
+      expect(at.every((i) => i >= 0), `${g.id} 절 빠짐`).toBe(true);
+      expect([...at].sort((a, b) => a - b), `${g.id} 절 순서`).toEqual(at);
+      expect(text.indexOf("## 요약"), `${g.id} 요약이 맨 앞`).toBeLessThan(at[0]);
+      expect(text.endsWith(`확인한 날: ${g.checked}`), `${g.id} 확인한 날이 맨 끝`).toBe(true);
+    }
+  });
+  test("쿠팡 · 네이버 안내서 호스트 짝", () => {
+    const cases: Array<[string, string]> = [
+      ["https://www.coupang.com/np/search?q=x", "coupang"],
+      ["https://m.coupang.com/", "coupang"],
+      ["https://www.naver.com/", "naver-search"],
+      ["https://search.naver.com/search.naver?query=x", "naver-search"],
+      ["https://cafe.naver.com/x", "naver-search"],
+      ["https://search.shopping.naver.com/search/all?query=x", "naver-shopping"],
+      ["https://shopping.naver.com/home", "naver-shopping"],
+      ["https://smartstore.naver.com/x", "naver-shopping"],
+      ["https://brand.naver.com/x/products/1", "naver-shopping"],
+      ["https://map.naver.com/p/search/x", "naver-map"],
+    ];
+    for (const [url, id] of cases) expect(guideFor(url)?.id, url).toBe(id);
+  });
   test("개인 정보 · 민감 값이 없다", () => {
     for (const g of GUIDES) {
       const text = fullText(g);
