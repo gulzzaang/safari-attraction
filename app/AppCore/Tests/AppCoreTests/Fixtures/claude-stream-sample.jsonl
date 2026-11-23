@@ -1,0 +1,8 @@
+{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup","session_id":"11111111-2222-4333-8444-555555555555"}
+{"type":"system","subtype":"hook_response","hook_name":"SessionStart:startup","output":"{\"additionalContext\":\"Please run /login is only a hook text\"}","exit_code":0,"outcome":"success","session_id":"11111111-2222-4333-8444-555555555555"}
+{"type":"system","subtype":"init","cwd":"/work","session_id":"11111111-2222-4333-8444-555555555555","tools":["Bash","Edit","Task"],"slash_commands":["login","logout"],"model":"claude-model"}
+{"type":"system","subtype":"thinking_tokens","estimated_tokens":50,"session_id":"11111111-2222-4333-8444-555555555555"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"REDACTED"}]},"parent_tool_use_id":null,"session_id":"11111111-2222-4333-8444-555555555555"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"파랑"}]},"parent_tool_use_id":null,"session_id":"11111111-2222-4333-8444-555555555555"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"},"session_id":"11111111-2222-4333-8444-555555555555"}
+{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"파랑","stop_reason":"end_turn","session_id":"11111111-2222-4333-8444-555555555555"}
