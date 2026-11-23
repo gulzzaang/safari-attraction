@@ -1,6 +1,6 @@
 import Foundation
 
-/// 개발 · 시험 전용 열쇠 — 평소에는 꺼져 있다. 앱의 번들 ID 는 `com.gulzzaang.SafariAttractionApp`(a 둘) 이라
+/// 개발 · 시험 전용 열쇠 — `DEV=1 app/scripts/build.sh` 로 만든 빌드에서만 앱이 받는다(파서 · 설정 읽기는 AppCore 에 남아 있음). 평소에도 꺼져 있다. 앱의 번들 ID 는 `com.gulzzaang.SafariAttractionApp`(a 둘) 이라
 /// `defaults write com.gulzzaang.SafariAttractionApp DevHooks -int 1` 로 켠다.
 ///
 /// - `safariattraction://toggle` — 옆 창 열기 · 닫기
@@ -18,12 +18,22 @@ public enum DevHooks {
         defaults.integer(forKey: defaultsKey) == 1
     }
 
-    /// 어느 도메인에서든 1 이면 켜진다.
+    /// 어느 도메인에서든 1 이 켜져 있으면 켜진다.
     public static func isEnabled(in all: [UserDefaults]) -> Bool { all.contains { isEnabled(defaults: $0) } }
 
-    /// 평소 쓰는 확인 — 앱 설정(`.standard`) 과 위 도메인들. 열쇠를 쓸 때마다 읽는다(앱을 다시 켜지 않아도 된다).
+    /// 앱 자신의 설정 도메인(`domains`) 하나만 읽는다 — 전역 도메인 · 실행 인자(`-DevHooks 1`)는 읽지 않는다.
+    /// `reader` 는 도메인 이름 → 그 도메인의 설정 사전(없으면 nil). 값은 숫자(또는 불리언) 1 일 때만 켜진다.
+    public static func isEnabled(readingDomain reader: (String) -> [String: Any]?) -> Bool {
+        domains.contains { domain in
+            guard let n = reader(domain)?[defaultsKey] as? NSNumber else { return false }
+            return n.intValue == 1
+        }
+    }
+
+    /// 평소 쓰는 확인 — `defaults write com.gulzzaang.SafariAttractionApp DevHooks -int 1` 로 쓴 값만 본다.
+    /// 열쇠를 쓸 때마다 읽는다(앱을 다시 켜지 않아도 된다).
     public static func isEnabled() -> Bool {
-        isEnabled(in: [.standard] + domains.compactMap { UserDefaults(suiteName: $0) })
+        isEnabled(readingDomain: { UserDefaults.standard.persistentDomain(forName: $0) })
     }
 
     public static func parse(url: URL) -> DevCommand? {

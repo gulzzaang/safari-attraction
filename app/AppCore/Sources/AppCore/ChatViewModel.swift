@@ -182,7 +182,14 @@ public final class ChatViewModel {
                                      page: page, history: job.history, claudeSessionID: job.sessionID)
             if let notice = CommandBuilder.notice(for: request) { update(job.answerID) { $0.notice = notice } }
 
-            // 막힐 수 있는 일(로그인 셸 PATH 는 처음에 최대 8초)은 메인 밖에서.
+            if CommandBuilder.exceedsPromptLimit(request) {
+                // 너무 긴 질문은 CLI 를 띄우지 않고 그 답 말풍선에 한 줄로 알린다.
+                update(job.answerID) { $0.error = CommandBuilder.promptTooLongMessage }
+                finish(job, outcome: .failed(CommandBuilder.promptTooLongMessage), page: page, session: nil, started: started)
+                return
+            }
+
+            // 막힐 수 있는 일(로그인 셸 PATH 는 앱이 켜진 뒤 첫 질문에서 처음 읽고 캐시 — 최대 8초)은 메인 밖에서.
             let loginPath = self.loginPath, workDirectory = self.workDirectory
             let prepared: Result<(path: String, dir: URL), Error> = await Task.detached(priority: .userInitiated) {
                 do { return .success((loginPath(), try workDirectory())) } catch { return .failure(error) }

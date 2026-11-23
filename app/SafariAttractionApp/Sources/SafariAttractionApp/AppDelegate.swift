@@ -10,9 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotKey: HotKey?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // 로그인 셸 PATH 는 처음 읽을 때 최대 8초 걸린다 — 첫 질문이 기다리지 않게 미리 데워 둔다(메인 밖에서).
-        DispatchQueue.global(qos: .utility).async { _ = ShellPath.loginPath() }
-
+        // 로그인 셸 PATH(`zsh -lic` 는 사용자 rc 를 실행한다)는 앱이 켜질 때 읽지 않는다 —
+        // 사용자가 첫 질문을 보낼 때 ChatViewModel 이 메인 밖에서 처음 읽고 캐시한다.
         let bridge = AppleScriptSafariBridge()
         let vm = ChatViewModel(runner: ProcessRunner(), bridge: bridge, loginPath: { ShellPath.loginPath() })
         let controller = SidePanelController(viewModel: vm, bridge: bridge)
@@ -69,7 +68,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotKey?.unregister()
     }
 
-    // MARK: 개발 · 시험용 열쇠(평소엔 꺼짐 — `defaults write com.gulzzaang.SafariAttractionApp DevHooks -int 1`)
+    // MARK: 개발 · 시험용 열쇠 — `DEV=1 app/scripts/build.sh` 로 만든 빌드에서만 들어 있다(평소 빌드엔 주소 등록도 코드도 없음).
+    // 켜려면 `defaults write com.gulzzaang.SafariAttractionApp DevHooks -int 1`.
+
+#if SA_DEV_HOOKS
 
     func application(_ application: NSApplication, open urls: [URL]) {
         guard DevHooks.isEnabled() else { return }
@@ -99,4 +101,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let record = vm.lastRun { try? record.write(to: file) }
         }
     }
+#endif
 }

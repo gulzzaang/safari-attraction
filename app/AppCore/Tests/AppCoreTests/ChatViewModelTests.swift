@@ -68,6 +68,13 @@ func jsonLine(_ obj: [String: Any]) -> Data {
     return d
 }
 
+final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _count = 0
+    var count: Int { lock.withLock { _count } }
+    func hit() { lock.withLock { _count += 1 } }
+}
+
 final class MainFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var _value: Bool?
@@ -350,6 +357,35 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.messages.last?.status, "멈췄어요")
         XCTAssertTrue(runner.calls.isEmpty, "멈춘 뒤에는 명령을 띄우지 않는다")
         XCTAssertFalse(vm.isRunning)
+    }
+
+    func testTooLongPromptNeverStartsTheCLIAndShowsKoreanError() async {
+        // 한글은 글자당 3바이트 — 7만 자면 21만 바이트라 상한(20만 바이트)을 넘는다.
+        await ask(String(repeating: "가", count: 70_000))
+        XCTAssertTrue(runner.calls.isEmpty, "너무 긴 질문은 CLI 를 띄우지 않는다")
+        let a = vm.messages.last
+        XCTAssertEqual(a?.error, CommandBuilder.promptTooLongMessage)
+        XCTAssertTrue(a?.error?.contains("너무 길어요") == true)
+        XCTAssertFalse(a?.isStreaming ?? true)
+        XCTAssertFalse(vm.isRunning)
+        XCTAssertEqual(vm.lastRun?.error, CommandBuilder.promptTooLongMessage)
+        // 줄여서 다시 보내면 된다.
+        await ask("짧은 질문")
+        XCTAssertEqual(runner.calls.count, 1)
+    }
+
+    func testLoginPathIsNotReadUntilTheFirstQuestionIsSent() async {
+        let counter = CallCounter()
+        let vm2 = ChatViewModel(runner: runner, bridge: bridge,
+                                loginPath: { counter.hit(); return "/test/bin" },
+                                workDirectory: { URL(fileURLWithPath: "/tmp/work-test") },
+                                now: { [clock] in clock!.date }, enabledModels: ModelKind.allCases)
+        XCTAssertEqual(counter.count, 0, "뷰모델을 만든 것만으로는 로그인 셸 PATH 를 읽지 않는다")
+        vm2.setPinned(true); vm2.requestFocus()
+        XCTAssertEqual(counter.count, 0, "사용자가 질문을 보내기 전에는 읽지 않는다")
+        vm2.input = "질문"
+        await vm2.send()?.value
+        XCTAssertEqual(counter.count, 1, "첫 질문을 보낼 때 읽는다")
     }
 
     func testCommandFailureShowsRedErrorLine() async {

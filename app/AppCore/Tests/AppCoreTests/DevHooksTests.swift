@@ -41,6 +41,21 @@ final class DevHooksTests: XCTestCase {
         db.set(1, forKey: DevHooks.defaultsKey)
         XCTAssertTrue(DevHooks.isEnabled(in: [da, db]))
     }
+    func testReadsOnlyTheAppsOwnDomainNotGlobalOrArguments() {
+        var asked: [String] = []
+        let reader: (String) -> [String: Any]? = { domain in
+            asked.append(domain)
+            // 어느 도메인을 물어도 1 이 있다고 답하는 읽기 — 전역 도메인 · 실행 인자 · 다른 앱을 묻지 않는지는 asked 로 본다.
+            return [DevHooks.defaultsKey: 1]
+        }
+        XCTAssertTrue(DevHooks.isEnabled(readingDomain: reader))
+        XCTAssertEqual(asked, ["com.gulzzaang.SafariAttractionApp"], "앱 자신의 설정 도메인만 읽는다")
+        XCTAssertFalse(DevHooks.isEnabled(readingDomain: { _ in nil }), "설정이 없으면 꺼짐")
+        XCTAssertFalse(DevHooks.isEnabled(readingDomain: { _ in [DevHooks.defaultsKey: 0] }))
+        XCTAssertFalse(DevHooks.isEnabled(readingDomain: { _ in [DevHooks.defaultsKey: 2] }))
+        XCTAssertTrue(DevHooks.isEnabled(readingDomain: { _ in [DevHooks.defaultsKey: true] }))
+        XCTAssertFalse(DevHooks.isEnabled(readingDomain: { _ in [DevHooks.defaultsKey: "1"] }), "문자열은 켜지 않는다")
+    }
     func testRecordJSONShape() throws {
         let r = RunRecord(model: "claude", question: "q", answer: String(repeating: "가", count: 2_500), error: nil, durationMs: 1234,
                           attachedPage: .init(titlePresent: true, urlHost: "a.example"))

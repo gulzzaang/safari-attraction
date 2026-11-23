@@ -148,4 +148,16 @@ final class CommandBuilderTests: XCTestCase {
         XCTAssertEqual(ModelKind.gemini.koreanName, "제미나이")
         XCTAssertEqual(ModelKind.chatgpt.koreanName, "ChatGPT")
     }
+    func testPromptLengthLimitIsTwoHundredThousandUTF8Bytes() {
+        XCTAssertEqual(CommandBuilder.maxPromptBytes, 200_000)
+        let atLimit = AskRequest(question: String(repeating: "a", count: 200_000), model: .claude)
+        XCTAssertFalse(CommandBuilder.exceedsPromptLimit(atLimit), "정확히 상한이면 통과")
+        let over = AskRequest(question: String(repeating: "a", count: 200_001), model: .claude)
+        XCTAssertTrue(CommandBuilder.exceedsPromptLimit(over))
+        // 글자 수가 아니라 UTF-8 바이트 — 한글 6만 7천 자(약 20만 1천 바이트).
+        XCTAssertTrue(CommandBuilder.exceedsPromptLimit(AskRequest(question: String(repeating: "가", count: 67_000), model: .claude)))
+        XCTAssertFalse(CommandBuilder.exceedsPromptLimit(AskRequest(question: String(repeating: "가", count: 66_000), model: .claude)))
+        // 페이지 글(고른 글은 2,000자까지만 붙는다)을 합친 전체 프롬프트가 기준.
+        XCTAssertTrue(CommandBuilder.promptTooLongMessage.contains("너무 길어요"))
+    }
 }
