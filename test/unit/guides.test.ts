@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { readFileSync } from "node:fs";
 import { findSecret } from "../../src/memory/guard.js";
 import {
   GUIDES,
@@ -159,6 +160,45 @@ describe("진짜 안내서 목록 검사", () => {
       ["https://gist.github.com/x", "github"],
     ];
     for (const [url, id] of cases) expect(guideFor(url)?.id, url).toBe(id);
+  });
+  test("설계 표: 호스트 16개가 맞는 안내서로 간다(설계 15 + pcmap.place.naver.com)", () => {
+    const table: Array<[string, string]> = [
+      ["coupang.com", "coupang"],
+      ["naver.com", "naver-search"],
+      ["search.naver.com", "naver-search"],
+      ["shopping.naver.com", "naver-shopping"],
+      ["search.shopping.naver.com", "naver-shopping"],
+      ["smartstore.naver.com", "naver-shopping"],
+      ["brand.naver.com", "naver-shopping"],
+      ["map.naver.com", "naver-map"],
+      ["pcmap.place.naver.com", "naver-map"], // 지도 안내서가 이 호스트를 열라고 하므로(컨트롤러 R3)
+      ["mail.google.com", "gmail"],
+      ["calendar.google.com", "google-calendar"],
+      ["drive.google.com", "google-drive"],
+      ["youtube.com", "youtube"],
+      ["notion.so", "notion"],
+      ["notion.com", "notion"],
+      ["github.com", "github"],
+    ];
+    expect(table).toHaveLength(16);
+    for (const [host, id] of table) expect(guideForHost(host)?.id, host).toBe(id);
+    expect(GUIDES.flatMap((g) => g.hosts).sort()).toEqual(table.map(([h]) => h).sort());
+  });
+  test("안내서는 10편이고, 묶음 파일(plugin/server.mjs)에 이름이 모두 들어 있다", () => {
+    expect(GUIDES).toHaveLength(10);
+    const bundle = readFileSync(new URL("../../plugin/server.mjs", import.meta.url), "utf8");
+    // esbuild 는 한글을 \uXXXX(256 미만은 \xHH)로 적으므로 두 꼴 모두 받아들인다.
+    const escaped = (t: string): string =>
+      [...t]
+        .map((c) => {
+          const n = c.charCodeAt(0);
+          if (n <= 126) return c;
+          return n < 256 ? `\\x${n.toString(16).toUpperCase().padStart(2, "0")}` : `\\u${n.toString(16).toUpperCase().padStart(4, "0")}`;
+        })
+        .join("");
+    for (const g of GUIDES) {
+      expect(bundle.includes(`name:${JSON.stringify(g.name)}`) || bundle.includes(`name:"${escaped(g.name)}"`), `${g.id} 이름 ${g.name}`).toBe(true);
+    }
   });
   test("개인 정보 · 민감 값이 없다", () => {
     for (const g of GUIDES) {

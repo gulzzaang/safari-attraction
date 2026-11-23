@@ -4,7 +4,7 @@ import type { SiteGuide } from "../types.js";
 export const naverMap: SiteGuide = {
   id: "naver-map",
   name: "네이버 지도",
-  hosts: ["map.naver.com"],
+  hosts: ["map.naver.com", "pcmap.place.naver.com"],
   summary:
     "검색은 map.naver.com/p/search/장소 로 연다. 결과 목록은 다른 사이트 iframe 안이라 snapshot 에 한 줄뿐이다. page.evaluate 로 document.getElementById('searchIframe').src 를 읽어 그 주소(또는 pcmap.place.naver.com/place/list?query=장소)를 열면 읽힌다. 장소 상세는 pcmap.place.naver.com/place/번호/home. 저장 · 공유 · 예약 · 리뷰 등록은 사용자 확인.",
   body: `## 화면 구조
