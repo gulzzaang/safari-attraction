@@ -17,6 +17,7 @@ final class SidePanel: NSPanel {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 380, height: 700),
                    styleMask: [.borderless, .resizable], backing: .buffered, defer: false)
         isFloatingPanel = false
+        becomesKeyOnlyIfNeeded = false // 눌리면 키 창이 된다(입력 칸)
         level = Self.windowLevel(pinned: false)
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
@@ -67,11 +68,17 @@ final class SidePanelController {
         weak var value: SidePanelController?
     }
 
-    func toggle() { isOpen ? close() : open() }
+    /// 열려 있어도 안 보이면(다른 앱으로 옮겨 가 따라가기가 숨김) 닫지 않고 다시 띄운다.
+    func toggle() {
+        switch PanelToggle.action(isOpen: isOpen, isVisible: panel.isVisible) {
+        case .open: open()
+        case .close: close()
+        }
+    }
 
     /// 연다 — 사용자가 눌렀으니 우리 앱을 앞으로 가져와 바로 입력할 수 있게 한다(사파리 창은 안 건드린다).
+    /// 이미 열려 있었어도(숨겨진 상태 포함) 따라가기를 다시 무장한다(보임 기억 지움 · 막 연 유예 · 새 자리 읽기).
     func open() {
-        guard !isOpen else { NSApp.activate(); panel.makeKeyAndOrderFront(nil); viewModel.requestFocus(); return }
         isOpen = true
         activateOnNextShow = true
         viewModel.requestFocus()
@@ -86,6 +93,26 @@ final class SidePanelController {
         if NSApp.isActive { NSApp.deactivate() } // 앞에 있던 앱(사파리)에게 돌려준다
     }
 
+    /// 앞으로 가져오기 — 협력형 활성화가 먹히지 않으면(`LSUIElement` 앱은 단축키 뒤에 안 올 수 있다) 150ms 뒤 한 번 더.
+    private func activateAndFocus() {
+        NSApp.activate()
+        panel.makeKeyAndOrderFront(nil)
+        viewModel.requestFocus()
+        NSLog("사파리-어트랙션: 옆 창 열기 — activate() 직후 앱 활성=%@ 키 창=%@",
+              NSApp.isActive ? "예" : "아니오", panel.isKeyWindow ? "예" : "아니오")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self, isOpen else { return }
+            if !NSApp.isActive {
+                NSLog("사파리-어트랙션: 150ms 뒤에도 앱이 활성이 아님 — 한 번 더 활성화(대비책)")
+                forceActivate()
+                panel.makeKeyAndOrderFront(nil)
+                viewModel.requestFocus()
+            }
+            NSLog("사파리-어트랙션: 옆 창 열기 결과 — 앱 활성=%@ 키 창=%@",
+                  NSApp.isActive ? "예" : "아니오", panel.isKeyWindow ? "예" : "아니오")
+        }
+    }
+
     /// 앱을 끝낼 때.
     func shutdown() { follower.stop() }
 
@@ -96,8 +123,7 @@ final class SidePanelController {
             panel.setFrame(frame, display: true)
             if activateOnNextShow && PanelLayer.activatesOurApp(for: .userOpened) {
                 activateOnNextShow = false
-                NSApp.activate()
-                panel.makeKeyAndOrderFront(nil)
+                activateAndFocus()
             } else {
                 // 보이거나 자리만 옮길 때는 활성화 없이 앞으로(사파리 포커스를 뺏지 않는다).
                 panel.orderFrontRegardless()
@@ -106,4 +132,10 @@ final class SidePanelController {
             panel.orderOut(nil)
         }
     }
+}
+
+/// 협력형 `activate()` 가 먹히지 않을 때의 대비책(옵션을 주는 옛 방식).
+@MainActor
+private func forceActivate() {
+    NSRunningApplication.current.activate(options: [.activateAllWindows])
 }

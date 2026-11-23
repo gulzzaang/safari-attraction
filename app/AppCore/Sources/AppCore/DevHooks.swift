@@ -1,7 +1,7 @@
 import Foundation
 
 /// 개발 · 시험 전용 열쇠 — 평소에는 꺼져 있다. 앱의 번들 ID 는 `com.gulzzaang.SafariAttractionApp`(a 둘) 이라
-/// `defaults write com.gulzzaang.SafariAttractionApp DevHooks -int 1` 로 켠다(a 하나인 `com.gulzzang…` 도 받아 준다).
+/// `defaults write com.gulzzaang.SafariAttractionApp DevHooks -int 1` 로 켠다.
 ///
 /// - `safariattraction://toggle` — 옆 창 열기 · 닫기
 /// - `safariattraction://ask?model=claude|gemini|chatgpt&q=…&web=1&page=1[&open=1]` — 질문을 친 것처럼 보내고,
@@ -11,8 +11,8 @@ public enum DevHooks {
     public static let scheme = "safariattraction"
     public static let fileName = "dev-last.json"
 
-    /// 읽어 보는 설정 도메인 — 앱 자신의 번들 ID, 그리고 철자 하나 다른 `com.gulzzang…`.
-    public static let domains = ["com.gulzzaang.SafariAttractionApp", "com.gulzzang.SafariAttractionApp"]
+    /// 읽어 보는 설정 도메인 — 앱 자신의 번들 ID 하나.
+    public static let domains = ["com.gulzzaang.SafariAttractionApp"]
 
     public static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
         defaults.integer(forKey: defaultsKey) == 1

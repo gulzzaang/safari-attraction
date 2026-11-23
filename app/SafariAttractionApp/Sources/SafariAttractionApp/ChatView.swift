@@ -28,7 +28,6 @@ func openInSafari(_ url: URL) {
 struct ChatView: View {
     @Bindable var vm: ChatViewModel
     var onClose: () -> Void
-    @FocusState private var inputFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,8 +42,6 @@ struct ChatView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.15)))
         .onExitCommand(perform: onClose)
-        .onChange(of: vm.focusTick) { inputFocused = true }
-        .onAppear { inputFocused = true }
         .environment(\.openURL, OpenURLAction { url in
             if MarkdownBlocks.isOpenable(url) { openInSafari(url); return .handled }
             return .discarded
@@ -117,14 +114,20 @@ struct ChatView: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("질문을 입력하세요", text: $vm.input, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...6)
-                    .focused($inputFocused)
-                    .onSubmit { vm.send() }
-                    .padding(8)
+                InputTextView(text: $vm.input, focusTick: vm.focusTick, onSubmit: { vm.send() })
                     .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-                if vm.isRunning {
+                    .overlay(alignment: .topLeading) {
+                        if vm.input.isEmpty {
+                            Text("질문을 입력하세요 (Return 보내기 · Option+Return 줄바꿈)")
+                                .font(.system(size: 13)).foregroundStyle(.tertiary)
+                                .padding(.horizontal, 8).padding(.vertical, 6)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                if vm.isStopping {
+                    HStack(spacing: 4) { ProgressView().controlSize(.small); Text("멈추는 중…").font(.caption) }
+                        .foregroundStyle(.secondary)
+                } else if vm.isRunning {
                     Button(action: vm.stop) { Image(systemName: "stop.circle.fill").font(.title2) }
                         .buttonStyle(.borderless).help("멈춤")
                 } else {

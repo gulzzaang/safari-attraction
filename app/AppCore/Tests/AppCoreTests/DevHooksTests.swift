@@ -32,9 +32,8 @@ final class DevHooksTests: XCTestCase {
         d.set(true, forKey: DevHooks.defaultsKey); XCTAssertTrue(DevHooks.isEnabled(defaults: d))
         d.set(2, forKey: DevHooks.defaultsKey); XCTAssertFalse(DevHooks.isEnabled(defaults: d))
     }
-    func testBothSpellingsOfTheBundleDomainEnableTheHooks() {
-        // 번들 ID 는 com.gulzzaang(a 둘). 「com.gulzzang」(a 하나)로 켜도 켜진다 — 시험 · 작업 지시서에 두 가지가 섞여 있어서.
-        XCTAssertEqual(DevHooks.domains, ["com.gulzzaang.SafariAttractionApp", "com.gulzzang.SafariAttractionApp"])
+    func testOnlyTheRealBundleDomainIsRead() {
+        XCTAssertEqual(DevHooks.domains, ["com.gulzzaang.SafariAttractionApp"], "철자가 틀린 도메인은 읽지 않는다")
         let a = "devhooks-a-\(UUID().uuidString)", b = "devhooks-b-\(UUID().uuidString)"
         let da = UserDefaults(suiteName: a)!, db = UserDefaults(suiteName: b)!
         defer { da.removePersistentDomain(forName: a); db.removePersistentDomain(forName: b) }

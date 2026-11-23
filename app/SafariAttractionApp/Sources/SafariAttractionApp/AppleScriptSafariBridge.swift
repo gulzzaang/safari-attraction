@@ -40,7 +40,8 @@ final class AppleScriptSafariBridge: SafariBridging, @unchecked Sendable {
     /// 고른 글(`do JavaScript`)만 실패하면 제목 · 주소는 그대로 주고 이유(JS 꺼짐 · 허락 없음)를 함께 돌려준다.
     func frontTab() -> Result<TabReading, SafariBridgeError> {
         guard isSafariRunning() else { return .failure(.notRunning) }
-        let r = runner.run(Self.tabScript, backstop: 2.6) { d -> TabSnapshot? in
+        // 따라가기의 창 위치 읽기와 겹치면 잠깐(최대 1.2초) 차례를 기다린다 — 곧바로 「시간 초과」 로 보이면 허락 대기로 오해한다.
+        let r = runner.run(Self.tabScript, backstop: 2.6, slotWait: 1.2) { d -> TabSnapshot? in
             guard d.numberOfItems == 5 else { return nil }
             return TabSnapshot(title: d.atIndex(1)?.stringValue ?? "", url: d.atIndex(2)?.stringValue ?? "",
                                selection: d.atIndex(3)?.stringValue ?? "",
@@ -126,8 +127,8 @@ struct ScriptFailure: Error, Sendable { var number: Int; var message: String }
 /// NSAppleScript 를 직렬 큐 하나에서만 돌리고, 바깥 기다림에 시간 상한을 둔다.
 final class ScriptRunner: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.gulzzaang.SafariAttractionApp.applescript")
-    private let lock = NSLock()
-    private var busy = false
+    /// 한 번에 한 호출 — 칸 하나짜리 신호기. 허락 창에 막혀 이전 호출이 안 끝났으면 `slotWait` 만큼만 기다린다.
+    private let slot = DispatchSemaphore(value: 1)
     private var compiled: [String: NSAppleScript] = [:]   // queue 안에서만 접근
 
     private final class Box<T: Sendable>: @unchecked Sendable {
@@ -137,17 +138,16 @@ final class ScriptRunner: @unchecked Sendable {
         func get() -> Result<T, ScriptFailure>? { lock.withLock { value } }
     }
 
-    func run<T: Sendable>(_ source: String, backstop: TimeInterval = 1.6,
+    func run<T: Sendable>(_ source: String, backstop: TimeInterval = 1.6, slotWait: TimeInterval = 0,
                           parse: @escaping @Sendable (NSAppleEventDescriptor) -> T) -> Result<T, ScriptFailure> {
         let timedOut = ScriptFailure(number: -1712, message: "AppleScript 시간 초과")
-        let gotSlot: Bool = lock.withLock { if busy { return false }; busy = true; return true }
-        guard gotSlot else { return .failure(timedOut) }
+        guard slot.wait(timeout: .now() + slotWait) == .success else { return .failure(timedOut) }
 
         let box = Box<T>()
         let sem = DispatchSemaphore(value: 0)
         queue.async { [self] in
             box.set(execute(source, parse: parse))
-            lock.withLock { busy = false }
+            slot.signal()
             sem.signal()
         }
         if sem.wait(timeout: .now() + backstop) == .timedOut { return .failure(timedOut) }

@@ -252,6 +252,45 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertFalse(runner.calls[1].prompt.contains("실패할 질문"))
     }
 
+    func testNewChatDuringRunShowsStoppingStateAndSendWaitsUntilChildIsGone() async throws {
+        runner.setScript { [runner = runner!] _, emit in
+            emit(claudeAssistantLine("..."))
+            for await _ in runner.stopEvents { break }
+            return .stopped
+        }
+        vm.input = "첫 질문"
+        let t = vm.send()
+        try await waitUntil { self.vm.messages.last?.text == "..." }
+        vm.newChat()
+        XCTAssertTrue(vm.isStopping, "멈추는 중 표시")
+        XCTAssertTrue(vm.messages.isEmpty)
+        vm.input = "다음 질문"
+        XCTAssertNil(vm.send(), "아직 자식이 있어 보내지 못한다")
+        XCTAssertEqual(vm.input, "다음 질문", "글은 입력 칸에 남는다")
+        await t?.value
+        XCTAssertFalse(vm.isStopping); XCTAssertFalse(vm.isRunning)
+        runner.setScript { _, emit in emit(claudeAssistantLine("됐다")); return .finished(code: 0) }
+        await vm.send()?.value
+        XCTAssertEqual(vm.messages.last?.text, "됐다")
+        XCTAssertEqual(vm.messages.first?.text, "다음 질문")
+    }
+
+    func testStopButtonAlsoShowsStoppingState() async throws {
+        runner.setScript { [runner = runner!] _, emit in
+            emit(claudeAssistantLine("..."))
+            for await _ in runner.stopEvents { break }
+            return .stopped
+        }
+        vm.input = "q"
+        let t = vm.send()
+        try await waitUntil { self.vm.messages.last?.text == "..." }
+        XCTAssertFalse(vm.isStopping)
+        vm.stop()
+        XCTAssertTrue(vm.isStopping)
+        await t?.value
+        XCTAssertFalse(vm.isStopping)
+    }
+
     func testNewChatClearsMessagesAndClaudeSession() async {
         runner.setScript { _, emit in emit(claudeAssistantLine("a", session: "s9")); return .finished(code: 0) }
         await ask("q")

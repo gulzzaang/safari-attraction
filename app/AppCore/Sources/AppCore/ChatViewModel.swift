@@ -41,6 +41,8 @@ public final class ChatViewModel {
     public private(set) var pinned = false
     public private(set) var messages: [ChatMessage] = []
     public private(set) var isRunning = false
+    /// 멈추라고 했지만 자식 프로세스가 아직 안 끝났다 — 그동안은 새 질문을 받지 않고 화면은 「멈추는 중…」.
+    public private(set) var isStopping = false
     /// 답을 기다리는 동안 보이는 한 줄(예: 웹을 찾아보는 중).
     public private(set) var activity: String?
     /// 입력 칸 위에 보이는 안내(빨강 아님) — 사파리 허락 · 시작 페이지 등.
@@ -100,12 +102,14 @@ public final class ChatViewModel {
     /// 답하는 중이면 멈춘다(자식 프로세스까지 — SIGTERM, 2초 뒤 SIGKILL).
     public func stop() {
         guard isRunning else { return }
+        isStopping = true
         task?.cancel()
         runner.stop()
     }
 
     /// 앱을 끝낼 때 — 돌고 있는 답을 멈춘다.
     public func shutdown() {
+        if isRunning { isStopping = true }
         task?.cancel()
         runner.stop()
     }
@@ -238,6 +242,7 @@ public final class ChatViewModel {
         }
         activity = nil
         isRunning = false
+        isStopping = false
         task = nil
 
         let answer = messages.first { $0.id == job.answerID }
