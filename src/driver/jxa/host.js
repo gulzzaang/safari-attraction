@@ -398,17 +398,30 @@ const ops = {
   },
 
   // 여러 자리의 탭 {windowId, index, url, marker} 를 읽기만 한다(표시는 페이지 안 dataset 을 읽을 뿐 아무것도 바꾸지 않는다. 사파리를 앞으로 가져오지 않는다).
-  // 없는 탭 · 읽지 못한 탭은 결과에서 뺀다. args.timeoutMs 는 탭 하나에 쓰는 시간이다 — 전체가 spots 수 × timeoutMs 를 넘기면 남은 탭은 건너뛰고,
-  // 한 탭이 아예 멈추면(경고창) 부르는 쪽의 요청 시간 제한이 호스트를 다시 띄운다.
+  // 없는 탭 · 읽지 못한 탭(읽다 오류가 났거나 args.timeoutMs 를 넘긴 탭)은 결과에서 뺀다 — 부르는 쪽은 빠진 탭을 「못 본 것」으로 센다.
+  // 「Apple 이벤트에서 JavaScript 허용」이 꺼진 오류만 올린다. args.timeoutMs 는 탭 하나에 쓰는 시간이다: 한 탭이 넘기면 그 탭은 버리고,
+  // 전체가 spots 수 × timeoutMs 를 넘기면 남은 탭은 건너뛴다. 사파리 이벤트 하나를 중간에 끊을 수는 없어서, 아예 멈춘 탭(경고창)은
+  // 부르는 쪽의 요청 시간 제한이 호스트를 다시 띄워 끊는다.
   readMarkers(args) {
     const out = [];
     const spots = args.spots || [];
     const per = args.timeoutMs || 500;
     const t0 = Date.now();
     for (let i = 0; i < spots.length; i++) {
-      if (Date.now() - t0 > per * spots.length) break;
-      const p = probeTab(spots[i].windowId, spots[i].index);
-      if (p) out.push({ windowId: spots[i].windowId, index: spots[i].index, url: p.url, marker: p.marker });
+      const s0 = Date.now();
+      if (s0 - t0 > per * spots.length) break;
+      let url;
+      let marker;
+      try {
+        const tab = Safari.windows.byId(spots[i].windowId).tabs[spots[i].index - 1];
+        url = str(tab.url());
+        marker = str(Safari.doJavaScript("document.documentElement.dataset.saTab || ''", { in: tab }));
+      } catch (e) {
+        if (isJsOffError(e)) throw e;
+        continue; // 없는 탭이거나 표시를 읽지 못한 탭 — 못 본 것
+      }
+      if (Date.now() - s0 > per) continue; // 탭 하나가 시간을 넘겼다 — 못 본 것
+      out.push({ windowId: spots[i].windowId, index: spots[i].index, url, marker });
     }
     return out;
   },

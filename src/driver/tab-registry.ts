@@ -92,6 +92,8 @@ interface Entry {
   lost?: boolean;
   /** 마지막으로 못 찾았을 때의 탭 목록 모양(sync 가 같은 목록을 되풀이해 훑지 않게 한다). */
   scanSig?: string;
+  /** 방금 한 표시 훑기가 모든 탭을 읽고도 못 찾았는가(true 면 탭이 진짜로 없다 — 잃어버림으로 남기지 않는다). */
+  scanComplete?: boolean;
 }
 
 /** 다른 탭을 들여다보다 멈출 때(경고창이 떠 있는 탭 등)를 기다리는 시간. */
@@ -111,8 +113,18 @@ function sameSpot(a: { windowId: number; index: number }, b: { windowId: number;
 
 const isStuck = (err: unknown): boolean => err instanceof SafariError && (err.code === "TIMEOUT" || err.code === "ALERT_BLOCKED");
 
-/** 표시를 읽어 둔 것(한 번의 sync · closeOwned 안에서 나눠 쓴다). 자리 `창:순번` 으로 찾는다. */
-type MarkerCache = Map<string, MarkerRead>;
+/** 표시 읽기가 이 오류로 끝나면 그 탭들은 「못 본 것」으로 두고 계속한다(sync · listTabs 가 표시 훑기 때문에 던지지 않게). */
+const isUnscannable = (err: unknown): boolean => isStuck(err) || (err instanceof SafariError && err.code === "JS_FROM_APPLE_EVENTS_OFF");
+
+/**
+ * 표시를 훑은 결과(한 번의 sync · closeOwned 안에서 나눠 쓴다). 자리 `창:순번` 으로 찾는다.
+ * failed 는 읽다가 멈췄거나 못 읽은 탭 — 같은 훑기 안에서 다시 시도하지 않고 「못 본 것」으로 센다.
+ */
+interface Scan {
+  reads: Map<string, MarkerRead>;
+  failed: Set<string>;
+}
+const newScan = (): Scan => ({ reads: new Map(), failed: new Set() });
 const spotId = (t: { windowId: number; index: number }) => `${t.windowId}:${t.index}`;
 
 function tabClosed(key: string): SafariError {
@@ -125,7 +137,8 @@ function tabClosed(key: string): SafariError {
  *
  * - 우리가 연 탭 · 붙잡은 탭 · 처음 쓰는 탭에는 페이지 안에 표시를 적는다(`dataset.saTab = 키`).
  *   표시는 같은 문서 안에서는 남고, 새 문서를 불러오면(전체 이동 · 새로고침) 사라진다.
- * - 목록(`sync`)만 본 탭은 표시 없이 자리 + 주소로만 기억한다(JS 를 돌리지 않는다). 처음 쓸 때 표시를 적는다.
+ * - 목록(`sync`)만 본 탭은 표시 없이 자리 + 주소로만 기억한다(처음 쓸 때 표시를 적는다). 사용자 탭에는 표시를 적지 않는다.
+ * - 우리가 연 탭을 자리 · 주소로 못 찾을 때만, 나머지 탭(최대 60개)의 표시를 읽기만 해서(페이지 상태를 바꾸지 않는다) 우리 표시와 정확히 같은 탭을 찾는다.
  * - 표시를 적은 탭은 표시가 키와 맞아야만 그 키의 탭이다. 주소만 같은 다른 탭을 잘못 잡아 닫지 않기 위해서다.
  *   전체 새로고침 · 이동 · 링크 · 폼 전송으로 새 문서가 뜨면 표시가 사라지므로, 우리가 그렇게 이동시킨 쪽이
  *   바로 `rebind(key)` 를 불러 표시를 다시 적어야 한다. 안 하면 그 탭은 못 찾고 TAB_CLOSED 가 된다.
@@ -202,7 +215,7 @@ export class TabRegistry {
     const e = this.entries.get(key);
     if (!e) throw tabClosed(key);
     const raw = await this.backend.list();
-    const found = await this.locate(e, raw, new Set(), new Map());
+    const found = await this.locate(e, raw, new Set(), newScan());
     if (!found) {
       this.drop(key);
       throw tabClosed(key);
@@ -424,11 +437,11 @@ export class TabRegistry {
   /** 남은 우리 항목들을 모든 창의 탭 표시로 찾아 닫는다. 우리 항목의 표시와 정확히 같은 탭만 닫는다(붙잡은 사용자 탭 · 다른 표시 · 표시 없는 탭은 읽기만 한다). */
   private async sweepOwned(left: Entry[]): Promise<{ closed: number; missing: number }> {
     const raw = await this.backend.list();
-    const cache: MarkerCache = new Map();
-    const complete = await this.readMarkersOf(this.priorityOrder(raw, left), cache);
+    const scan = newScan();
+    const complete = await this.readMarkersOf(this.priorityOrder(raw, left), scan);
     const byMarker = new Map(left.map((e) => [this.markerOf(e.key), e]));
     const hits: Entry[] = [];
-    for (const read of cache.values()) {
+    for (const read of scan.reads.values()) {
       const e = byMarker.get(read.marker);
       if (!e || hits.includes(e)) continue;
       e.windowId = read.windowId;
@@ -464,26 +477,27 @@ export class TabRegistry {
   }
 
   /**
-   * 탭들의 표시를 읽어 cache 에 둔다(이미 읽은 건 다시 읽지 않는다). 앞에서부터 SCAN_MAX_TABS 개까지만 들여다보고,
-   * 읽기만 한다. 멈춘 탭이 있으면 그 묶음은 건너뛴다. 다 읽었으면 true(상한 · 시간 · 못 읽음으로 빠진 탭이 없다).
+   * 탭들의 표시를 읽어 scan 에 둔다(이미 읽은 것 · 이미 실패한 것은 다시 시도하지 않는다). 앞에서부터 SCAN_MAX_TABS 개까지만 들여다보고,
+   * 읽기만 한다. 멈췄거나 못 읽은 탭은 failed 에 적고 계속한다(예산 SCAN_BUDGET_MS 는 묶음마다 확인한다).
+   * 다 읽었으면 true(상한 · 시간 · 못 읽음으로 빠진 탭이 없다).
    */
-  private async readMarkersOf(tabs: RawTab[], cache: MarkerCache): Promise<boolean> {
+  private async readMarkersOf(tabs: RawTab[], scan: Scan): Promise<boolean> {
     const look = tabs.slice(0, SCAN_MAX_TABS);
-    const todo = look.filter((t) => !cache.has(spotId(t)));
+    const todo = look.filter((t) => !scan.reads.has(spotId(t)) && !scan.failed.has(spotId(t)));
     const t0 = Date.now();
     for (let i = 0; i < todo.length; i += SCAN_CHUNK) {
-      if (Date.now() - t0 > SCAN_BUDGET_MS) break;
+      if (Date.now() - t0 > SCAN_BUDGET_MS) break; // 남은 묶음은 못 본 것으로 둔다
       const chunk = todo.slice(i, i + SCAN_CHUNK);
-      let reads: MarkerRead[];
+      let reads: MarkerRead[] = [];
       try {
         reads = await this.backend.readMarkers(chunk.map((t) => ({ windowId: t.windowId, index: t.index })), SCAN_TAB_TIMEOUT_MS);
       } catch (err) {
-        if (isStuck(err)) continue; // 멈춘 탭이 든 묶음은 건너뛴다
-        throw err;
+        if (!isUnscannable(err)) throw err; // 멈춘 탭 · 허용 꺼짐은 이 묶음을 못 본 것으로 두고 계속한다
       }
-      for (const r of reads) cache.set(spotId(r), r);
+      for (const r of reads) scan.reads.set(spotId(r), r);
+      for (const t of chunk) if (!scan.reads.has(spotId(t))) scan.failed.add(spotId(t)); // 돌려받지 못한 탭 = 못 읽음
     }
-    return tabs.length <= SCAN_MAX_TABS && look.every((t) => cache.has(spotId(t)));
+    return tabs.length <= SCAN_MAX_TABS && look.every((t) => scan.reads.has(spotId(t)));
   }
 
   /** 호스트가 자리의 탭이 맞다고 확인해 일을 마쳤다 — 표시도 이제 적혀 있다. */
@@ -517,7 +531,9 @@ export class TabRegistry {
    */
   private drop(key: string): void {
     const e = this.entries.get(key);
-    if (e?.owned) e.lost = true;
+    // 표시 없는 탭(표시를 못 적었거나 읽을 수 없는 탭)은 표시로 다시 찾을 수 없다 — 기록한 자리 · 주소로만 알아보던 것이니 못 찾으면 잊는다.
+    // 모든 탭을 읽고도 표시가 없었다면 탭이 진짜로 없다 — 잃어버림으로 남기고 되풀이해 훑지 않는다.
+    if (e?.owned && e.stamped && !e.blocked && e.scanComplete !== true) e.lost = true;
     else this.forget(key);
   }
 
@@ -530,16 +546,16 @@ export class TabRegistry {
 
   /**
    * 사파리의 탭 목록(raw)에 키를 붙인다. 기록한 탭은 자리를 새로 맞추고(없어진 사용자 탭은 기록에서 빼고, 못 찾은 우리 탭은 잃어버림으로 두고 목록에서 뺀다),
-   * 처음 보는 탭에는 새 키를 준다. 표시를 적은 탭만 표시를 읽고, 사용자 탭에는 JS 를 돌리지 않는다.
+   * 처음 보는 탭에는 새 키를 준다. 표시를 적은 탭은 표시를 읽고, 우리 탭이 없어졌을 때만 사용자 탭 최대 60개의 표시를 읽기만 한다(아무것도 적지 않는다).
    */
   async sync(raw: RawTab[]): Promise<Array<{ raw: RawTab; key: string; owned: boolean }>> {
     const claimed = new Set<string>();
-    const cache: MarkerCache = new Map();
+    const scan = newScan();
     const bySpot = new Map<string, string>();
     // 표시를 적은 탭을 먼저 맞춘다(표시가 가장 믿을 만하다).
     const order = [...this.entries.values()].sort((a, b) => Number(b.stamped) - Number(a.stamped));
     for (const e of order) {
-      const found = await this.locate(e, raw, claimed, cache, true);
+      const found = await this.locate(e, raw, claimed, scan, true);
       if (found) {
         claimed.add(spotId(found));
         bySpot.set(spotId(found), e.key);
@@ -559,7 +575,7 @@ export class TabRegistry {
   }
 
   /** 한 탭이 지금 어디 있는지 찾아 기록을 새로 한다. 못 찾으면 null(기록은 건드리지 않는다). */
-  private async locate(e: Entry, raw: RawTab[], claimed: Set<string>, cache: MarkerCache, fromSync = false): Promise<RawTab | null> {
+  private async locate(e: Entry, raw: RawTab[], claimed: Set<string>, scan: Scan, fromSync = false): Promise<RawTab | null> {
     const free = (t: RawTab) => !claimed.has(`${t.windowId}:${t.index}`);
     const at = (t: { windowId: number; index: number }) => raw.find((r) => sameSpot(r, t));
     const take = (t: RawTab): RawTab => {
@@ -569,10 +585,13 @@ export class TabRegistry {
       e.pendingUrl = undefined;
       e.lost = false;
       e.scanSig = undefined;
+      e.scanComplete = undefined;
       return t;
     };
 
+    e.scanComplete = undefined;
     if (!e.stamped) {
+      if (e.lost) return null; // 잃어버린 탭은 표시가 정확히 맞을 때만 돌아온다(자리 · 주소로 되살리지 않는다)
       // 표시 없는 탭 — 자리와 주소가 그대로일 때만 그 탭. 주소가 같은 다른 탭으로 옮겨 잡지 않는다
       // (사용자가 이 탭을 닫았을 때 주소가 같은 다른 탭을 건드리게 되므로).
       const here = at(e);
@@ -580,7 +599,7 @@ export class TabRegistry {
     }
 
     // JS 에 답하지 않는 탭은 표시를 못 읽는다 — 자리와 주소가 그대로면 그 탭으로 본다.
-    if (e.blocked) {
+    if (e.blocked && !e.lost) {
       const here = at(e);
       if (here && free(here) && sameUrl(here.url, e.url)) return take(here);
     }
@@ -592,8 +611,8 @@ export class TabRegistry {
       .sort((a, b) => Number(b.windowId === e.windowId) - Number(a.windowId === e.windowId));
     const tryOrder = [...(here && free(here) ? [here] : []), ...rest];
     const tried = new Set<string>();
+    let unprobed = false; // 멈춰서 표시를 못 읽은 후보가 있었다(그 탭이 우리 것일 수 있어 훑기가 「다 봤다」가 될 수 없다)
     for (const t of tryOrder) {
-      tried.add(spotId(t));
       let p: Probe;
       try {
         p = await this.backend.probe(t.windowId, t.index, PROBE_TIMEOUT_MS);
@@ -604,9 +623,14 @@ export class TabRegistry {
           return take(t);
         }
         // 그 밖의 오류(JS 허용 꺼짐 · 자동화 거부 · 호스트 오류)는 「탭이 닫힘」이 아니다 — 키를 지우지 않고 올린다.
-        if (err instanceof SafariError && (err.code === "TIMEOUT" || err.code === "ALERT_BLOCKED")) continue;
+        if (err instanceof SafariError && (err.code === "TIMEOUT" || err.code === "ALERT_BLOCKED")) {
+          unprobed = true;
+          tried.add(spotId(t)); // 같은 훑기에서 다시 읽으러 가지 않는다
+          continue;
+        }
         throw err;
       }
+      tried.add(spotId(t));
       if (p.exists && p.marker === this.markerOf(e.key)) return take({ ...t, url: p.url });
     }
 
@@ -616,13 +640,14 @@ export class TabRegistry {
     const sig = raw.map((t) => `${t.windowId}:${t.index}:${t.url}`).join("|");
     if (fromSync && e.lost && e.scanSig === sig) return null; // 지난번 훑은 때와 탭 목록이 같다 — 되풀이해 들여다보지 않는다
     const candidates = this.priorityOrder(raw.filter((t) => free(t) && !tried.has(spotId(t))), [e]);
-    await this.readMarkersOf(candidates, cache);
+    const complete = await this.readMarkersOf(candidates, scan);
     const mark = this.markerOf(e.key);
     for (const t of candidates.slice(0, SCAN_MAX_TABS)) {
-      const r = cache.get(spotId(t));
+      const r = scan.reads.get(spotId(t));
       if (r && r.marker === mark) return take({ ...t, url: r.url });
     }
     e.scanSig = sig;
+    e.scanComplete = complete && !unprobed; // 읽지 못한 탭이 없었다면 true
     return null;
   }
 }
