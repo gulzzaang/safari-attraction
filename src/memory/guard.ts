@@ -52,16 +52,24 @@ const TOKEN_PATTERNS: RegExp[] = [
   new RegExp(`${NOT_ALNUM_BEFORE}AIza[A-Za-z0-9_-]{30,}`),
 ];
 const PRIVATE_KEY = /-----BEGIN/;
-/** 「비밀번호:」 · 「password:」 처럼 라벨 뒤에 값이 이어지는 줄. 값 없는 라벨은 걸지 않는다. */
-const PASSWORD_LINE = /(?:비밀번호|비번|패스워드|password|passwd)["']?[ \t]*[:：=][ \t]*\S/i;
+const PW_LABEL = `(?<![A-Za-z0-9])(?:비밀번호|비번|패스워드|password|passwd|pw(?![A-Za-z]))`;
+/** 「비밀번호:」 · 「password=」 처럼 구분 기호 뒤에 값이 이어지는 것(값이 다음 줄에 있어도). 값 없는 라벨은 걸지 않는다. */
+const PASSWORD_SEPARATED = new RegExp(`${PW_LABEL}["']?[ \\t]*[:：=]\\s*\\S`, "i");
+/** 「비밀번호는 hunter2 입니다」 · 「password is hunter2」: 조사 · is 뒤 낱말(3자 이상, 영문 · 숫자가 든 것). 한글만 있는 말(「비밀번호는 변경했어」)은 값으로 보지 않는다. */
+const PASSWORD_PARTICLE = new RegExp(`${PW_LABEL}\\s*(?:은|는|이|가|\\bis\\b)\\s*(?=\\S{3,})\\S*[A-Za-z0-9]`, "i");
+/** 「pw hunter2」 · 「비번 abc123」: 라벨 바로 뒤 숫자가 든 영문 · 숫자 · 기호 낱말(3자 이상). 「비밀번호 변경 방법」 · 「password reset page」 는 걸지 않는다. */
+const PASSWORD_BARE = new RegExp(`${PW_LABEL}\\s+(?=[\\x21-\\x7e]*\\d)[\\x21-\\x7e]{3,}`, "i");
+/** 「OTP 인증번호 482913」 · 「verification code is 123456」: 인증 번호 · 코드 라벨 뒤 4~8자리 숫자. */
+const AUTH_CODE = /(?:인증\s*(?:번호|코드)|(?<![A-Za-z])OTP(?![A-Za-z])|verification code)\s*(?:은|는|:|：|=|\bis\b)?\s*\d{4,8}(?!\d)/i;
 
 /**
- * 기억 · 문서에 저장하면 안 되는 민감한 값이 있으면 걸린 종류 이름(「카드 번호」 · 「토큰」 · 「개인 키」 · 「비밀번호」)을, 없으면 null.
+ * 기억 · 문서에 저장하면 안 되는 민감한 값이 있으면 걸린 종류 이름(「카드 번호」 · 「토큰」 · 「개인 키」 · 「비밀번호」 · 「인증 코드」)을, 없으면 null.
  */
 export function findSecret(text: string): string | null {
   if (PRIVATE_KEY.test(text)) return "개인 키";
   if (TOKEN_PATTERNS.some((re) => re.test(text))) return "토큰";
-  if (PASSWORD_LINE.test(text)) return "비밀번호";
+  if (PASSWORD_SEPARATED.test(text) || PASSWORD_PARTICLE.test(text) || PASSWORD_BARE.test(text)) return "비밀번호";
+  if (AUTH_CODE.test(text)) return "인증 코드";
   if (hasCardNumber(text)) return "카드 번호";
   return null;
 }

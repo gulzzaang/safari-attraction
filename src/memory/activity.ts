@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { MemoryHome, localDate, localTime, machineName } from "./home.js";
 import { scrubText } from "./guard.js";
 import { sanitizeUrl, siteFileName, siteLookupChain } from "./site.js";
@@ -17,6 +18,11 @@ export type SessionState = {
   /** 「기억 폴더에 쓸 수 없어요」 안내를 이미 한 번 했는가(대화당 한 번). */
   writeWarned: boolean;
 };
+
+/**
+ * 응답에 붙일 글 하나. 「보였음」 표시(commit)는 글이 실제로 응답에 붙은 뒤에 부른 쪽이 한다 — 상한에 막혀 빠졌거나 기다리다 포기했으면 부르지 않아 다음 호출에서 다시 나온다.
+ */
+export type Extra = { text: string; commit?: () => void };
 
 /** 마지막 사용 뒤 이만큼(밀리초) 지나면 새 대화로 보고 상태를 처음으로. */
 export const IDLE_RESET_MS = 1_800_000;
@@ -125,7 +131,12 @@ export class ActivityLog {
     const title = scrubText(entry.title, TITLE_MAX).trim() || "(제목 없음)";
     const sites = [...new Set(entry.touched.map((t) => readable(sanitizeUrl(t.url, { domainOnly: t.userTab }))))];
     const result = entry.ok ? "성공" : `실패(${scrubText(entry.error ?? "", REASON_MAX)})`;
-    const project = this.state.openProject;
+    let project = this.state.openProject;
+    if (project && !(await this.projectExists(project))) {
+      // 열어 둔 프로젝트가 그사이 보관 · 삭제됐다 — 프로젝트 기록으로 폴더를 되살리지 않고 열린 프로젝트를 닫는다(하루 기록은 쓴다).
+      this.state.openProject = null;
+      project = null;
+    }
     const line = `- ${localTime(when)} 「${title}」 — ${sites.length > 0 ? sites.join(", ") : "(닿은 사이트 없음)"} · ${result}${project ? ` · 프로젝트: ${project}` : ""}\n`;
     const mac = machineName();
     let failure: unknown;
@@ -145,16 +156,27 @@ export class ActivityLog {
     if (failure !== undefined) throw failure;
   }
 
+  /** 진행 중 프로젝트의 `프로젝트.md` 가 있는가(한 번 stat). */
+  private async projectExists(name: string): Promise<boolean> {
+    try {
+      return (await stat(this.home.path(`프로젝트/${name}/프로젝트.md`))).isFile();
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * 이번 대화에서 처음 닿은 도메인의 사이트 메모(`기억/사이트/`)를 한 줄씩 `… 이 사이트 메모(도메인): 내용` 으로, 모두 합쳐 600자 안.
-   * 메모 파일이 없는 도메인도 본 것으로 친다(다시 읽지 않는다). 붙일 것이 없으면 null.
+   * 글만 만들고 「보였음」 표시는 돌려주는 commit() 이 한다(글이 실제로 붙은 뒤에 부를 것). 메모 파일이 없는 도메인은 붙일 글이 없으니 바로 본 것으로 친다(다시 읽지 않는다).
+   * 붙일 것이 없으면 null.
    */
-  async siteNoteFor(touched: Touch[]): Promise<string | null> {
+  async planSiteNote(touched: Touch[]): Promise<{ text: string; commit: () => void } | null> {
     const notes: string[] = [];
+    const attached: string[] = [];
     let used = 0;
     for (const t of touched) {
       const key = hostKey(t.url);
-      if (key === null || this.state.seenDomains.has(key)) continue;
+      if (key === null || this.state.seenDomains.has(key) || attached.includes(key)) continue;
       const body = await this.findSiteMemo(key);
       if (body === null) {
         this.state.seenDomains.add(key);
@@ -166,9 +188,22 @@ export class ActivityLog {
       if (room < 1) continue; // 자리가 없다 — 다음 기회에 보이도록 본 것으로 치지 않는다
       notes.push(head + clip(body, room));
       used += sep + [...notes[notes.length - 1]!].length;
-      this.state.seenDomains.add(key);
+      attached.push(key);
     }
-    return notes.length > 0 ? notes.join("\n") : null;
+    if (notes.length === 0) return null;
+    return {
+      text: notes.join("\n"),
+      commit: () => {
+        for (const k of attached) this.state.seenDomains.add(k);
+      },
+    };
+  }
+
+  /** planSiteNote 를 부르고 곧바로 「보였음」 으로 친다(붙이는 자리가 따로 없을 때). */
+  async siteNoteFor(touched: Touch[]): Promise<string | null> {
+    const plan = await this.planSiteNote(touched);
+    plan?.commit();
+    return plan?.text ?? null;
   }
 
   private async findSiteMemo(key: string): Promise<string | null> {
@@ -187,9 +222,9 @@ export class ActivityLog {
 
   /**
    * 정리 안내 한 줄: 이 맥의 마지막 정리(`lastTidy`)가 없거나 24시간이 넘었고, 오늘보다 이전 날짜의 `기억/일지/*.md`(보관/ 제외)가 있고,
-   * 이번 대화에 아직 안 보였을 때만. 보이면 tidyHinted 를 켠다.
+   * 이번 대화에 아직 안 보였을 때만. 글만 만들고 tidyHinted 는 commit() 이 켠다(글이 실제로 붙은 뒤에 부를 것).
    */
-  async tidyHint(): Promise<string | null> {
+  async planTidyHint(): Promise<{ text: string; commit: () => void } | null> {
     if (this.state.tidyHinted) return null;
     const { lastTidy } = await readMachineState(this.home);
     const last = lastTidy ? Date.parse(lastTidy) : Number.NaN;
@@ -201,8 +236,19 @@ export class ActivityLog {
       return m !== null && m[1]! < today;
     });
     if (!older) return null;
-    this.state.tidyHinted = true;
-    return TIDY_HINT;
+    return {
+      text: TIDY_HINT,
+      commit: () => {
+        this.state.tidyHinted = true;
+      },
+    };
+  }
+
+  /** planTidyHint 를 부르고 곧바로 「보였음」 으로 친다. */
+  async tidyHint(): Promise<string | null> {
+    const plan = await this.planTidyHint();
+    plan?.commit();
+    return plan?.text ?? null;
   }
 
   /**

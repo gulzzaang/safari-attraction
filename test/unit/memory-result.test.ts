@@ -72,11 +72,25 @@ describe("composeResult — 결과 봉투", () => {
   });
 
   test("안내를 계산하다 실패해도 결과는 그대로", async () => {
-    activity.tidyHint = async () => {
+    activity.planTidyHint = async () => {
       throw new Error("읽기 실패");
     };
     const r = await composeResult({ home, activity }, "본문");
     expect(r.text).toBe("본문");
+  });
+
+  test("정리 안내는 결과에 실제로 붙은 뒤에만 보인 것으로 친다(붙지 못하면 다음 결과에 다시)", async () => {
+    await oldLog();
+    // 8KB 안에 들어가지 못하는 안내(가상) — 붙지 않고 표시도 안 한다.
+    const real = activity.planTidyHint.bind(activity);
+    activity.planTidyHint = async () => ({ text: "안".repeat(4000), commit: () => { activity.state.tidyHinted = true; } });
+    const a = await composeResult({ home, activity }, "본문");
+    expect(a.text).toBe("본문");
+    expect(activity.state.tidyHinted).toBe(false);
+    activity.planTidyHint = real;
+    const b = await composeResult({ home, activity }, "본문");
+    expect(b.text).toBe(`본문\n${HINT}`);
+    expect(activity.state.tidyHinted).toBe(true);
   });
 
   test("isError 는 그대로 전한다", async () => {

@@ -100,6 +100,7 @@ describe("ActivityLog.record — 하루 기록 한 줄", () => {
   });
 
   test("열린 프로젝트가 있으면 줄 끝에 이름, 프로젝트 기록에도 같은 줄", async () => {
+    await put("프로젝트/쿠팡 가격/프로젝트.md", "# 쿠팡 가격\n");
     log.state.openProject = "쿠팡 가격";
     await log.record({ title: "t", touched: [open("https://a.example/")], ok: true });
     const line = "- 14:05 「t」 — https://a.example/ · 성공 · 프로젝트: 쿠팡 가격\n";
@@ -141,6 +142,35 @@ describe("ActivityLog.record — 하루 기록 한 줄", () => {
     const lines = (await home.read(dayFile("2026-11-23")))!.trim().split("\n");
     expect(lines).toHaveLength(100);
     expect(new Set(lines).size).toBe(100);
+  });
+});
+
+describe("ActivityLog.record — 사라진 프로젝트는 되살리지 않는다", () => {
+  const pmd = "프로젝트/이사/프로젝트.md";
+
+  test("프로젝트.md 가 있으면 프로젝트 기록에도 쓴다", async () => {
+    await put(pmd, "# 이사\n");
+    log.state.openProject = "이사";
+    await log.record({ title: "t", touched: [open("https://a.example/")], ok: true });
+    expect(await home.read(`프로젝트/이사/기록-${machineName()}.md`)).toContain("프로젝트: 이사");
+  });
+
+  test("보관 · 삭제로 프로젝트 폴더가 없어졌으면 프로젝트 기록을 만들지 않고 열린 프로젝트를 닫는다(하루 기록은 쓴다)", async () => {
+    log.state.openProject = "이사"; // 프로젝트 폴더는 없다
+    await log.record({ title: "t", touched: [open("https://a.example/")], ok: true });
+    expect(await home.list("프로젝트")).toEqual([]);
+    expect(log.state.openProject).toBeNull();
+    const day = (await home.read(dayFile("2026-11-23")))!;
+    expect(day).toContain("https://a.example/");
+    expect(day).not.toContain("프로젝트: 이사");
+  });
+
+  test("폴더만 있고 프로젝트.md 가 없어도(비워진 폴더) 기록을 만들지 않는다", async () => {
+    await mkdir(home.path("프로젝트/이사"), { recursive: true });
+    log.state.openProject = "이사";
+    await log.record({ title: "t", touched: [open("https://a.example/")], ok: true });
+    expect(await home.list("프로젝트/이사")).toEqual([]);
+    expect(log.state.openProject).toBeNull();
   });
 });
 
@@ -187,6 +217,36 @@ describe("ActivityLog.siteNoteFor — 사이트 메모 붙이기", () => {
 
   test("about: · 주소가 아닌 것은 건너뛴다", async () => {
     expect(await log.siteNoteFor([open("about:blank"), open("not a url")])).toBeNull();
+  });
+});
+
+describe("ActivityLog.planSiteNote · planTidyHint — 만들기와 「보였음」 표시를 나눈다", () => {
+  test("planSiteNote 는 commit() 전에는 도메인을 본 것으로 치지 않고, 같은 글을 다시 만들 수 있다", async () => {
+    await put("기억/사이트/coupang.com.md", "로그인 필요");
+    const a = await log.planSiteNote([open("https://www.coupang.com/x")]);
+    expect(a?.text).toBe("… 이 사이트 메모(coupang.com): 로그인 필요");
+    expect(log.state.seenDomains.has("coupang.com")).toBe(false);
+    expect((await log.planSiteNote([open("https://coupang.com/")]))?.text).toBe(a!.text);
+    a!.commit();
+    expect(log.state.seenDomains.has("coupang.com")).toBe(true);
+    expect(await log.planSiteNote([open("https://coupang.com/")])).toBeNull();
+  });
+
+  test("같은 도메인이 touched 에 두 번 있어도 글은 한 번", async () => {
+    await put("기억/사이트/a.example.md", "메모");
+    const p = await log.planSiteNote([open("https://a.example/1"), open("https://a.example/2")]);
+    expect(p?.text).toBe("… 이 사이트 메모(a.example): 메모");
+  });
+
+  test("planTidyHint 는 commit() 전에는 tidyHinted 를 켜지 않는다", async () => {
+    await put("기억/일지/2026-11-20-옛맥.md", "- 옛\n");
+    const h = await log.planTidyHint();
+    expect(h?.text).toContain("기억 정리할 때가 됐어요");
+    expect(log.state.tidyHinted).toBe(false);
+    expect((await log.planTidyHint())?.text).toBe(h!.text);
+    h!.commit();
+    expect(log.state.tidyHinted).toBe(true);
+    expect(await log.planTidyHint()).toBeNull();
   });
 });
 

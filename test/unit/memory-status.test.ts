@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { writeMachineState } from "../../src/memory/activity.js";
-import { MemoryHome } from "../../src/memory/home.js";
+import { MemoryHome, machineName } from "../../src/memory/home.js";
 import { memoryStatusLines } from "../../src/memory/status.js";
 import { makeTempHome, type TempHome } from "../helpers/memory-home.js";
 
@@ -31,6 +31,11 @@ describe("기억 상태 줄(memoryStatusLines)", () => {
     expect(t).toContain("쓰기: 가능");
     expect(t).toContain("충돌본: 없음");
     expect(t).toContain("마지막 정리: 아직 없음");
+  });
+
+  test("이 맥 이름 줄(두 맥의 이름이 같으면 기록이 한 파일에 섞이니 알아보게)", async () => {
+    const r = await memoryStatusLines(home, "icloud");
+    expect(r.lines).toContain(`  이 맥 이름: ${machineName()}`);
   });
 
   test("위치 종류 이름: icloud · local · env", async () => {

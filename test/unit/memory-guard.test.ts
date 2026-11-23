@@ -60,6 +60,41 @@ describe("findSecret", () => {
     expect(findSecret("passwd=abc")).toBe("비밀번호");
   });
 
+  test("조사로 이어지는 말투(「비밀번호는 … 입니다」 · 「pw …」)도 「비밀번호」", () => {
+    expect(findSecret("비밀번호는 hunter2 입니다")).toBe("비밀번호");
+    expect(findSecret("pw hunter2")).toBe("비밀번호");
+    expect(findSecret("내 쿠팡 비밀번호는 abc123이야")).toBe("비밀번호");
+    expect(findSecret("password is hunter2")).toBe("비밀번호");
+    expect(findSecret("패스워드가 qwer1234 로 바뀜")).toBe("비밀번호");
+    expect(findSecret("비번 abc12345")).toBe("비밀번호");
+    expect(findSecret("PW=hunter2")).toBe("비밀번호");
+  });
+
+  test("라벨만 있고 값은 다음 줄에 있어도 「비밀번호」", () => {
+    expect(findSecret("비밀번호:\nhunter2")).toBe("비밀번호");
+    expect(findSecret("password:\r\n  abc123")).toBe("비밀번호");
+  });
+
+  test("인증 번호 · OTP 는 「인증 코드」", () => {
+    expect(findSecret("OTP 인증번호 482913")).toBe("인증 코드");
+    expect(findSecret("인증번호는 482913")).toBe("인증 코드");
+    expect(findSecret("인증 코드: 1234")).toBe("인증 코드");
+    expect(findSecret("verification code is 123456")).toBe("인증 코드");
+    expect(findSecret("OTP=998877")).toBe("인증 코드");
+  });
+
+  test("비밀번호 · 인증번호를 말하되 값이 아닌 평범한 말은 null", () => {
+    expect(findSecret("비밀번호 변경 방법")).toBeNull();
+    expect(findSecret("비밀번호를 바꿨어")).toBeNull();
+    expect(findSecret("password reset page")).toBeNull();
+    expect(findSecret("비밀번호는 변경했어")).toBeNull();
+    expect(findSecret("비밀번호 규칙 8자리 이상")).toBeNull();
+    expect(findSecret("쿠팡 인증번호는 보통 6자리")).toBeNull();
+    expect(findSecret("OTP 앱을 깔았다")).toBeNull();
+    expect(findSecret("pwa 앱 설치 방법 12345")).toBeNull();
+    expect(findSecret("cpw 123456")).toBeNull();
+  });
+
   test("값 없는 라벨 · 평범한 문장은 null", () => {
     expect(findSecret("비밀번호 입력창이 있다")).toBeNull();
     expect(findSecret("비밀번호:")).toBeNull();

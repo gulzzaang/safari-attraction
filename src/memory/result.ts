@@ -37,12 +37,16 @@ export async function composeResult(
     const shown = found.slice(0, CONFLICT_SHOW).join(", ") + (found.length > CONFLICT_SHOW ? ` 외 ${found.length - CONFLICT_SHOW}개` : "");
     tail = `\n충돌본이 있어요: ${shown} — 합쳐 주세요`;
   }
+  let hint: { text: string; commit: () => void } | null = null;
   if (!opts.skipTidyHint) {
     try {
-      const hint = await ctx.activity.tidyHint();
-      if (hint) tail += `\n${hint}`;
+      hint = await ctx.activity.planTidyHint();
+      // 안내가 이 결과의 8KB 안에 들어갈 때만 붙인다(「보였음」 표시는 실제로 붙은 뒤에).
+      if (hint && bytes(head) + bytes(tail) + bytes(`\n${hint.text}`) <= OUTPUT_MAX_BYTES) tail += `\n${hint.text}`;
+      else hint = null;
     } catch {
       // 안내를 못 만들어도 결과는 그대로.
+      hint = null;
     }
   }
   const room = OUTPUT_MAX_BYTES - bytes(head) - bytes(tail);
@@ -52,5 +56,6 @@ export async function composeResult(
     text = cutBytes(text, Math.max(0, room - bytes(note))) + note;
   }
   const out = head + text + tail;
+  hint?.commit();
   return opts.isError ? { text: out, isError: true } : { text: out };
 }

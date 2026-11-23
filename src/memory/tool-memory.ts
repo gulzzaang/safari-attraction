@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { writeMachineState, type ActivityLog } from "./activity.js";
 import { findSecret } from "./guard.js";
 import { MemoryHome, localDate, nfc } from "./home.js";
-import { composeResult, type ToolResult } from "./result.js";
+import { composeResult, OUTPUT_MAX_BYTES, type ToolResult } from "./result.js";
 import { bytes, cutBytes, formatHits, type MemoryIndex } from "./search.js";
 import { appendToSection } from "./sections.js";
 import { siteFileName, siteLookupChain } from "./site.js";
@@ -18,6 +18,8 @@ const ME_FILE = "기억/나.md";
 const SITE_DIR = "기억/사이트";
 const TEXT_MAX_CHARS = 2000; // remember · tidy_save 의 text 상한(글자)
 const FORGET_LINE_MAX = 200; // 글자
+/** read 본문의 상한: 8KB 에서 첫 줄 이름 · 끝 줄(충돌본 · 정리 안내)이 쓸 몫을 뺀 것. 넘으면 offset 으로 이어 읽게 한다. */
+const READ_BODY_BUDGET = OUTPUT_MAX_BYTES - 1200;
 
 export type MemoryInput = {
   action: "remember" | "search" | "read" | "forget" | "tidy" | "tidy_save" | "pause";
@@ -25,6 +27,8 @@ export type MemoryInput = {
   about?: string;
   query?: string;
   path?: string;
+  /** read: 파일을 이 글자(코드 포인트) 자리부터 읽는다(8KB 를 넘는 파일을 이어 읽을 때). */
+  offset?: number;
   on?: boolean;
 };
 
@@ -174,6 +178,36 @@ async function listFolder(home: MemoryHome, rel: string, note: string): Promise<
   return { body: lines.length > 0 ? `${title}\n${lines.join("\n")}` : `${title}\n(비어 있어요)` };
 }
 
+/** 이어 붙으면 한 글자처럼 보이는 조각(결합 문자 · 이모지 이음 · 변이 선택자)인가 — 이런 자리에서는 자르지 않는다. */
+const GLUE = /^[\p{M}\u200d\ufe0f\u{1f3fb}-\u{1f3ff}]$/u;
+
+/**
+ * 파일 글을 offset(글자 = 코드 포인트) 자리부터 8KB 안에 들어가는 만큼 보여 준다.
+ * 파일이 더 이어지면 끝에 「… 이어 읽으려면 offset=<다음 자리>」 를 단다. 글자 한가운데(서로게이트 · 결합 문자 · 이모지 이음)에서는 자르지 않는다.
+ */
+function readSlice(rel: string, text: string, offset: number): string {
+  const chars = [...text];
+  if (offset > 0 && offset >= chars.length) return `파일: ${rel}\n끝이에요 — 이 파일은 ${chars.length.toLocaleString("en-US")}자라 offset=${offset} 부터 읽을 내용이 없어요.`;
+  const head = `파일: ${rel}${offset > 0 ? ` (offset=${offset} 부터)` : ""}\n`;
+  if (chars.length === 0) return `${head}(비어 있어요)`;
+  const rest = chars.slice(offset);
+  const room = READ_BODY_BUDGET - bytes(head);
+  const whole = rest.join("");
+  if (bytes(whole) <= room) return head + whole;
+  const noteRoom = bytes(`\n… 이어 읽으려면 offset=${chars.length}`);
+  let used = 0;
+  let n = 0;
+  while (n < rest.length) {
+    const b = bytes(rest[n]!);
+    if (used + b > room - noteRoom) break;
+    used += b;
+    n++;
+  }
+  // 이어 붙는 조각 앞에서 끊기지 않도록 물린다(맨 앞 한 글자는 남긴다).
+  while (n > 1 && n < rest.length && (GLUE.test(rest[n]!) || rest[n - 1] === "\u200d")) n--;
+  return `${head}${rest.slice(0, n).join("")}\n… 이어 읽으려면 offset=${offset + n}`;
+}
+
 async function read(ctx: MemoryCtx, input: MemoryInput): Promise<Outcome> {
   const { home } = ctx;
   let rel: string;
@@ -183,11 +217,15 @@ async function read(ctx: MemoryCtx, input: MemoryInput): Promise<Outcome> {
   } catch (e) {
     return fail((e as Error).message);
   }
+  const offset = input.offset;
+  if (offset !== undefined && !(typeof offset === "number" && Number.isInteger(offset) && offset >= 0)) {
+    return fail(`offset 은 0 이상의 정수(글자 수)로 알려 주세요: ${String(offset)}`);
+  }
   if (rel === "") return listFolder(home, "", "");
   const kind = await kindOf(home, rel);
   if (kind === "file") {
     const text = (await home.read(rel)) ?? "";
-    return { body: `파일: ${rel}\n${text === "" ? "(비어 있어요)" : text}`, files: [rel] };
+    return { body: readSlice(rel, text, offset ?? 0), files: [rel] };
   }
   if (kind === "dir") return listFolder(home, rel, "");
   // 없는 경로: 가장 가까운 있는 폴더(위로 거슬러 올라간다), 없으면 집 폴더 맨 위.

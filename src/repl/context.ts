@@ -31,7 +31,7 @@ export interface ReplSession {
    * 출력은 「열었어요: 주소」 · 「못 열었어요: 주소 — 이유」 줄, touched 는 repl 호출처럼 채운다. 한 주소가 실패해도 나머지는 연다(모두 실패하면 error).
    * 한 번에 OPEN_TABS_MAX(10)개까지, 넘는 것은 열지 않고 알린다. repl 호출과 같은 차례 줄을 쓴다.
    */
-  openTabs(urls: string[]): Promise<ReplResult>;
+  openTabs(urls: string[], opts?: { timeoutMs?: number }): Promise<ReplResult>;
   /**
    * 기다리지 않은 거부(Promise.reject · 늦게 던진 오류)나 타이머 · 콜백에서 난 오류가 프로세스 바깥까지 올라왔을 때 부른다.
    * 그 일이 REPL 호출 코드에서 비롯됐으면(AsyncLocalStorage 칸이 따라옴) 살아 있는 호출의 출력에 한국어 한 줄을 남기고 true 를 돌려준다.
@@ -496,14 +496,20 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       queue = next.catch(() => {});
       return next;
     },
-    openTabs(urls) {
+    openTabs(urls, opts = {}) {
       const list = urls.slice(0, OPEN_TABS_MAX);
       const run = async (): Promise<void> => {
         const openTab = sandbox.openTab as (url: string) => Promise<Page>;
+        const slot = slots.getStore();
+        const pageBefore = sandbox.page;
         let opened = 0;
         for (const url of list) {
+          // 시간 초과로 닫힌 호출은 남은 주소를 더 열지 않는다(열면 기록에도 없는 탭이 남고 page 가 다음 호출 밑에서 바뀐다).
+          if (slot?.closed) break;
           try {
-            await openTab(url);
+            const pg = await openTab(url);
+            // 기다리는 사이 시간 초과로 닫혔으면, 그 탭 때문에 바뀐 page 를 도로 돌려 둔다(그사이 다른 호출이 바꿨다면 그대로).
+            if (slot?.closed && sandbox.page === pg) sandbox.page = pageBefore;
             opened++;
             log(`열었어요: ${url}`);
           } catch (e) {
@@ -513,7 +519,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
         if (urls.length > list.length) log(`한 번에 ${OPEN_TABS_MAX}개까지만 열어요 — 앞 ${OPEN_TABS_MAX}개만 열고 ${urls.length - list.length}개는 열지 않았어요.`);
         if (opened === 0) throw new Error("열린 탭이 없어요");
       };
-      const next = queue.then(() => execWith((slot) => slots.run(slot, run), DEFAULT_TIMEOUT_MS));
+      const next = queue.then(() => execWith((slot) => slots.run(slot, run), opts.timeoutMs ?? DEFAULT_TIMEOUT_MS));
       queue = next.catch(() => {});
       return next;
     },

@@ -1,5 +1,5 @@
 import { readMachineState } from "./activity.js";
-import { localDate, localTime, type HomeKind, type MemoryHome } from "./home.js";
+import { localDate, localTime, machineName, type HomeKind, type MemoryHome } from "./home.js";
 
 /** 기억 폴더를 살피는 일의 상한. 아이클라우드가 멈춰도 status · doctor 가 막히지 않게 한다. */
 export const STATUS_TIMEOUT_MS = 2000;
@@ -74,6 +74,7 @@ export async function memoryStatusLines(
     lines.push(`  충돌본 ${conflicts.length}개: ${shown}${rest} (아이클라우드가 만든 복사본이에요. 합치지 않았으니 직접 확인해 주세요)`);
   }
 
+  lines.push(`  이 맥 이름: ${machineName()}`);
   lines.push(`  마지막 정리: ${state === TIMED_OUT ? "아직 없음" : formatTidy(state.lastTidy)}`);
   return { lines, writable };
 }

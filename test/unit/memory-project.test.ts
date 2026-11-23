@@ -1,4 +1,4 @@
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ActivityLog, type Touch } from "../../src/memory/activity.js";
@@ -247,6 +247,23 @@ describe("open", () => {
     expect(r.text).toContain("2026-11-20 10:00 「가격 보기」");
   });
 
+  test("메모 절의 마지막 5줄(빈 줄은 건너뜀)도 보여 준다 — 「기억해 뒀는데 안 보여」 가 없게", async () => {
+    await run({ action: "create", name: "p" });
+    for (let i = 1; i <= 7; i++) await run({ action: "update", name: "p", section: "메모", mode: "append", text: `- 메모${i}번` });
+    const md = (await home.read(PM("p")))!;
+    await put(PM("p"), md.replace("- 메모4번", "\n- 메모4번")); // 중간 빈 줄
+    const r = await run({ action: "open", name: "p" });
+    const memo = r.text.slice(r.text.indexOf("## 메모"), r.text.indexOf("## 문서"));
+    for (const n of [3, 4, 5, 6, 7]) expect(memo).toContain(`메모${n}번`);
+    for (const n of [1, 2]) expect(memo).not.toContain(`메모${n}번`);
+  });
+
+  test("메모가 비어 있으면 (비어 있음)", async () => {
+    await run({ action: "create", name: "p" });
+    const r = await run({ action: "open", name: "p" });
+    expect(r.text).toContain("## 메모\n(비어 있음)");
+  });
+
   test("최근 기록 5줄: 두 맥의 기록을 합쳐 날짜 · 시각 최신순", async () => {
     await run({ action: "create", name: "p" });
     await put("프로젝트/p/기록-맥A.md", ["- 2026-11-01 09:00 「a1」 — x", "- 2026-11-05 23:50 「a2」 — x", "- 2026-11-07 07:00 「a3」 — x"].join("\n") + "\n");
@@ -305,6 +322,16 @@ describe("open", () => {
     expect(ctx.activity.state.openProject).toBeNull();
   });
 
+  test("보관된 프로젝트를 열려 하면 되살리는 법(보관/ 에서 프로젝트/ 로 옮기기)을 알려 준다", async () => {
+    await run({ action: "create", name: "옛일" });
+    await run({ action: "archive", name: "옛일" });
+    for (const input of [{ action: "open", name: "옛일" }, { action: "update", name: "옛일", section: "메모", text: "x" }] as const) {
+      const r = await run(input);
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain("보관/ 폴더에서 프로젝트/ 로 옮기면 다시 쓸 수 있어요");
+    }
+  });
+
   test("이름이 규칙에 어긋나면 오류", async () => {
     const r = await run({ action: "open", name: ".." });
     expect(r.isError).toBe(true);
@@ -336,7 +363,7 @@ describe("open", () => {
   test("가장 나쁜 경우(절 셋이 꽉 차고, 긴 이름 문서 20개 · 긴 기록 줄 5개)에도 8KB 안이고 최근 기록 5줄이 다 남는다", async () => {
     await run({ action: "create", name: "최악" });
     const fill = (w: string) => w.repeat(600); // 한글 1,800바이트 = 절 상한(1,200)을 넘긴다
-    await put(PM("최악"), `# 최악\n\n## 요약\n${fill("가")}\n\n## 조건\n${fill("나")}\n\n## 사이트\n${fill("다")}\n\n## 메모\n\n## 상태\n진행 중\n`);
+    await put(PM("최악"), `# 최악\n\n## 요약\n${fill("가")}\n\n## 조건\n${fill("나")}\n\n## 사이트\n${fill("다")}\n\n## 메모\n${Array.from({ length: 30 }, (_, i) => `- 2026-11-0${i % 9} ${"메모".repeat(300)}${i}`).join("\n")}\n\n## 상태\n진행 중\n`);
     for (let i = 0; i < 25; i++) await put(`프로젝트/최악/문서/${"긴이름".repeat(18)}${i}.md`, "x"); // 한글 54자 + 번호
     const lines = Array.from({ length: 6 }, (_, i) => `- 2026-11-2${i} 10:00 「${"기록".repeat(80)}${i}」 — https://a.example/ · 성공`).join("\n");
     await put(`프로젝트/최악/기록-${machineName()}.md`, lines + "\n");
@@ -354,6 +381,21 @@ describe("open", () => {
     clock = new Date(clock.getTime() + 31 * 60_000);
     const r = await run({ action: "list" });
     expect(r.text).not.toContain("열린 프로젝트:");
+  });
+});
+
+describe("save_doc — 동시에 보관된 프로젝트에는 쓰지 않는다", () => {
+  test("확인한 뒤 쓰기 직전에 프로젝트가 없어졌으면 유령 폴더를 만들지 않고 오류", async () => {
+    await run({ action: "create", name: "p" });
+    const real = home.writable.bind(home);
+    home.writable = async () => {
+      await rm(home.path("프로젝트/p"), { recursive: true }); // 확인 뒤 다른 곳에서 보관된 셈
+      return real();
+    };
+    const r = await run({ action: "save_doc", name: "p", doc: "메모장", text: "내용" });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("프로젝트");
+    expect(await home.list("프로젝트")).toEqual([]);
   });
 });
 
@@ -457,6 +499,13 @@ describe("save_doc", () => {
     expect(await home.read("프로젝트/p/문서/비교표.md")).toBe("처음");
     await run({ action: "save_doc", doc: "비교표", text: "고침" });
     expect(await home.read("프로젝트/p/문서/비교표.md")).toBe("고침");
+  });
+
+  test("이미 있던 문서를 덮어쓰면 「기존 문서를 바꿨어요(이전 N자 → 지금 M자)」 로 알린다, 새 문서는 그 말이 없다", async () => {
+    const a = await run({ action: "save_doc", doc: "비교표", text: "처음 글" });
+    expect(a.text).not.toContain("기존 문서");
+    const b = await run({ action: "save_doc", doc: "비교표", text: "고친 글입니다" });
+    expect(b.text).toContain("기존 문서를 바꿨어요(이전 4자 → 지금 7자)");
   });
 
   test("doc 이름은 안전하게(a/b → a-b, 끝의 .md 는 한 번만), 위험한 이름은 거절", async () => {
@@ -571,6 +620,18 @@ describe("open_sites", () => {
     expect(recorded[0]!.error).toBe("열린 탭이 없어요");
   });
 
+  test("recordOpened 가 준 글은 실제로 붙은 것만 commit 한다(자리가 모자라 빠진 글은 하지 않는다)", async () => {
+    await withSites("- https://a.example/1");
+    const committed: string[] = [];
+    ctx.recordOpened = async () => [
+      { text: "… 붙는 글", commit: () => committed.push("붙음") },
+      { text: "가".repeat(3000), commit: () => committed.push("큰 글") },
+    ];
+    const r = await run({ action: "open_sites" });
+    expect(r.text).toContain("… 붙는 글");
+    expect(committed).toEqual(["붙음"]);
+  });
+
   test("연결 도구가 없으면(openTabs 없음) 오류", async () => {
     await withSites("- https://a.example/1");
     ctx.openTabs = undefined;
@@ -588,6 +649,23 @@ describe("archive", () => {
     expect(await home.read("프로젝트/보관/p/문서/a.md")).toBe("문서");
     expect(readSection((await home.read("프로젝트/보관/p/프로젝트.md"))!, "상태")).toBe("보관");
     expect(r.text).toContain("프로젝트/보관/p");
+  });
+
+  test("옮기기가 실패하면 진행 중 프로젝트는 그대로(상태 · 열린 프로젝트 · 파일)", async () => {
+    await run({ action: "create", name: "p", text: "요약" });
+    await run({ action: "open", name: "p" });
+    const before = await home.read("프로젝트/p/프로젝트.md");
+    await mkdir(home.path("프로젝트/보관"), { recursive: true });
+    await chmod(home.path("프로젝트/보관"), 0o555); // 안으로 옮길 수 없다
+    try {
+      const r = await run({ action: "archive", name: "p" });
+      expect(r.isError).toBe(true);
+    } finally {
+      await chmod(home.path("프로젝트/보관"), 0o755);
+    }
+    expect(await home.read("프로젝트/p/프로젝트.md")).toBe(before);
+    expect(readSection((await home.read("프로젝트/p/프로젝트.md"))!, "상태")).toBe("진행 중");
+    expect(ctx.activity.state.openProject).toBe("p");
   });
 
   test("같은 이름이 이미 보관돼 있으면 -2, -3", async () => {

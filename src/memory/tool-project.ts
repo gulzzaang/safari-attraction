@@ -1,6 +1,6 @@
 import { mkdir, rename } from "node:fs/promises";
 import type { ReplResult } from "../repl/context.js";
-import type { ActivityLog, Touch } from "./activity.js";
+import type { ActivityLog, Extra, Touch } from "./activity.js";
 import { findSecret } from "./guard.js";
 import { MemoryHome, nfc } from "./home.js";
 import {
@@ -30,6 +30,7 @@ const OPEN_SITES_MAX = 10;
 const RECENT_RECORDS = 5;
 const OPEN_SECTION_BYTES = 1000; // open: 절마다 보여 주는 몫(넘으면 줄이고 파일 위치를 알린다). 남는 자리가 모자라면 더 줄인다
 const OPEN_DOCS_MAX = 10;
+const OPEN_MEMO_LINES = 5; // open: 메모 절에서 보여 주는 마지막 줄 수
 const DOC_NAME_CHARS = 50;
 const RECORD_LINE_CHARS = 120;
 /** open 본문의 상한: 8KB 에서 첫 줄 이름(최대 약 220바이트) · 끝 줄(충돌본 · 정리 안내)이 쓸 몫을 뺀 것. 최근 기록이 맨 끝이라 본문이 넘쳐 잘리면 안 된다. */
@@ -51,7 +52,7 @@ export type ProjectInput = {
 export type { ToolResult };
 
 /** open_sites 한 번을 하루 기록에 남기고 응답에 붙일 글(사이트 메모 · 정리 안내 · 쓰기 실패 안내)을 돌려주는 일(서버가 repl 과 같은 길로 꾸린다). */
-export type RecordOpened = (entry: { title: string; touched: Touch[]; ok: boolean; error?: string }) => Promise<string[]>;
+export type RecordOpened = (entry: { title: string; touched: Touch[]; ok: boolean; error?: string }) => Promise<(string | Extra)[]>;
 
 export type ProjectCtx = {
   home: MemoryHome;
@@ -121,7 +122,9 @@ async function resolveActive(ctx: ProjectCtx, rawName: string | undefined): Prom
   const all = await listProjects(ctx.home);
   const found = findName(all.active, want);
   if (found !== null) return { name: found };
-  if (findName(all.archived, want) !== null) return fail(`「${want}」 은 보관된 프로젝트예요. 보관된 프로젝트는 열거나 고칠 수 없어요(찾기에는 나와요).`);
+  if (findName(all.archived, want) !== null) {
+    return fail(`「${want}」 은 보관된 프로젝트예요. 보관된 프로젝트는 열거나 고칠 수 없어요(찾기에는 나와요). 보관/ 폴더에서 프로젝트/ 로 옮기면 다시 쓸 수 있어요(${ARCHIVE_DIR}/${want} → ${PROJECT_DIR}/${want}).`);
+  }
   return fail(`「${want}」 프로젝트가 없어요. ${existingLine(all)}`);
 }
 
@@ -192,12 +195,18 @@ async function open(ctx: ProjectCtx, input: ProjectInput): Promise<Outcome> {
   activity.state.openProject = name;
 
   const md = await home.read(rel);
-  // 문서 목록과 최근 기록을 먼저 만들어 자리를 정하고, 남는 자리를 요약 · 조건 · 사이트가 나눠 쓴다.
+  // 메모 · 문서 목록 · 최근 기록을 먼저 만들어 자리를 정하고, 남는 자리를 요약 · 조건 · 사이트가 나눠 쓴다.
   const docs = (await home.list(`${dir}/문서`)).filter((f) => f.endsWith(".md") && !f.startsWith("."));
   const docLines = docs.slice(0, OPEN_DOCS_MAX).map((f) => `- 문서/${clipChars(f, DOC_NAME_CHARS)}`);
   if (docs.length > OPEN_DOCS_MAX) docLines.push(`… 외 ${docs.length - OPEN_DOCS_MAX}개`);
   const recent = (await recentRecords(home, dir, RECENT_RECORDS)).map((l) => clipChars(l, RECORD_LINE_CHARS));
+  const memoLines = (md === null ? "" : (readSection(md, "메모") ?? ""))
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "");
+  const memoShown = memoLines.slice(-OPEN_MEMO_LINES).map((l) => clipChars(l, RECORD_LINE_CHARS));
   const tailParts = [
+    `## 메모${memoLines.length > OPEN_MEMO_LINES ? ` (마지막 ${OPEN_MEMO_LINES}줄 · 전체 ${memoLines.length}줄)` : ""}\n${memoShown.length > 0 ? memoShown.join("\n") : "(비어 있음)"}`,
     `## 문서 (${docs.length}개)\n${docLines.length > 0 ? docLines.join("\n") : "(없음)"}`,
     `## 최근 기록\n${recent.length > 0 ? recent.join("\n") : "(아직 없음)"}`,
   ];
@@ -268,19 +277,27 @@ async function saveDoc(ctx: ProjectCtx, input: ProjectInput): Promise<Outcome> {
 
   const rel = `${PROJECT_DIR}/${r.name}/문서/${d.name}.md`;
   return home.exclusive(async (): Promise<Outcome> => {
+    // 확인한 뒤 쓰기 직전에 다른 곳에서 보관 · 삭제됐을 수 있다 — 없는 프로젝트 폴더를 되살리지 않는다.
+    if ((await home.read(mdRel(PROJECT_DIR, r.name))) === null) return fail(`「${r.name}」 프로젝트가 그사이 없어졌어요(보관됐을 수 있어요). 문서는 저장하지 않았어요.`);
+    const before = await home.read(rel);
     await home.writeShared(rel, text);
-    return { body: `문서를 저장했어요: ${rel} (${fmt(lenChars(text))}자)`, files: [rel] };
+    const replaced = before !== null ? ` — 기존 문서를 바꿨어요(이전 ${fmt(lenChars(before))}자 → 지금 ${fmt(lenChars(text))}자)` : "";
+    return { body: `문서를 저장했어요: ${rel} (${fmt(lenChars(text))}자)${replaced}`, files: [rel] };
   });
 }
 
 // ───────────────────────── open_sites ─────────────────────────
 
 /** body 에 덧붙임을 하나씩(빈 줄로 이어) 붙이되, 끝에 붙는 글 몫(ENVELOPE_RESERVE)을 뺀 8KB 안에서만. */
-function attachWithinCap(body: string, extras: string[]): string {
+function attachWithinCap(body: string, extras: (string | Extra)[]): string {
   let text = body;
   for (const e of extras) {
-    const next = `${text}\n\n${e}`;
-    if (bytes(next) <= OUTPUT_MAX_BYTES - ENVELOPE_RESERVE) text = next;
+    const extra: Extra = typeof e === "string" ? { text: e } : e;
+    const next = `${text}\n\n${extra.text}`;
+    if (bytes(next) <= OUTPUT_MAX_BYTES - ENVELOPE_RESERVE) {
+      text = next;
+      extra.commit?.(); // 실제로 붙은 글만 「보였음」 으로 친다
+    }
   }
   return text;
 }
@@ -334,8 +351,6 @@ async function archive(ctx: ProjectCtx, input: ProjectInput): Promise<Outcome> {
     const taken = new Set((await home.list(ARCHIVE_DIR)).map((n) => n.toLowerCase()));
     let dest = name;
     for (let k = 2; taken.has(dest.toLowerCase()); k++) dest = `${name}-${k}`;
-    const md = await home.read(mdRel(PROJECT_DIR, name));
-    if (md !== null) await home.writeShared(mdRel(PROJECT_DIR, name), replaceSection(md, "상태", "보관"));
     await mkdir(home.path(ARCHIVE_DIR), { recursive: true });
     try {
       await rename(from, home.path(ARCHIVE_DIR, dest));
@@ -343,10 +358,19 @@ async function archive(ctx: ProjectCtx, input: ProjectInput): Promise<Outcome> {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") return fail(`「${name}」 폴더가 그사이 없어졌어요.`);
       throw e;
     }
+    // 옮기기가 끝난 뒤에 옮겨진 파일의 상태를 바꾼다 — 옮기기가 실패하면 진행 중 프로젝트는 그대로다.
+    let stateNote = "";
+    try {
+      const moved = mdRel(ARCHIVE_DIR, dest);
+      const md = await home.read(moved);
+      if (md !== null) await home.writeShared(moved, replaceSection(md, "상태", "보관"));
+    } catch {
+      stateNote = "\n(옮기기는 끝났지만 프로젝트.md 의 「상태」 를 보관으로 못 바꿨어요)";
+    }
     const open = activity.state.openProject;
     if (open !== null && open.toLowerCase() === name.toLowerCase()) activity.state.openProject = null;
     const note = dest === name ? "" : ` (같은 이름이 이미 있어 「${dest}」 로)`;
-    return { body: `보관했어요: ${ARCHIVE_DIR}/${dest}${note}\n보관한 프로젝트는 list 의 보관 칸과 찾기에서 볼 수 있어요.`, files: [mdRel(ARCHIVE_DIR, dest)] };
+    return { body: `보관했어요: ${ARCHIVE_DIR}/${dest}${note}\n보관한 프로젝트는 list 의 보관 칸과 찾기에서 볼 수 있어요.${stateNote}`, files: [mdRel(ARCHIVE_DIR, dest)] };
   });
 }
 

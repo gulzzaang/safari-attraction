@@ -254,11 +254,75 @@ describe("read", () => {
     expect(r.text).toBe("파일: 기억/나.md\n- 2026-11-01 가\n");
   });
 
-  test("8KB 를 넘으면 줄이고 알린다", async () => {
+  test("8KB 를 넘으면 8KB 안에서 끊고 이어 읽을 offset 을 알린다", async () => {
     await put("기억/나.md", "가".repeat(20_000));
     const r = await run({ action: "read", path: "기억/나.md" });
     expect(bytes(r.text)).toBeLessThanOrEqual(8192);
-    expect(r.text).toContain("줄였어요");
+    expect(r.text).toMatch(/… 이어 읽으려면 offset=\d+$/);
+  });
+
+  /** offset 을 따라 끝까지 이어 읽어 본문을 이어 붙인다. */
+  async function readAll(rel: string, first: Partial<MemoryInput> = {}): Promise<{ text: string; parts: number }> {
+    let out = "";
+    let offset = 0;
+    let parts = 0;
+    for (;;) {
+      const r = await run({ action: "read", path: rel, offset, ...first });
+      expect(bytes(r.text)).toBeLessThanOrEqual(8192);
+      const body = r.text.slice(r.text.indexOf("\n") + 1);
+      const m = /\n… 이어 읽으려면 offset=(\d+)$/.exec(body);
+      out += m ? body.slice(0, m.index) : body;
+      parts++;
+      if (!m) return { text: out, parts };
+      offset = Number(m[1]);
+      expect(parts).toBeLessThan(50);
+    }
+  }
+
+  test("16,000자가 넘는 한글 문서는 offset 으로 2번 넘게 나눠 읽으면 그대로 이어진다", async () => {
+    const doc = Array.from({ length: 1700 }, (_, i) => `${i}번째 줄 — 이사 준비 메모입니다.`).join("\n") + "\n";
+    expect([...doc].length).toBeGreaterThan(16_000);
+    await put("프로젝트/이사/문서/긴글.md", doc);
+    const { text, parts } = await readAll("프로젝트/이사/문서/긴글.md");
+    expect(parts).toBeGreaterThanOrEqual(2);
+    expect(text).toBe(doc);
+  });
+
+  test("이모지 · 결합 문자가 끊김 자리에 걸려도 쪼개지지 않고 그대로 이어진다", async () => {
+    // 한 글자가 4바이트 이모지 · ZWJ 이모지 · 결합 문자로 이뤄진 글을 반복해 여러 자리에서 끊기게 한다.
+    const unit = "가👨‍👩‍👧나e\u0301😀";
+    const doc = unit.repeat(2500);
+    await put("기억/나.md", doc);
+    const r = await run({ action: "read", path: "기억/나.md" });
+    const body = r.text.slice(r.text.indexOf("\n") + 1).replace(/\n… 이어 읽으려면 offset=\d+$/, "");
+    expect(body).not.toMatch(/[\ud800-\udbff]$/); // 서로게이트 쌍이 반쪽으로 끝나지 않는다
+    expect(body).not.toMatch(/\u200d$/);
+    const { text } = await readAll("기억/나.md");
+    expect(text).toBe(doc);
+  });
+
+  test("offset 이 음수 · 소수면 한국어 오류", async () => {
+    await put("기억/나.md", "내용");
+    for (const offset of [-1, 1.5, Number.NaN]) {
+      const r = await run({ action: "read", path: "기억/나.md", offset });
+      expect(r.isError).toBe(true);
+      expect(r.text).toMatch(/offset.*0 이상의 정수/);
+    }
+  });
+
+  test("offset 이 끝을 넘으면 끝이라고 알린다", async () => {
+    await put("기억/나.md", "가나다");
+    const r = await run({ action: "read", path: "기억/나.md", offset: 3 });
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain("끝이에요");
+    const r2 = await run({ action: "read", path: "기억/나.md", offset: 99 });
+    expect(r2.text).toContain("끝이에요");
+  });
+
+  test("offset 을 주면 그 자리부터(글자 수) 읽는다", async () => {
+    await put("기억/나.md", "가나다라마");
+    const r = await run({ action: "read", path: "기억/나.md", offset: 2 });
+    expect(r.text).toBe("파일: 기억/나.md (offset=2 부터)\n다라마");
   });
 
   test("path 가 비면 집 폴더 맨 위 목록(점 파일은 숨김)", async () => {

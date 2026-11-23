@@ -787,6 +787,19 @@ describe("openTabs — project 도구의 사이트 한꺼번에 열기", () => {
     expect(r.output).toMatch(/10개/);
   });
 
+  test("시간 초과 뒤에는 남은 주소를 더 열지 않고, 다음 호출의 page 도 바뀌지 않는다", async () => {
+    const real = d.openTab.bind(d);
+    d.openTab = async (url, opts) => {
+      await new Promise((r) => setTimeout(r, 60));
+      return real(url, opts);
+    };
+    const r = await s.openTabs(["http://a/", "http://b/", "http://c/"], { timeoutMs: 20 });
+    expect(r.error).toMatch(/시간 초과/);
+    await new Promise((res) => setTimeout(res, 250)); // 늦게 돌던 일이 끝날 때까지
+    expect(d.calls.openTab.map((c) => c.url)).toEqual(["http://a/"]);
+    expect((await s.run("console.log(page === null)")).output).toBe("true");
+  });
+
   test("끝난 뒤(dispose)에는 열지 않고 실패로 알린다", async () => {
     await s.dispose();
     const r = await s.openTabs(["http://a/"]);
