@@ -866,6 +866,22 @@ describe("guide() 전역", () => {
     expect(o).toContain("이 사이트 안내서는 아직 없어요");
   });
 
+  test("guide() 는 Promise 가 아니라 글을 바로 돌려준다(await 없이도 찍힌다)", async () => {
+    expect(await out('console.log(typeof guide("coupang.com"), guide("coupang.com") instanceof Promise)')).toBe("string false");
+    expect(await out('console.log(guide("naver.com"))')).toContain("# 네이버");
+    expect(await out("console.log(guide())")).toContain("지금 열린 사이트가 없어요");
+  });
+
+  test("heldUrls(): 쥐고 있는 페이지 주소만, 닫은 것은 빼고, 옮겨 간 주소는 지금 것으로", async () => {
+    expect(gs.heldUrls()).toEqual([]);
+    await out('await openTab("https://a.example/"); await openTab("https://b.example/")');
+    expect(gs.heldUrls()).toEqual(["https://a.example/", "https://b.example/"]);
+    await out("await closeTab(page)");
+    expect(gs.heldUrls()).toEqual(["https://a.example/"]);
+    await gs.dispose();
+    expect(gs.heldUrls()).toEqual([]);
+  });
+
   test("guide.list() 는 목록 글", async () => {
     expect(await out("console.log(guide.list())")).toBe("쿠팡 — coupang.com\n네이버 — naver.com");
     expect(await out("console.log(typeof guide, typeof guide.list)")).toBe("function function");

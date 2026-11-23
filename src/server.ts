@@ -142,10 +142,13 @@ async function boundedExtras(
   entry: { title: string; touched: Touch[]; ok: boolean; error?: string },
   ms: number,
   guides: SiteGuide[],
+  heldUrls: () => string[] = () => [],
 ): Promise<Extra[]> {
   let guide: Extra | null = null;
   try {
-    guide = planGuideNotes(entry.touched, activity.state.seenGuides, guides);
+    // 이번 호출에서 닿은 곳 먼저, 그다음 세션이 쥐고 있는 페이지 — 앞서 16KB 상한에 잘려 못 붙은 요약을 닿지 않는 호출에서도 다시 시도한다.
+    const held: Touch[] = heldUrls().map((url) => ({ url, userTab: false, kind: "nav" as const }));
+    guide = planGuideNotes([...entry.touched, ...held], activity.state.seenGuides, guides);
   } catch {
     // 안내서를 못 찾아도 repl 결과는 그대로.
   }
@@ -227,7 +230,7 @@ export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHo
       const images = (r.images ?? []).map((data) => ({ type: "image" as const, data, mimeType: "image/png" }));
       const err = r.error === undefined ? undefined : toKorean(r.error, r.errorCode);
       const base = err === undefined ? r.output : r.output ? `${r.output}\n\n오류: ${err}` : `오류: ${err}`;
-      const extras = await boundedExtras(activity, { title, touched: r.touched ?? [], ok: err === undefined, error: err }, memoryTimeoutMs, guides);
+      const extras = await boundedExtras(activity, { title, touched: r.touched ?? [], ok: err === undefined, error: err }, memoryTimeoutMs, guides, () => session.heldUrls());
       const text = attachWithinCap(base, extras);
       if (err === undefined) return { content: [{ type: "text" as const, text }, ...images] };
       return { isError: true, content: [{ type: "text" as const, text }, ...images] };
@@ -290,7 +293,7 @@ export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHo
           now,
           openTabs: (urls) => session.openTabs(urls),
           // open_sites 도 repl 처럼 하루 기록 · 사이트 메모 · 정리 안내를 같은 길(2초 상한)로 처리한다.
-          recordOpened: (entry) => boundedExtras(activity, entry, memoryTimeoutMs, guides),
+          recordOpened: (entry) => boundedExtras(activity, entry, memoryTimeoutMs, guides, () => session.heldUrls()),
         },
         input,
       );

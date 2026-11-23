@@ -644,6 +644,42 @@ describe("사이트 안내 요약 자동 붙이기", () => {
     expect(srv!.activity.state.seenGuides.has("aa")).toBe(true);
   });
 
+  test("요약이 잘렸어도 그 페이지를 쥐고 있으면 닿지 않은 다음 호출에 한 번 붙는다", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock, guides: GUIDES });
+    const r1 = await repl(c, open("a.example", 'console.log("x".repeat(16350))'));
+    expect(textOf(r1)).not.toContain("이 사이트 안내");
+    expect(srv!.activity.state.seenGuides.has("aa")).toBe(false);
+    // 새로 닿은 곳이 없는 호출(page 는 그대로)
+    expect(textOf(await repl(c, "console.log(page.url())"))).toBe(`https://a.example/\n\n${NOTE_A}`);
+    expect(srv!.activity.state.seenGuides.has("aa")).toBe(true);
+    expect(textOf(await repl(c, "console.log(page.url())"))).toBe("https://a.example/");
+  });
+
+  test("이미 보인 안내서의 페이지를 쥐고 있어도 다시 붙지 않는다", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock, guides: GUIDES });
+    expect(textOf(await repl(c, open("a.example")))).toBe(`본문\n\n${NOTE_A}`);
+    expect(textOf(await repl(c, 'console.log("다음")'))).toBe("다음");
+  });
+
+  test("닫은 페이지는 쥔 것으로 치지 않는다", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock, guides: GUIDES });
+    await repl(c, open("a.example", 'console.log("x".repeat(16350))'));
+    expect(textOf(await repl(c, "await closeTab(page); console.log('닫음')"))).toBe("닫음");
+    expect(textOf(await repl(c, 'console.log("다음")'))).toBe("다음");
+    expect(srv!.activity.state.seenGuides.has("aa")).toBe(false);
+  });
+
+  test("쥔 페이지 때문에 붙는 요약도 한 호출 두 편까지", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock, guides: GUIDES });
+    const big = 'console.log("x".repeat(16350))';
+    for (const h of ["a.example", "b.example", "c.example"]) await repl(c, open(h, big));
+    const r = textOf(await repl(c, 'console.log("다음")'));
+    expect(r).toContain("이 사이트 안내(에이)");
+    expect(r).toContain("이 사이트 안내(비)");
+    expect(r).toContain('… 안내서 있음: 씨 — guide("주소")');
+    expect([...srv!.activity.state.seenGuides].sort()).toEqual(["aa", "bb"]);
+  });
+
   test("메모는 못 들어가도 안내 요약이 들어가는 자리면 안내만 붙는다", async () => {
     await put("기억/사이트/a.example.md", "메모".repeat(40));
     const c = await connect(createFakeDriver(), { home, now: () => clock, guides: GUIDES });
@@ -702,7 +738,8 @@ describe("사이트 안내 요약 자동 붙이기", () => {
     expect(r).not.toContain("이 사이트 안내(씨)");
     expect(r).toContain('… 안내서 있음: 씨 · 디 — guide("주소")');
     expect([...srv!.activity.state.seenGuides].sort()).toEqual(["aa", "bb"]);
-    expect(textOf(await repl(c, open("c.example")))).toBe("본문\n\n… 이 사이트 안내(씨): 씨 요약 — 자세히는 guide()");
+    // 닿은 곳(씨)이 먼저, 이어서 쥐고 있는 페이지 중 아직 못 본 것(디)
+    expect(textOf(await repl(c, open("c.example")))).toBe("본문\n\n… 이 사이트 안내(씨): 씨 요약 — 자세히는 guide()\n… 이 사이트 안내(디): 디 요약 — 자세히는 guide()");
   });
 
   test("REPL_DESCRIPTION 에 guide() 한 문장이 들어간다", () => {

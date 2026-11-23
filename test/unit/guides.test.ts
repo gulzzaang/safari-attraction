@@ -123,15 +123,41 @@ describe("진짜 안내서 목록 검사", () => {
       expect(g.checked, `${g.id} checked`).toMatch(/^(로그인 화면까지만\(미확인\) )?\d{4}-\d{2}-\d{2}$/);
     }
   });
-  test("본문 절 순서: 화면 구조 · 찾기와 읽기 · 자주 하는 일 · 함정 · 사용자 확인이 꼭 필요한 일", () => {
-    const order = ["## 화면 구조", "## 찾기와 읽기", "## 자주 하는 일", "## 함정", "## 사용자 확인이 꼭 필요한 일"];
+  test("본문 절 순서: 화면 구조 · 찾기와 읽기 · 자주 하는 일 · 함정 · 사용자 확인이 꼭 필요한 일 · (못 본 곳) · 확인한 날 꼬리표", () => {
+    const order = ["## 화면 구조", "## 찾기와 읽기", "## 자주 하는 일", "## 함정", "## 사용자 확인이 꼭 필요한 일", "## 못 본 곳"];
     for (const g of GUIDES) {
       const text = fullText(g);
+      expect(text.match(/확인한 날/g), `${g.id} 「확인한 날」 은 꼬리표 한 번만`).toHaveLength(1);
       const at = order.map((h) => text.indexOf(`\n${h}\n`));
-      expect(at.every((i) => i >= 0), `${g.id} 절 빠짐`).toBe(true);
+      expect(at.slice(0, 5).every((i) => i >= 0), `${g.id} 절 빠짐`).toBe(true);
+      expect(at[5], `${g.id} 못 본 곳`).toBeGreaterThan(at[4]!);
       expect([...at].sort((a, b) => a - b), `${g.id} 절 순서`).toEqual(at);
-      expect(text.indexOf("## 요약"), `${g.id} 요약이 맨 앞`).toBeLessThan(at[0]);
+      expect(text.indexOf("## 요약"), `${g.id} 요약이 맨 앞`).toBeLessThan(at[0]!);
       expect(text.endsWith(`확인한 날: ${g.checked}`), `${g.id} 확인한 날이 맨 끝`).toBe(true);
+    }
+  });
+  test("-고 · -며 · -지만 · -면서 · -아서 · -어서 바로 뒤에 쉼표가 없다", () => {
+    for (const g of GUIDES) {
+      const text = `${g.summary}\n${g.body}`;
+      const m = text.match(/.{0,12}(?<!신)(고|며|지만|면서|아서|어서),.{0,6}/g);
+      expect(m, `${g.id} 쉼표`).toBeNull();
+    }
+  });
+  test("노션은 검색칸에 낱말만 · AI 질문은 안 쓴다고 요약과 본문에 쓴다", () => {
+    const n = GUIDES.find((g) => g.id === "notion")!;
+    expect(n.summary).toContain("낱말 한두 개");
+    expect(n.summary).toContain("AI 질문 · 답변");
+    expect(n.body).toContain("질문이나 문장은 넣지 않");
+  });
+  test("깃허브 예시는 일반 꼴(특정 저장소 · 버전 · 개수 없음)", () => {
+    const g = GUIDES.find((x) => x.id === "github")!;
+    const text = `${g.summary}\n${g.body}`;
+    expect(text).not.toMatch(/gulzzaang|safari-attraction|v\d+\.\d+\.\d+|\d+ (Branches|Tags)/);
+    expect(text).toContain("/releases/tag/vX.Y.Z");
+  });
+  test("지메일 · 캘린더 · 드라이브 요약에 계정이 여럿이면 u/1 · u/2", () => {
+    for (const id of ["gmail", "google-calendar", "google-drive"]) {
+      expect(GUIDES.find((g) => g.id === id)!.summary, id).toContain("계정이 여럿이면 u/1 · u/2");
     }
   });
   test("쿠팡 · 네이버 안내서 호스트 짝", () => {

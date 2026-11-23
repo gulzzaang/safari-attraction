@@ -40,6 +40,11 @@ export interface ReplSession {
    * 서버 자신의 문제거나 어느 호출 것인지 모르면 false.
    */
   handleStray(reason: unknown, kind: "rejection" | "exception"): boolean;
+  /**
+   * 세션이 지금 쥐고 있는(열었거나 붙인, 아직 안 닫은) 페이지들의 마지막으로 알려진 주소. 열린 순서이고 빈 주소 · 읽을 수 없는 것은 뺀다.
+   * 닿은 곳이 아니라 「지금 들고 있는 것」 이라, 안내 요약이 16KB 상한에 잘렸을 때 다음 호출에 다시 시도하는 데 쓴다.
+   */
+  heldUrls(): string[];
   /** 우리가 연 탭을 닫고 기억을 비운다. 드라이버 자체는 닫지 않는다(부른 쪽 몫). */
   dispose(): Promise<void>;
 }
@@ -449,7 +454,8 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
   };
 
   // guide(주소?) — 내장 사이트 안내서 전체 글. 인자가 없으면 지금 page 주소. 던지지 않는다. guide.list() 는 있는 안내서 목록.
-  const guide = async (target?: unknown): Promise<string> => guideAnswer(target, () => currentPage()?.url(), guides);
+  // 파일을 읽지 않으니 동기 함수다(guide.list() 와 같게 — await 없이 console.log(guide()) 해도 글이 찍힌다).
+  const guide = (target?: unknown): string => guideAnswer(target, () => currentPage()?.url(), guides);
   guide.list = (): string => listGuides(guides);
   sandbox.guide = guide;
 
@@ -530,6 +536,18 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
       const next = queue.then(() => execWith((slot) => slots.run(slot, run), opts.timeoutMs ?? DEFAULT_TIMEOUT_MS));
       queue = next.catch(() => {});
       return next;
+    },
+    heldUrls() {
+      const urls: string[] = [];
+      for (const w of watched.values()) {
+        try {
+          const u = w.page.url();
+          if (u) urls.push(u);
+        } catch {
+          // 읽을 수 없는 페이지는 건너뛴다.
+        }
+      }
+      return urls;
     },
     handleStray(reason, kind) {
       const slot = slots.getStore();
