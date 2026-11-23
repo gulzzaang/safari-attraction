@@ -10,8 +10,9 @@ let list = (CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]
 struct W { let owner: String; let layer: Int; let rect: CGRect }
 func rect(_ d: [String: Any]) -> CGRect {
     guard let b = d[kCGWindowBounds as String] as? [String: Any] else { return .zero }
-    return CGRect(x: (b["X"] as? CGFloat) ?? 0, y: (b["Y"] as? CGFloat) ?? 0,
-                  width: (b["Width"] as? CGFloat) ?? 0, height: (b["Height"] as? CGFloat) ?? 0)
+    // 값은 NSNumber — CGFloat 로 바로 꺼내면 0 이 될 수 있어 Double 로 읽는다.
+    func n(_ k: String) -> CGFloat { CGFloat((b[k] as? NSNumber)?.doubleValue ?? 0) }
+    return CGRect(x: n("X"), y: n("Y"), width: n("Width"), height: n("Height"))
 }
 let ws = list.compactMap { d -> W? in
     guard let o = d[kCGWindowOwnerName as String] as? String else { return nil }

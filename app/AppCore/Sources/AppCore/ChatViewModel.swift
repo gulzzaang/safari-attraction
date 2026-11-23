@@ -77,6 +77,8 @@ public final class ChatViewModel {
                 enabledModels: [ModelKind] = ModelKind.enabled) {
         self.runner = runner; self.bridge = bridge; self.loginPath = loginPath
         self.workDirectory = workDirectory; self.timeout = timeout; self.now = now
+        // 빈 목록은 부르는 쪽 실수 — 개발 중엔 바로 알리고, 출시 빌드에선 클로드로 둔다.
+        assert(!enabledModels.isEmpty, "enabledModels 가 비어 있음")
         self.enabledModels = enabledModels.isEmpty ? [.claude] : enabledModels
     }
 
