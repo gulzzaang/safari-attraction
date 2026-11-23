@@ -20,12 +20,35 @@ export function fetchIsIrreversible(method: string | undefined | null): boolean 
   return !(m === "" || m === "GET" || m === "HEAD");
 }
 
-/** 페이지를 바꾸는 메서드(호출하면 읽기 전용이 아니다). */
-const MUTATING_METHODS = new Set([
-  "click", "submit", "requestSubmit", "dispatchEvent", "setAttribute", "removeAttribute", "remove", "append", "appendChild", "prepend", "insertBefore",
-  "replaceWith", "replaceChildren", "setItem", "removeItem", "clear", "pushState", "replaceState", "assign", "open", "write", "focus", "blur",
-  "scrollTo", "scrollBy", "scrollIntoView", "play", "pause",
+/**
+ * 읽기용으로 알려진 메서드 이름 — 허락 목록이다. 이 밖의 메서드 호출은 무슨 일을 할지 모르므로 읽기 전용이 아니다
+ * (페이지가 정의한 함수 · click · submit · .call/.apply/.bind · setTimeout · history.* · Object.assign 등).
+ */
+const READ_METHODS = new Set([
+  "querySelector", "querySelectorAll", "getElementById", "getElementsByClassName", "getElementsByTagName", "getElementsByName", "getAttribute", "getAttributeNames",
+  "hasAttribute", "getBoundingClientRect", "getClientRects", "closest", "matches", "contains", "item", "namedItem", "getPropertyValue",
+  "map", "filter", "reduce", "forEach", "find", "findIndex", "findLast", "some", "every", "includes", "indexOf", "lastIndexOf", "slice", "concat", "join", "flat", "flatMap",
+  "keys", "values", "entries", "at", "sort", "reverse", "toString", "toLowerCase", "toUpperCase", "trim", "trimStart", "trimEnd", "split", "replace", "replaceAll",
+  "match", "matchAll", "test", "exec", "startsWith", "endsWith", "padStart", "padEnd", "substring", "substr", "charAt", "charCodeAt", "normalize", "localeCompare", "toFixed",
+  "get", "has", "getAll",
 ]);
+/** 읽기용 메서드라도 대상이 location 이면 주소를 바꾼다(location.replace). */
+const LOCATION_UNSAFE_METHODS = new Set(["replace", "assign", "reload"]);
+/** 부를 수 있는 전역 함수. */
+const READ_GLOBAL_FUNCS = new Set([
+  "Number", "String", "Boolean", "parseInt", "parseFloat", "isNaN", "isFinite", "encodeURIComponent", "decodeURIComponent", "encodeURI", "decodeURI", "getComputedStyle", "getSelection",
+]);
+/** 부를 수 있는 정적 함수(객체 이름 → 함수 이름들, "*" 는 전부). */
+const READ_STATIC_FUNCS: Record<string, ReadonlySet<string> | "*"> = {
+  JSON: new Set(["stringify", "parse"]),
+  Math: "*",
+  Array: new Set(["from", "isArray", "of"]),
+  Object: new Set(["keys", "values", "entries", "fromEntries"]),
+  Date: new Set(["now"]),
+  Number: new Set(["isNaN", "parseInt", "parseFloat"]),
+};
+/** `new` 로 만들 수 있는 것. */
+const READ_NEW = new Set(["Set", "Map", "URL", "URLSearchParams", "Date", "RegExp", "Array", "Object"]);
 /** 이름이 나오기만 해도(변수 · 속성) 읽기 전용이 아닌 것 — 네트워크 · 코드 만들기 · 생성자 우회. */
 const FORBIDDEN_NAMES = new Set(["fetch", "XMLHttpRequest", "WebSocket", "sendBeacon", "eval", "Function", "constructor"]);
 
@@ -65,19 +88,35 @@ const childNodes = (n: Node): Node[] => {
   return out;
 };
 
-/** 식 안에서 선언된 이름(매개변수 · var/let/const · 함수 · 클래스 · catch)을 모은다. */
-function declaredNames(root: Node): Set<string> {
+interface Scope {
+  /** 식 안에서 선언된 이름(매개변수 · var/let/const · 함수 · 클래스 · catch). */
+  locals: Set<string>;
+  /** 그중 함수로 선언돼 부를 수 있는 이름(식 안에서 다시 대입되는 이름은 뺀다). */
+  fns: Set<string>;
+}
+
+/**
+ * 식 안에서 선언된 이름을 모은다. 한계: 범위(scope)를 따지지 않고 식 전체에서 한 묶음으로 본다 — 안쪽 함수에서 선언한 이름과 같은 이름을
+ * 바깥에서 대입하면 지역 변수 대입으로 잘못 볼 수 있다(일부러 속이는 코드까지는 막지 않는다).
+ */
+function scopeOf(root: Node): Scope {
   const names: string[] = [];
+  const fnNames = new Set<string>();
+  const assigned = new Set<string>();
   const flags = { member: false };
   const visit = (n: Node) => {
     switch (n.type) {
       case "VariableDeclarator":
         patternNames(n.id, names, flags);
+        if (n.id.type === "Identifier" && n.init && (n.init.type === "FunctionExpression" || n.init.type === "ArrowFunctionExpression")) fnNames.add(n.id.name);
         break;
       case "FunctionDeclaration":
       case "FunctionExpression":
       case "ArrowFunctionExpression":
-        if (n.id) names.push(n.id.name);
+        if (n.id) {
+          names.push(n.id.name);
+          if (n.type === "FunctionDeclaration") fnNames.add(n.id.name);
+        }
         for (const p of n.params) patternNames(p, names, flags);
         break;
       case "ClassDeclaration":
@@ -87,11 +126,17 @@ function declaredNames(root: Node): Set<string> {
       case "CatchClause":
         patternNames(n.param, names, flags);
         break;
+      case "AssignmentExpression": {
+        const t: string[] = [];
+        patternNames(n.left, t, { member: false });
+        for (const x of t) assigned.add(x);
+        break;
+      }
     }
     for (const c of childNodes(n)) visit(c);
   };
   visit(root);
-  return new Set(names);
+  return { locals: new Set(names), fns: new Set([...fnNames].filter((x) => !assigned.has(x))) };
 }
 
 const propName = (m: Node): string | null => {
@@ -99,18 +144,51 @@ const propName = (m: Node): string | null => {
   return m.property.type === "Literal" && typeof m.property.value === "string" ? m.property.value : null;
 };
 
+/** location · window.location · document.location 처럼 보이는 대상인가. */
+const isLocationObject = (o: Node): boolean => (o.type === "Identifier" && o.name === "location") || (o.type === "MemberExpression" && propName(o) === "location");
+
+/** 부르는 것(callee)이 읽기 전용으로 알려진 것인가 — 허락 목록. */
+function calleeAllowed(callee: Node, sc: Scope): boolean {
+  let c = callee;
+  if (c.type === "ChainExpression") c = c.expression;
+  switch (c.type) {
+    case "FunctionExpression":
+    case "ArrowFunctionExpression":
+      return true; // 즉시 실행 함수(몸통은 따로 훑는다)
+    case "Identifier":
+      return sc.fns.has(c.name) || (READ_GLOBAL_FUNCS.has(c.name) && !sc.locals.has(c.name));
+    case "MemberExpression": {
+      const name = propName(c);
+      if (name === null) return false; // el[name]() — 무슨 메서드인지 모른다
+      const obj: Node = c.object;
+      if (obj.type === "Identifier" && !sc.locals.has(obj.name) && Object.prototype.hasOwnProperty.call(READ_STATIC_FUNCS, obj.name)) {
+        const allowed = READ_STATIC_FUNCS[obj.name]!;
+        if (allowed === "*" || allowed.has(name)) return true;
+      }
+      if (!READ_METHODS.has(name)) return false;
+      if (LOCATION_UNSAFE_METHODS.has(name) && isLocationObject(obj)) return false;
+      return true;
+    }
+    default:
+      return false; // f()() · (a, b)() · 조건식 호출 …
+  }
+}
+
+const isLocalName = (n: Node, sc: Scope): boolean => n.type === "Identifier" && sc.locals.has(n.name);
+
 /** 노드 하나(와 그 아래)가 읽기만 하나. */
-function readOnlyNode(n: Node, locals: Set<string>): boolean {
+function readOnlyNode(n: Node, sc: Scope): boolean {
   switch (n.type) {
     case "AssignmentExpression": {
       const names: string[] = [];
       const flags = { member: false };
       patternNames(n.left, names, flags);
-      if (flags.member || names.some((x) => !locals.has(x))) return false;
+      if (flags.member || names.some((x) => !sc.locals.has(x))) return false;
       break;
     }
     case "UpdateExpression":
-      return false; // ++ · --
+      if (!isLocalName(n.argument, sc)) return false; // 지역 변수의 ++ · -- 만 읽기 전용
+      break;
     case "UnaryExpression":
       if (n.operator === "delete") return false;
       break;
@@ -123,7 +201,7 @@ function readOnlyNode(n: Node, locals: Set<string>): boolean {
         const names: string[] = [];
         const flags = { member: false };
         patternNames(n.left, names, flags);
-        if (flags.member || names.some((x) => !locals.has(x))) return false;
+        if (flags.member || names.some((x) => !sc.locals.has(x))) return false;
       }
       break;
     case "Identifier":
@@ -134,30 +212,30 @@ function readOnlyNode(n: Node, locals: Set<string>): boolean {
       if (name !== null && FORBIDDEN_NAMES.has(name)) return false;
       break;
     }
-    case "CallExpression": {
-      let callee: Node = n.callee;
-      if (callee.type === "ChainExpression") callee = callee.expression;
-      if (callee.type === "MemberExpression") {
-        const name = propName(callee);
-        if (name === null) return false; // el[name]() — 무슨 메서드인지 모른다
-        if (MUTATING_METHODS.has(name)) return false;
-      }
+    case "CallExpression":
+      if (!calleeAllowed(n.callee, sc)) return false;
       break;
-    }
+    case "TaggedTemplateExpression":
+      if (!calleeAllowed(n.tag, sc)) return false;
+      break;
+    case "NewExpression":
+      if (!(n.callee.type === "Identifier" && READ_NEW.has(n.callee.name) && !sc.locals.has(n.callee.name))) return false;
+      break;
   }
   for (const [k, v] of Object.entries(n)) {
     if (k === "type" || k === "start" || k === "end") continue;
     // 객체 글자값의 키(`{open: 1}`)와 점 뒤 이름(`a.open`)은 이름표일 뿐이라 따로(위의 MemberExpression · CallExpression)만 본다.
     if ((n.type === "MemberExpression" && k === "property" && !n.computed) || (n.type === "Property" && k === "key" && !n.computed) || (n.type === "MethodDefinition" && k === "key" && !n.computed) || (n.type === "PropertyDefinition" && k === "key" && !n.computed)) continue;
     const kids = Array.isArray(v) ? v : [v];
-    for (const c of kids) if (c && typeof c === "object" && typeof (c as Node).type === "string" && !readOnlyNode(c as Node, locals)) return false;
+    for (const c of kids) if (c && typeof c === "object" && typeof (c as Node).type === "string" && !readOnlyNode(c as Node, sc)) return false;
   }
   return true;
-};
+}
 
 /**
- * evaluate 에 넘긴 식(또는 함수) 소스가 페이지를 바꾸지 않는 읽기 전용인가. 대입(식 안에서 선언한 지역 변수 말고) · ++ · -- · delete ·
- * 바꾸는 메서드 호출 · fetch · XMLHttpRequest · WebSocket · sendBeacon · eval · Function 이 없으면 true. 못 읽으면(문법 이상 · 식을 빠져나가는 글) false.
+ * evaluate 에 넘긴 식(또는 함수) 소스가 페이지를 바꾸지 않는 읽기 전용인가 — 허락 목록 방식이다. 부르는 것이 읽기용으로 알려진 메서드 · 정해진 전역/정적 함수 · 식 안에서 선언한 함수일 때만
+ * true 이고, 그 밖의 호출(페이지가 정의한 함수 등)은 무슨 일을 할지 모르므로 false. 대입(식 안에서 선언한 지역 변수 말고) · delete · fetch 류 이름도 false. 지역 변수의 ++ · -- 는 허락.
+ * 못 읽으면(문법 이상 · 식을 빠져나가는 글) false.
  * 서버가 페이지에 실제로 보내는 꼴(`(function(){ return (식\n); })()`)과 똑같이 감싸 풀고, 그 틀을 벗어난 모양이면 false 다.
  */
 export function isReadOnlyExpression(src: string): boolean {
@@ -174,5 +252,5 @@ export function isReadOnlyExpression(src: string): boolean {
   const fn = call && call.type === "CallExpression" && call.arguments.length === 0 ? (call.callee as Node) : null;
   const body = fn && fn.type === "FunctionExpression" && fn.params.length === 0 ? (fn.body as Node) : null;
   if (!body || body.body.length !== 1 || body.body[0].type !== "ReturnStatement" || !body.body[0].argument) return false;
-  return readOnlyNode(program, declaredNames(program));
+  return readOnlyNode(program, scopeOf(program));
 }

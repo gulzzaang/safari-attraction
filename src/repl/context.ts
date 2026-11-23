@@ -91,7 +91,7 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
   const owned = new Set<string>();
   // 호출마다 출력 칸(slot)을 따로 둔다. AsyncLocalStorage 가 칸을 await · 타이머 · 드라이버 호출을 건너 따라가므로,
   // 시간 초과로 끝난 호출의 코드가 나중에 찍어도 닫힌 칸에 찍혀 버려진다(다음 호출 출력에 섞이지 않는다).
-  type Slot = { buf: OutputBuffer; closed: boolean; touched: Touch[]; touchedUrls: Set<string> };
+  type Slot = { buf: OutputBuffer; closed: boolean; touched: Touch[]; touchedUrls: Set<string>; pauseClock?: () => void; resumeClock?: () => void };
   const slots = new AsyncLocalStorage<Slot>();
   let queue: Promise<unknown> = Promise.resolve();
   let disposed = false;
@@ -173,6 +173,13 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
     note: (line) => log(line),
     // 호출이 끝났거나 시간 초과로 닫힌 뒤에도 돌고 있는 코드(AsyncLocalStorage 칸이 따라온다)는 기다림 · 재시도를 멈춘다.
     aborted: () => slots.getStore()?.closed === true,
+    // 사람이 동작 카드에 답하는 시간은 코드 실행 시간이 아니다 — 관문을 기다리는 동안 이 호출의 시간 제한 시계를 멈춘다.
+    gateWait() {
+      const slot = slots.getStore();
+      if (!slot || slot.closed || !slot.pauseClock) return () => {};
+      slot.pauseClock();
+      return () => slot.resumeClock?.();
+    },
   };
 
   // 닿은 곳 모으기: 세션이 아는 Page 마다 「마지막으로 기록한 주소」를 둔다. 호출이 시작될 때 지금 주소로 맞춰 두고(닿은 것으로 치지 않는다),
@@ -491,8 +498,24 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
     try {
       const done = start(slot);
       done.catch(() => {}); // 시간 초과 뒤에 늦게 거부돼도 처리 안 된 거부로 남지 않게
+      // 시간 제한 시계는 관문(사람 답) 기다림 동안 멈춘다: 남은 시간을 적어 두고 멈췄다가 다시 이어 센다.
       const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`시간 초과: ${Math.round(timeoutMs / 1000)}초 안에 끝나지 않음(코드는 계속 돌 수 있음)`)), timeoutMs);
+        let remaining = timeoutMs;
+        let startedAt = Date.now();
+        let paused = 0;
+        const arm = () => {
+          startedAt = Date.now();
+          timer = setTimeout(() => reject(new Error(`시간 초과: ${Math.round(timeoutMs / 1000)}초 안에 끝나지 않음(코드는 계속 돌 수 있음)`)), Math.max(1, remaining));
+        };
+        slot.pauseClock = () => {
+          if (paused++ > 0) return;
+          clearTimeout(timer);
+          remaining -= Date.now() - startedAt;
+        };
+        slot.resumeClock = () => {
+          if (paused > 0 && --paused === 0 && !slot.closed) arm();
+        };
+        arm();
       });
       await Promise.race([done, timeout]);
     } catch (e) {

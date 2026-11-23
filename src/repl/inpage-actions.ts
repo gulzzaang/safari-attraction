@@ -492,7 +492,9 @@ const BODY = String.raw`
           for (var ui = 0; ui < subs.length; ui++) sl.push(textOf(subs[ui]) || labelOf(subs[ui]));
           subText = squash(sl.join(' | '));
         }
-        var isPw = tag === 'input' && String(el.type).toLowerCase() === 'password';
+        // 비밀 칸: type=password 이거나 autocomplete 가 비밀번호 · 일회용 코드 · 카드 정보인 칸(여러 낱말 중 하나면). 값은 아예 읽지 않는다.
+        var acTokens = String((el.getAttribute && el.getAttribute('autocomplete')) || '').toLowerCase().split(/\s+/), isPw = tag === 'input' && String(el.type).toLowerCase() === 'password';
+        for (var ai = 0; ai < acTokens.length && !isPw; ai++) if (/^(current-password|new-password|one-time-code|cc-number|cc-csc|cc-exp)$/.test(acTokens[ai])) isPw = true;
         var isField = tag === 'input' || tag === 'textarea' || tag === 'select';
         var hint = tag + (el.getAttribute && el.getAttribute('name') ? '[name=' + el.getAttribute('name') + ']' : (el.id ? '#' + el.id : '')) + (el.getAttribute && el.getAttribute('placeholder') ? ' ' + el.getAttribute('placeholder') : '');
         r.v = {

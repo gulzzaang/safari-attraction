@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createReplSession, type ReplSession } from "../../src/repl/context.js";
 import { hoistTopLevel } from "../../src/repl/transform.js";
 import { SNAPSHOT_LIMIT_BYTES } from "../../src/snapshot/diff.js";
@@ -298,6 +298,41 @@ describe("REPL 세부", () => {
       expect(r.error).toContain("사용자가 거절했어요: 막음");
       expect(dd.calls.runJs.some((c) => c.source.includes("__saA"))).toBe(false);
       await ss.dispose();
+    });
+    describe("관문 기다림은 repl 호출의 시간 제한에서 뺀다", () => {
+      afterEach(() => vi.useRealTimers());
+      const slowGate = (ms: number): ActionGate => ({ check: () => new Promise((r) => setTimeout(() => r({ allow: true }), ms)) });
+      async function open(gate: ActionGate) {
+        const dd = createFakeDriver();
+        dd.answer = (_k, src) => (src.includes('"op":"desc"') ? JSON.stringify({ ok: true, r: { v: { text: "확인" } } }) : JSON.stringify({ ok: true, r: {} }));
+        const ss = createReplSession(dd, { gate });
+        await ss.run('await openTab("http://a/")'); // 진짜 시계로 연다
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        return { dd, ss };
+      }
+      test("사람이 200초 뒤에 허락해도 120초 시간 제한에 걸리지 않고 동작이 돈다", async () => {
+        const { dd, ss } = await open(slowGate(200_000));
+        const p = ss.run('await page.locator("e1").click(); console.log("눌렀어요")');
+        await vi.advanceTimersByTimeAsync(200_100);
+        const r = await p;
+        expect(r.error).toBeUndefined();
+        expect(r.output).toBe("눌렀어요");
+        expect(dd.calls.runJs.some((c) => c.source.includes('"op":"click"'))).toBe(true);
+        vi.useRealTimers();
+        await ss.dispose();
+      });
+      test("관문 밖 코드 실행이 120초를 넘으면 여전히 시간 초과(기다림 전 · 후 모두 센다)", async () => {
+        const { ss } = await open(slowGate(200_000));
+        const only = ss.run("await sleep(130000)");
+        await vi.advanceTimersByTimeAsync(121_000);
+        expect((await only).error).toMatch(/시간 초과: 120초/);
+        const mixed = ss.run('await sleep(100000); await page.locator("e1").click(); await sleep(30000)'); // 코드 시간 130초 + 관문 200초
+        await vi.advanceTimersByTimeAsync(100_000 + 200_000 + 21_000);
+        const r = await mixed;
+        expect(r.error).toMatch(/시간 초과: 120초/);
+        vi.useRealTimers();
+        await ss.dispose();
+      });
     });
     test("관문이 없으면 POST 도 묻지 않고 예전처럼 돈다", async () => {
       const dd = createFakeDriver();

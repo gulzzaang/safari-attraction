@@ -32,10 +32,17 @@ describe('isReadOnlyExpression(evaluate 식이 읽기만 하나)', () => {
     expect(ro('document.title')).toBe(true);
     expect(ro("[...document.querySelectorAll('a')].map(a => a.href)")).toBe(true);
     expect(ro('() => document.body.innerText.length')).toBe(true);
-    expect(ro('(function(){var d=document.doctype;return (d?new XMLSerializer().serializeToString(d):"")+document.documentElement.outerHTML})()')).toBe(true);
-    expect(ro('(() => { const out = []; let n = 0; n = n + 1; for (const x of document.links) out.push(x.href); return out; })()')).toBe(true); // 식 안의 지역 변수 대입 · 지역 배열에 push
+    expect(ro('(function(){var d=document.doctype;return (d?d.name:"")+document.documentElement.outerHTML})()')).toBe(true);
+    expect(ro('(() => { const out = []; let n = 0; n = n + 1; let acc = out; for (const x of document.links) acc = acc.concat([x.href]); return acc; })()')).toBe(true); // 식 안의 지역 변수 대입
     expect(ro('document.querySelector("details").open')).toBe(true);
+    expect(ro('(() => { const out = []; out.push(1); return out; })()')).toBe(false); // push 는 허락 목록 밖(알 수 없음)
     expect(ro('location.href')).toBe(true);
+    expect(ro("document.title.replace(/a/g,'b')")).toBe(true);
+    expect(ro('(()=>{let n=0; for(let i=0;i<3;i++) n+=i; return n})()')).toBe(true); // 지역 변수의 ++
+    expect(ro('getComputedStyle(document.body).color')).toBe(true);
+    expect(ro("JSON.stringify(Object.fromEntries(new URLSearchParams(location.search)))")).toBe(true);
+    expect(ro("(() => { const up = (s) => s.toUpperCase(); return Array.from(document.links, (a) => up(a.text)).join(',') + Math.max(1, 2) + new Date().getTime; })()")).toBe(true); // 지역 함수 · 정적 함수
+    expect(ro("[...document.querySelectorAll('li')].map((li) => li.textContent).filter(Boolean).sort().slice(0, 3)")).toBe(true);
   });
   test('바꾸는 식은 false(대입 · ++ · delete · 바꾸는 메서드 · 네트워크 · eval)', () => {
     for (const s of [
@@ -85,6 +92,29 @@ describe('isReadOnlyExpression(evaluate 식이 읽기만 하나)', () => {
       "el['click']()",
       "el?.click()",
       "document.querySelector('b')[name]()",
+      // 허락 목록 밖의 호출은 모두 알 수 없음 — 페이지가 정의한 함수 · call/apply/bind · 타이머 · location · history · assign
+      'window.placeOrder()',
+      'Cart.checkout()',
+      'placeOrder()',
+      'location.reload()',
+      "location.replace('/x')",
+      "window.location.replace('/x')",
+      "document.location.assign('/x')",
+      'history.back()',
+      'history.go(-1)',
+      'el.click.call(el)',
+      'el.click.apply(el, [])',
+      'el.click.bind(el)()',
+      "setTimeout('x()', 0)",
+      'setInterval(() => 1, 10)',
+      'Object.assign(window, { a: 1 })',
+      'window.close()',
+      'new Image()',
+      'new Notification("x")',
+      '(() => { const f = () => 1; f = window.placeOrder; return f(); })()', // 지역 함수 이름에 다시 대입하면 더는 안 믿는다
+      '((cb) => cb())(window.placeOrder)', // 매개변수로 받은 함수 호출
+      'document.body.insertAdjacentHTML("beforeend", "x")',
+      'document.createElement("a")', // 모르는 메서드는 알 수 없음(안전 쪽)
     ]) {
       expect(ro(s), s).toBe(false);
     }
@@ -92,7 +122,7 @@ describe('isReadOnlyExpression(evaluate 식이 읽기만 하나)', () => {
   test('함수 식 · 약속 안의 바꾸는 호출도 잡는다', () => {
     expect(ro('async () => { await fetch("/x"); }')).toBe(false);
     expect(ro('() => { document.querySelector("b").click(); return 1; }')).toBe(false);
-    expect(ro('() => Promise.resolve(1).then(() => document.title)')).toBe(true);
+    expect(ro('() => Promise.resolve(1).then(() => document.title)')).toBe(false); // Promise · then 은 허락 목록 밖 — 알 수 없음
   });
   test('문법이 이상하거나 식을 빠져나가려는 글은 false', () => {
     expect(ro('document.title +')).toBe(false);

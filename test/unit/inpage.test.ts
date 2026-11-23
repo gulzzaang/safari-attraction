@@ -51,3 +51,28 @@ test('desc(동작 관문이 읽는 요소 설명): 문법이 맞고, 가짜 DOM 
   const none = run(body); // 초점이 없으면 body — 글 · 폼 없음
   expect(none.r!.v).toMatchObject({ text: '', isPassword: false, formSubmitText: '' });
 });
+
+test('desc: autocomplete 가 비밀번호 · 일회용 코드 · 카드 정보인 칸도 비밀 칸으로 보고 값을 읽지 않는다', async () => {
+  const vm = await import('node:vm');
+  const { buildActionSource } = await import('../../src/repl/inpage-actions.js');
+  const src = buildActionSource('desc', { tok: 't' });
+  const doc: Record<string, unknown> = { getElementById: () => null };
+  doc.body = { tagName: 'BODY', ownerDocument: doc };
+  doc.documentElement = { tagName: 'HTML', ownerDocument: doc };
+  const field = (autocomplete: string | null, type = 'text') => ({
+    tagName: 'INPUT', type, value: '4111-1111', id: '', form: null, closest: () => null, ownerDocument: doc, labels: [],
+    getAttribute: (n: string) => (n === 'autocomplete' ? autocomplete : n === 'aria-label' ? '칸' : null),
+  });
+  const run = (el: unknown) => {
+    doc.activeElement = el;
+    const win = { addEventListener() {}, removeEventListener() {}, setTimeout, document: doc, navigation: undefined };
+    const ctx = vm.createContext({ window: win, document: doc, location: { href: 'http://x/' }, MutationObserver: class {}, URL, Array, String, Object, JSON, Error, Math });
+    return JSON.parse(vm.runInContext(src, ctx)) as { ok: boolean; r: { v: { isPassword: boolean; value: string } } };
+  };
+  for (const ac of ['current-password', 'new-password', 'one-time-code', 'cc-number', 'cc-csc', 'cc-exp', 'section-pay billing cc-number', 'CC-CSC']) {
+    const r = run(field(ac));
+    expect(r.r.v, ac).toMatchObject({ isPassword: true, value: '' });
+    expect(JSON.stringify(r)).not.toContain('4111');
+  }
+  for (const ac of [null, 'off', 'email', 'name', 'cc-name']) expect(run(field(ac)).r.v, String(ac)).toMatchObject({ isPassword: false, value: '4111-1111' });
+});

@@ -127,6 +127,7 @@ export interface ElementDesc {
   aria?: string;
   value?: string;
   inputType?: string;
+  /** 비밀 칸(type=password 이거나 autocomplete 가 비밀번호 · 일회용 코드 · 카드 정보) — 값은 읽지도 보내지도 않는다. */
   isPassword?: boolean;
   formSubmitText?: string;
   /** 글 · 이름표가 다 비었을 때 보여 줄 거친 설명(태그 · name · id · placeholder). */

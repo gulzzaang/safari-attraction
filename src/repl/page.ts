@@ -117,6 +117,8 @@ export interface AiWindowAccess {
   note(line: string): void;
   /** 이 코드가 도는 repl 호출이 끝났거나 시간 초과로 닫혔나. 그러면 기다림 · 재시도는 더 이상 페이지에 아무것도 하지 않고 멈춘다. */
   aborted?(): boolean;
+  /** 사람이 답하는 관문 기다림이 시작될 때 부른다. 이 호출의 시간 제한 시계를 멈추고, 기다림이 끝나면 부를 함수를 돌려준다. */
+  gateWait?(): () => void;
 }
 
 /**
@@ -501,7 +503,14 @@ export class Page {
     if (!gate) return;
     this.checkAbort();
     const url = urlOverride ?? this.currentUrl();
-    assertAllowed(await gate.check({ host: hostOf(url), url, action, target: clipTarget(target), value, irreversible }));
+    const resume = this.ai?.gateWait?.();
+    let answer;
+    try {
+      answer = await gate.check({ host: hostOf(url), url, action, target: clipTarget(target), value, irreversible });
+    } finally {
+      resume?.();
+    }
+    assertAllowed(answer);
     this.checkAbort();
   }
 
