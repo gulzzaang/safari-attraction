@@ -4,6 +4,10 @@ import Foundation
 public enum ModelKind: String, CaseIterable, Sendable, Equatable {
     case claude, gemini, chatgpt
 
+    /// 앱이 실제로 부르는 모델. 박정욱 11-23 「클로드만 기준으로잡고 다른 cli는 사용하지말고」 —
+    /// agy · codex 는 부르지 않는다. 제미나이 · ChatGPT 코드는 다시 켤 때를 위해 남겨 둔다(여기에 더하면 켜짐).
+    public static let enabled: [ModelKind] = [.claude]
+
     public var koreanName: String {
         switch self {
         case .claude: return "클로드"

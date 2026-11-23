@@ -61,6 +61,7 @@ public final class ChatViewModel {
     @ObservationIgnored private let workDirectory: @Sendable () throws -> URL
     @ObservationIgnored private let timeout: TimeInterval
     @ObservationIgnored private let now: @Sendable () -> Date
+    @ObservationIgnored private let enabledModels: [ModelKind]
 
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var nextID = 0
@@ -72,10 +73,15 @@ public final class ChatViewModel {
                 loginPath: @escaping @Sendable () -> String,
                 workDirectory: @escaping @Sendable () throws -> URL = { try AppPaths.workDirectory() },
                 timeout: TimeInterval = ProcessRunner.defaultTimeout,
-                now: @escaping @Sendable () -> Date = { Date() }) {
+                now: @escaping @Sendable () -> Date = { Date() },
+                enabledModels: [ModelKind] = ModelKind.enabled) {
         self.runner = runner; self.bridge = bridge; self.loginPath = loginPath
         self.workDirectory = workDirectory; self.timeout = timeout; self.now = now
+        self.enabledModels = enabledModels.isEmpty ? [.claude] : enabledModels
     }
+
+    /// 화면이 보여 줄 모델 목록(하나면 고르기 칸을 숨긴다).
+    public var availableModels: [ModelKind] { enabledModels }
 
     // MARK: 화면이 부르는 것
 
@@ -84,6 +90,8 @@ public final class ChatViewModel {
     public func send() -> Task<Void, Never>? {
         let question = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !isRunning else { return nil }
+        // 꺼 둔 모델(개발용 주소 등으로 들어온 것)은 절대 부르지 않는다 — 첫 번째 켜진 모델로 바꾼다.
+        if !enabledModels.contains(model) { model = enabledModels[0] }
         input = ""
         hint = nil
         activity = nil

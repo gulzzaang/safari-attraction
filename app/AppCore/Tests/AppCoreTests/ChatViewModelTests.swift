@@ -89,7 +89,7 @@ final class ChatViewModelTests: XCTestCase {
         vm = ChatViewModel(runner: runner, bridge: bridge,
                            loginPath: { flag.record(); return "/test/bin" },
                            workDirectory: { URL(fileURLWithPath: "/tmp/work-test") },
-                           now: { c.date })
+                           now: { c.date }, enabledModels: ModelKind.allCases)
     }
 
     func ask(_ q: String) async {
@@ -131,6 +131,24 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertFalse(vm.messages[1].isStreaming)
         XCTAssertNil(vm.messages[1].error)
         XCTAssertFalse(vm.isRunning)
+    }
+
+    func testAppCallsOnlyClaudeByDefault() async {
+        // 박정욱 11-23 「클로드만 기준으로잡고 다른 cli는 사용하지말고」
+        XCTAssertEqual(ModelKind.enabled, [.claude])
+        let c = clock!
+        let only = ChatViewModel(runner: runner, bridge: bridge, loginPath: { "/test/bin" },
+                                 workDirectory: { URL(fileURLWithPath: "/tmp/work-test") }, now: { c.date })
+        XCTAssertEqual(only.availableModels, [.claude])
+        runner.setScript { _, emit in emit(claudeResultLine(text: "ok")); return .finished(code: 0) }
+        for m in [ModelKind.gemini, .chatgpt] {
+            only.model = m; only.webSearch = true
+            only.input = "q"
+            await only.send()?.value
+        }
+        XCTAssertEqual(runner.calls.map(\.executable), ["claude", "claude"], "agy · codex 는 부르지 않는다")
+        XCTAssertEqual(only.model, .claude)
+        XCTAssertNil(only.messages.last?.notice, "꺼 둔 ChatGPT 안내가 나오면 안 된다")
     }
 
     func testPlainModelsConcatenateChunksAsIs() async {

@@ -62,12 +62,14 @@ struct ChatView: View {
                     .buttonStyle(.borderless)
                     .help("닫기 (\(HotKey.toggleLabel))")
             }
-            Picker("모델", selection: $vm.model) {
-                ForEach(ModelKind.allCases, id: \.self) { Text($0.pickerLabel).tag($0) }
+            if vm.availableModels.count > 1 {
+                Picker("모델", selection: $vm.model) {
+                    ForEach(vm.availableModels, id: \.self) { Text($0.pickerLabel).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .disabled(vm.isRunning)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .disabled(vm.isRunning)
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
     }
@@ -81,7 +83,7 @@ struct ChatView: View {
                     if vm.messages.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("무엇이든 물어보세요").font(.subheadline.weight(.semibold))
-                            Text("모델을 고르고 질문을 입력하면 답이 흘러나와요. 「이 페이지 함께」를 켜면 지금 보는 사파리 탭의 제목 · 주소 · 고른 글을 같이 보내요.")
+                            Text("질문을 입력하면 클로드의 답이 흘러나와요. 「이 페이지 함께」를 켜면 지금 보는 사파리 탭의 제목 · 주소 · 고른 글을 같이 보내요.")
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                         .padding(.top, 8)
