@@ -136,7 +136,8 @@ export class ActivityLog {
     }
     if (project) {
       try {
-        await this.home.append(`프로젝트/${project}/기록-${mac}.md`, line);
+        // 프로젝트 기록은 맥마다 한 파일에 계속 쌓이니 줄마다 날짜를 단다(`- 날짜 시각 …`). project 도구의 「최근 기록」 · 「마지막 기록」 이 읽는다.
+        await this.home.append(`프로젝트/${project}/기록-${mac}.md`, `- ${localDate(when)} ${line.slice(2)}`);
       } catch (e) {
         failure ??= e;
       }

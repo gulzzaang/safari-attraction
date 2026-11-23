@@ -27,6 +27,12 @@ export interface ReplResult {
 export interface ReplSession {
   run(code: string, opts?: { timeoutMs?: number }): Promise<ReplResult>;
   /**
+   * 주소들을 차례로 뒤쪽 탭으로 연다(project 도구의 open_sites). 안에서 repl 의 openTab 과 같은 함수를 부르므로 작업 창 · owned 등록 · 끝날 때 닫힘이 그대로다.
+   * 출력은 「열었어요: 주소」 · 「못 열었어요: 주소 — 이유」 줄, touched 는 repl 호출처럼 채운다. 한 주소가 실패해도 나머지는 연다(모두 실패하면 error).
+   * 한 번에 OPEN_TABS_MAX(10)개까지, 넘는 것은 열지 않고 알린다. repl 호출과 같은 차례 줄을 쓴다.
+   */
+  openTabs(urls: string[]): Promise<ReplResult>;
+  /**
    * 기다리지 않은 거부(Promise.reject · 늦게 던진 오류)나 타이머 · 콜백에서 난 오류가 프로세스 바깥까지 올라왔을 때 부른다.
    * 그 일이 REPL 호출 코드에서 비롯됐으면(AsyncLocalStorage 칸이 따라옴) 살아 있는 호출의 출력에 한국어 한 줄을 남기고 true 를 돌려준다.
    * 서버 자신의 문제거나 어느 호출 것인지 모르면 false.
@@ -38,6 +44,9 @@ export interface ReplSession {
 
 /** 한 호출의 기본 제한 시간. */
 export const DEFAULT_TIMEOUT_MS = 120_000;
+
+/** openTabs 한 번에 열 수 있는 최대 개수. */
+export const OPEN_TABS_MAX = 10;
 
 /** snapshot() 의 결과. console.log 로 찍으면 바뀐 곳(diff) 글이 나온다(처음이면 전체, 같으면 「변화 없음」, 내린 뒤면 새로 보이는 곳만). */
 export interface SnapshotResult {
@@ -444,6 +453,14 @@ export function createReplSession(driver: SafariDriver): ReplSession {
   };
 
   async function exec(code: string, timeoutMs: number): Promise<ReplResult> {
+    return execWith((slot) => {
+      const script = new vm.Script(hoistTopLevel(code), { filename: "repl.js" });
+      return slots.run(slot, () => script.runInContext(ctx, { timeout: timeoutMs }) as Promise<unknown>);
+    }, timeoutMs);
+  }
+
+  /** 호출 하나의 틀: 출력 칸 · 닿은 곳 모으기 · 시간 초과 · 결과 만들기. start 는 칸을 받아 일을 시작하고 그 일의 Promise 를 돌려준다. */
+  async function execWith(start: (slot: Slot) => Promise<unknown>, timeoutMs: number): Promise<ReplResult> {
     const slot: Slot = { buf: new OutputBuffer(), closed: false, touched: [], touchedUrls: new Set() };
     for (const w of watched.values()) w.last = w.page.url(); // 이미 열려 있던 탭의 시작 주소(이번 호출에서 닿은 것이 아니다)
     const buf = slot.buf;
@@ -451,8 +468,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     let error: string | undefined;
     let errorCode: SafariErrorCode | undefined;
     try {
-      const script = new vm.Script(hoistTopLevel(code), { filename: "repl.js" });
-      const done = slots.run(slot, () => script.runInContext(ctx, { timeout: timeoutMs }) as Promise<unknown>);
+      const done = start(slot);
       done.catch(() => {}); // 시간 초과 뒤에 늦게 거부돼도 처리 안 된 거부로 남지 않게
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`시간 초과: ${Math.round(timeoutMs / 1000)}초 안에 끝나지 않음(코드는 계속 돌 수 있음)`)), timeoutMs);
@@ -477,6 +493,27 @@ export function createReplSession(driver: SafariDriver): ReplSession {
   return {
     run(code, opts = {}) {
       const next = queue.then(() => exec(code, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+      queue = next.catch(() => {});
+      return next;
+    },
+    openTabs(urls) {
+      const list = urls.slice(0, OPEN_TABS_MAX);
+      const run = async (): Promise<void> => {
+        const openTab = sandbox.openTab as (url: string) => Promise<Page>;
+        let opened = 0;
+        for (const url of list) {
+          try {
+            await openTab(url);
+            opened++;
+            log(`열었어요: ${url}`);
+          } catch (e) {
+            log(`못 열었어요: ${url} — ${errorText(e)}`);
+          }
+        }
+        if (urls.length > list.length) log(`한 번에 ${OPEN_TABS_MAX}개까지만 열어요 — 앞 ${OPEN_TABS_MAX}개만 열고 ${urls.length - list.length}개는 열지 않았어요.`);
+        if (opened === 0) throw new Error("열린 탭이 없어요");
+      };
+      const next = queue.then(() => execWith((slot) => slots.run(slot, run), DEFAULT_TIMEOUT_MS));
       queue = next.catch(() => {});
       return next;
     },

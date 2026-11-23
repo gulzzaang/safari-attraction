@@ -31,10 +31,23 @@ afterEach(async () => {
 const textOf = (r: unknown): string => ((r as { content: Array<{ text: string }> }).content[0]?.text) ?? "";
 
 describe("MCP 서버", () => {
-  test("도구 목록은 repl · status · memory", async () => {
+  test("도구 목록은 repl · status · memory · project", async () => {
     const c = await connect(createFakeDriver());
     const { tools } = await c.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(["memory", "repl", "status"]);
+    expect(tools.map((t) => t.name).sort()).toEqual(["memory", "project", "repl", "status"]);
+  });
+
+  test("project 설명은 700자 이하이고 언제 쓰는지 · 영어 한 줄 · 모든 action 을 알려 준다, memory 와 합쳐 1,500자 이하", async () => {
+    const c = await connect(createFakeDriver());
+    const tools = (await c.listTools()).tools;
+    const proj = tools.find((t) => t.name === "project")!;
+    const mem = tools.find((t) => t.name === "memory")!;
+    const d = proj.description ?? "";
+    expect([...d].length).toBeLessThanOrEqual(700);
+    for (const w of ["이사 준비", "list", "create", "open", "update", "save_doc", "open_sites", "archive"]) expect(d).toContain(w);
+    expect(d.split("\n").filter((l) => /^[A-Z][^가-힣]*$/.test(l))).toHaveLength(1); // 영어 한 줄
+    expect(proj.title).toMatch(/프로젝트/);
+    expect([...d].length + [...(mem.description ?? "")].length).toBeLessThanOrEqual(1500);
   });
 
   test("memory 설명은 800자 이하이고 언제 쓰는지 · 영어 한 줄 · 모든 action 을 알려 준다", async () => {
@@ -388,5 +401,91 @@ describe("memory 도구(MCP 로 부르기)", () => {
     expect(textOf(r)).toMatch(/^기억 폴더에 쓸 수 없어요: .*막힘\/아래 — /);
     const ok = await c.callTool({ name: "repl", arguments: { title: "더하기", code: "console.log(1+2)" } });
     expect(textOf(ok).split("\n")[0]).toBe("3");
+  });
+});
+
+describe("project 도구(MCP 로 부르기)", () => {
+  const NOW = new Date(2026, 10, 23, 14, 5, 0);
+  let tmp: Awaited<ReturnType<typeof makeTempHome>>;
+  let home: MemoryHome;
+  let clock: Date;
+  beforeEach(async () => {
+    tmp = await makeTempHome();
+    home = new MemoryHome(tmp.dir);
+    clock = new Date(NOW);
+  });
+  afterEach(async () => {
+    await client?.close();
+    await srv?.shutdown();
+    client = undefined;
+    srv = undefined;
+    await tmp.remove();
+  });
+  const proj = (c: Client, args: Record<string, unknown>) => c.callTool({ name: "project", arguments: args });
+
+  test("만들기 → 열기 → 고치기, 오류는 isError", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    expect(textOf(await proj(c, { action: "create", name: "이사 준비", text: "6월 이사" }))).toContain("이사 준비");
+    const o = await proj(c, { action: "open", name: "이사 준비" });
+    expect(textOf(o).split("\n")[0]).toBe("열린 프로젝트: 이사 준비");
+    expect(srv!.activity.state.openProject).toBe("이사 준비");
+    await proj(c, { action: "update", section: "조건", text: "예산 3억" });
+    expect(textOf(await proj(c, { action: "open", name: "이사 준비" }))).toContain("예산 3억");
+    const bad = await proj(c, { action: "open", name: "없는일" });
+    expect(bad.isError).toBe(true);
+  });
+
+  test("action · section · mode 가 목록에 없으면 MCP 가 거절한다", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    for (const args of [{ action: "해줘" }, { action: "update", section: "상태", text: "x" }, { action: "update", section: "메모", text: "x", mode: "합치기" }]) {
+      const r = await proj(c, args).catch((e: unknown) => e);
+      expect(r instanceof Error || (r as { isError?: boolean }).isError === true).toBe(true);
+    }
+  });
+
+  test("open_sites: 사이트를 뒤쪽 탭으로 열고, 하루 기록 · 프로젝트 기록에 「프로젝트 사이트 열기」 한 줄, 서버가 끝나면 닫는다", async () => {
+    const d = createFakeDriver();
+    const c = await connect(d, { home, now: () => clock });
+    await proj(c, { action: "create", name: "이사 준비" });
+    await proj(c, { action: "open", name: "이사 준비" });
+    await proj(c, { action: "update", section: "사이트", text: "https://a.example/1\nhttps://b.example/2" });
+    const r = await proj(c, { action: "open_sites" });
+    expect(r.isError).toBeFalsy();
+    expect(d.calls.openTab.map((x) => x.url)).toEqual(["https://a.example/1", "https://b.example/2"]);
+    expect(textOf(r)).toContain("https://b.example/2");
+    const day = (await home.read(`기억/일지/2026-11-23-${machineName()}.md`))!.trim().split("\n");
+    expect(day).toHaveLength(1);
+    expect(day[0]).toBe("- 14:05 「프로젝트 사이트 열기」 — https://a.example/1, https://b.example/2 · 성공 · 프로젝트: 이사 준비");
+    expect(await home.read(`프로젝트/이사 준비/기록-${machineName()}.md`)).toBe("- 2026-11-23 " + day[0]!.slice(2) + "\n");
+    await srv!.shutdown();
+    expect((await d.listTabs()).filter((t) => t.owned)).toHaveLength(0);
+  });
+
+  test("open_sites: 사이트 메모를 결과에 붙이고 열린 프로젝트 첫 줄 · 8KB 안", async () => {
+    await mkdir(tmp.dir + "/기억/사이트", { recursive: true });
+    await writeFile(tmp.dir + "/기억/사이트/a.example.md", "A 메모", "utf8");
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    await proj(c, { action: "create", name: "p" });
+    await proj(c, { action: "open", name: "p" });
+    await proj(c, { action: "update", section: "사이트", text: "https://a.example/1" });
+    const r = textOf(await proj(c, { action: "open_sites" }));
+    expect(r).toContain("… 이 사이트 메모(a.example): A 메모");
+    expect(r.split("\n")[0]).toBe("열린 프로젝트: p");
+    expect(Buffer.byteLength(r, "utf8")).toBeLessThanOrEqual(8192);
+  });
+
+  test("memory 의 remember(프로젝트)와 project 가 같은 프로젝트.md 에 서로 안 덮어쓴다(같은 줄 서기)", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    await proj(c, { action: "create", name: "p" });
+    await proj(c, { action: "open", name: "p" });
+    await Promise.all([
+      ...Array.from({ length: 5 }, (_, i) => c.callTool({ name: "memory", arguments: { action: "remember", about: "프로젝트", text: `기억${i}` } })),
+      ...Array.from({ length: 5 }, (_, i) => proj(c, { action: "update", section: "메모", text: `- 고침${i}`, mode: "append" })),
+    ]);
+    const md = (await home.read("프로젝트/p/프로젝트.md"))!;
+    for (let i = 0; i < 5; i++) {
+      expect(md).toContain(`기억${i}`);
+      expect(md).toContain(`고침${i}`);
+    }
   });
 });

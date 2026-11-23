@@ -736,3 +736,67 @@ describe("touched — 호출마다 닿은 사이트", () => {
     expect(r.touched).toEqual([{ kind: "attach", url: "http://a/", userTab: false }]);
   });
 });
+
+describe("openTabs — project 도구의 사이트 한꺼번에 열기", () => {
+  test("주소를 차례로 뒤쪽 탭으로 열고, 출력에 연 주소, touched 도 repl 호출처럼 채운다", async () => {
+    const r = await s.openTabs(["http://a/", "http://b/"]);
+    expect(r.error).toBeUndefined();
+    expect(d.calls.openTab.map((c) => c.url)).toEqual(["http://a/", "http://b/"]);
+    expect(r.output).toBe("열었어요: http://a/\n열었어요: http://b/");
+    expect(r.touched).toEqual([
+      { kind: "open", url: "http://a/", userTab: false },
+      { kind: "open", url: "http://b/", userTab: false },
+    ]);
+  });
+
+  test("openTab 과 같은 길: 작업 창(useWindow)에 열리고, 우리 탭으로 등록돼 dispose 때 닫힌다", async () => {
+    await s.run("useWindow(1)");
+    await s.openTabs(["http://a/"]);
+    expect(d.calls.openTab).toEqual([{ url: "http://a/", windowId: 1 }]);
+    expect((await d.listTabs()).filter((t) => t.owned)).toHaveLength(1);
+    await s.dispose();
+    expect((await d.listTabs()).filter((t) => t.owned)).toHaveLength(0);
+  });
+
+  test("한 주소가 실패해도 나머지는 연다, 실패는 출력에 알린다", async () => {
+    const real = d.openTab.bind(d);
+    d.openTab = async (url, opts) => {
+      if (url === "http://bad/") throw new SafariError("SAFARI_ERROR", "열 수 없음");
+      return real(url, opts);
+    };
+    const r = await s.openTabs(["http://a/", "http://bad/", "http://c/"]);
+    expect(r.error).toBeUndefined();
+    expect(r.output.split("\n")[0]).toBe("열었어요: http://a/");
+    expect(r.output).toMatch(/못 열었어요: http:\/\/bad\/ — .*열 수 없음/);
+    expect(r.output).toContain("열었어요: http://c/");
+    expect((r.touched ?? []).map((t) => t.url)).toEqual(["http://a/", "http://c/"]);
+  });
+
+  test("모두 실패하면 error 가 있다", async () => {
+    d.openTab = async () => {
+      throw new SafariError("SAFARI_ERROR", "열 수 없음");
+    };
+    const r = await s.openTabs(["http://a/", "http://b/"]);
+    expect(r.error).toBeTruthy();
+    expect(r.touched).toBeUndefined();
+  });
+
+  test("11개 이상이 오면 앞 10개만 연다(방어)", async () => {
+    const r = await s.openTabs(Array.from({ length: 12 }, (_, i) => `http://a/${i}`));
+    expect(d.calls.openTab).toHaveLength(10);
+    expect(r.output).toMatch(/10개/);
+  });
+
+  test("끝난 뒤(dispose)에는 열지 않고 실패로 알린다", async () => {
+    await s.dispose();
+    const r = await s.openTabs(["http://a/"]);
+    expect(d.calls.openTab).toHaveLength(0);
+    expect(r.error).toBeTruthy();
+  });
+
+  test("repl 호출과 차례로 돈다(겹치지 않는다) · 뒤이은 run 의 touched 에 섞이지 않는다", async () => {
+    const [a, b] = await Promise.all([s.openTabs(["http://a/"]), s.run('await openTab("http://b/")')]);
+    expect((a.touched ?? []).map((t) => t.url)).toEqual(["http://a/"]);
+    expect((b.touched ?? []).map((t) => t.url)).toEqual(["http://b/"]);
+  });
+});

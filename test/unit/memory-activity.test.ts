@@ -103,8 +103,9 @@ describe("ActivityLog.record — 하루 기록 한 줄", () => {
     log.state.openProject = "쿠팡 가격";
     await log.record({ title: "t", touched: [open("https://a.example/")], ok: true });
     const line = "- 14:05 「t」 — https://a.example/ · 성공 · 프로젝트: 쿠팡 가격\n";
-    expect(await home.read(dayFile("2026-11-23"))).toBe(line);
-    expect(await home.read(`프로젝트/쿠팡 가격/기록-${machineName()}.md`)).toBe(line);
+    expect(await home.read(dayFile("2026-11-23"))).toBe(line); // 하루 기록은 날짜가 파일 이름에 있다
+    // 프로젝트 기록은 맥마다 한 파일에 계속 쌓이니 줄마다 날짜를 단다(open 의 「최근 기록」 · list 의 「마지막 기록」 이 읽는다)
+    expect(await home.read(`프로젝트/쿠팡 가격/기록-${machineName()}.md`)).toBe("- 2026-11-23 " + line.slice(2));
   });
 
   test("paused 면 안 쓴다", async () => {

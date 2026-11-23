@@ -87,4 +87,46 @@ describeIt('활동 기록 · 사이트 메모 붙이기(진짜 사파리, 임시
     expect(lines[2]).toMatch(new RegExp(`「폼 열고 링크 누르기」 — http://${base.replace(/[.]/g, '\\.')}/form\\.html, http://${base.replace(/[.]/g, '\\.')}/result\\.html · 성공$`));
     expect(lines.join('\n')).not.toMatch(/[?#]|it=memory/);
   }, 60_000);
+  test('project open_sites: 사이트 2개가 자기 탭 2개로 열리고, 하루 기록에 한 줄, 서버가 끝나면 닫힌다', async () => {
+    const tag = `${RUN}-sites`;
+    const tmp2 = await makeTempHome();
+    const home2 = new MemoryHome(tmp2.dir);
+    const d2 = createJxaDriver(); // 따로 둔 드라이버: 이 시험이 연 탭만 닫는다(위 시험의 탭과 섞이지 않는다)
+    const srv2 = createSafariServer(d2, { home: home2 });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await srv2.server.connect(a);
+    const client2 = new Client({ name: 'it', version: '0' });
+    await client2.connect(b);
+    const mine = async () => (await d2.listTabs()).filter((t) => t.url.includes(tag));
+    const proj = (args: Record<string, unknown>) => client2.callTool({ name: 'project', arguments: args });
+    try {
+      const urls = [`${fixture('search.html')}?${tag}`, `${fixture('form.html')}?${tag}`];
+      expect(textOf(await proj({ action: 'create', name: '이사 준비', text: '시험' }))).toContain('이사 준비');
+      await proj({ action: 'open', name: '이사 준비' });
+      await proj({ action: 'update', section: '사이트', text: urls.join('\n') });
+      expect(await mine()).toHaveLength(0);
+
+      const r = await proj({ action: 'open_sites' });
+      expect(r.isError).toBeFalsy();
+      expect(textOf(r)).toContain('2개');
+      expect(await mine()).toHaveLength(2); // 우리가 연 탭만 센다(사용자 탭은 건드리지 않는다)
+      expect((await mine()).every((t) => t.owned)).toBe(true);
+
+      const day = (await home2.read(`기억/일지/${localDate(new Date())}-${machineName()}.md`))!.trim().split('\n');
+      expect(day).toHaveLength(1);
+      expect(day[0]).toMatch(/「프로젝트 사이트 열기」 — http:\/\/127\.0\.0\.1:\d+\/search\.html, http:\/\/127\.0\.0\.1:\d+\/form\.html · 성공 · 프로젝트: 이사 준비$/);
+      const rec = (await home2.read(`프로젝트/이사 준비/기록-${machineName()}.md`))!.trim().split('\n');
+      expect(rec).toHaveLength(1);
+      expect(rec[0]).toMatch(/^- \d{4}-\d\d-\d\d \d\d:\d\d 「프로젝트 사이트 열기」/);
+
+      await srv2.shutdown(); // 서버가 끝나면 우리가 연 탭이 닫힌다
+      expect(await mine()).toHaveLength(0);
+    } finally {
+      await client2.close();
+      await srv2.shutdown().catch(() => {});
+      for (const t of (await d2.listTabs().catch(() => [])).filter((x) => x.url.includes(tag)).reverse()) await d2.closeTab(t.key).catch(() => {});
+      await d2.close();
+      await tmp2.remove();
+    }
+  }, 90_000);
 });

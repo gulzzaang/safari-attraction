@@ -7,6 +7,7 @@ import { ActivityLog, type Touch } from "./memory/activity.js";
 import { MemoryHome, resolveHome } from "./memory/home.js";
 import { MemoryIndex } from "./memory/search.js";
 import { runMemoryTool } from "./memory/tool-memory.js";
+import { runProjectTool } from "./memory/tool-project.js";
 import { createReplSession } from "./repl/context.js";
 import { SNAPSHOT_LIMIT_BYTES } from "./snapshot/diff.js";
 import { VERSION } from "./version.js";
@@ -69,6 +70,19 @@ action:
 - forget: text 가 든 줄을 나.md · 사이트 메모에서 지운다(여러 줄이면 목록만 보여 줌).
 - tidy: 지난 날 일지를 받아 온다 → 짧게 요약해 tidy_save(text)로 보내면 보관한다.
 - pause: on=true 면 이번 대화 동안 하루 기록을 멈춘다.`;
+
+export const PROJECT_DESCRIPTION = `오래 걸리는 일(예: 「이사 준비」 「쿠팡 가격 비교」)을 프로젝트로 묶어 이어 간다 — 요약 · 조건 · 사이트 · 메모 · 문서와 맥마다 쌓이는 기록(폴더에 마크다운, 아이클라우드면 다른 맥과 공유). 「프로젝트 만들어」「이어서 하자」「프로젝트 사이트 열어」일 때 쓴다. 사파리 조작은 repl, 짧은 기억은 memory.
+Long-running projects with summary, conditions, sites, notes, documents and a per-machine activity log.
+
+action:
+- list: 진행 중 · 보관 프로젝트(이름 · 요약 첫 줄 · 마지막 기록).
+- create: name(필수) + text(요약).
+- open: name 으로 열기(요약 · 조건 · 사이트 · 문서 · 최근 기록 5줄). name 을 비우면 닫기. 열어 두면 repl 기록이 이 프로젝트에도 쌓인다.
+- update: section(요약 · 조건 · 사이트 · 메모)을 text 로 바꾸기(mode: replace 기본 | append).
+- save_doc: doc 이름으로 문서 저장.
+- open_sites: 사이트 절의 주소를 뒤쪽 탭으로 최대 10개 열기.
+- archive: 끝난 프로젝트 보관.
+비밀번호 · 카드 · 토큰은 거절.`;
 
 /**
  * repl 한 번이 끝난 뒤의 기억 쪽 일: 하루 기록을 쓰고, 응답 끝에 붙일 글(사이트 메모 → 정리 안내 → 쓰기 실패 안내)을 모은다.
@@ -220,6 +234,37 @@ export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHo
     },
     async (input) => {
       const r = await runMemoryTool({ home, index, activity, now }, input);
+      const content = [{ type: "text" as const, text: r.text }];
+      return r.isError ? { isError: true, content } : { content };
+    },
+  );
+
+  server.registerTool(
+    "project",
+    {
+      title: "프로젝트 (오래 걸리는 일 이어 가기)",
+      description: PROJECT_DESCRIPTION,
+      inputSchema: {
+        action: z.enum(["list", "create", "open", "update", "save_doc", "open_sites", "archive"]).describe("할 일"),
+        name: z.string().optional().describe("프로젝트 이름(create · open 은 필수에 가깝고, 나머지는 비우면 열린 프로젝트). open 에서 비우면 닫기"),
+        section: z.enum(["요약", "조건", "사이트", "메모"]).optional().describe("update 로 고칠 절"),
+        text: z.string().optional().describe("create 의 요약 · update 의 내용 · save_doc 의 문서 내용"),
+        mode: z.enum(["replace", "append"]).optional().describe("update: replace(바꾸기, 기본) | append(덧붙이기)"),
+        doc: z.string().optional().describe("save_doc 의 문서 이름(문서/<이름>.md)"),
+      },
+    },
+    async (input) => {
+      const r = await runProjectTool(
+        {
+          home,
+          activity,
+          now,
+          openTabs: (urls) => session.openTabs(urls),
+          // open_sites 도 repl 처럼 하루 기록 · 사이트 메모 · 정리 안내를 같은 길(2초 상한)로 처리한다.
+          recordOpened: (entry) => boundedExtras(activity, entry, memoryTimeoutMs),
+        },
+        input,
+      );
       const content = [{ type: "text" as const, text: r.text }];
       return r.isError ? { isError: true, content } : { content };
     },
