@@ -190,3 +190,154 @@ final class ProcessRunnerTests: XCTestCase {
         if case .failed = o {} else { XCTFail("기다리기 오류가 \(o) 로 보고됨") }
     }
 }
+
+// 양방향 실행(표준 입력 파이프) — 시스템 도구(cat · sh)만 쓴다.
+final class ProcessRunnerInteractiveTests: XCTestCase {
+    let sysPath = "/bin:/usr/bin"
+    let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+
+    func startInteractive(_ r: ProcessRunner, _ exe: String, _ args: [String], timeout: TimeInterval = 20,
+                          initial: [String] = [], _ c: Collector = Collector()) -> Task<RunOutcome, Never> {
+        let dir = tmp, path = sysPath
+        return Task {
+            await r.runInteractive(executable: exe, arguments: args, workDir: dir, path: path, timeout: timeout,
+                                   initialLines: initial, onEvent: { c.handle($0) })
+        }
+    }
+    /// 작업이 실제로 시작될 때까지(자식이 떴을 때까지) 기다린다 — 이 전의 write 는 설계상 무시된다.
+    func started(_ r: ProcessRunner, after old: pid_t = 0) async {
+        await waitUntil { r.lastPID != old && r.lastPID > 0 }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+    /// 조건이 될 때까지 최대 5초 기다린다.
+    func waitUntil(_ cond: @escaping () -> Bool) async {
+        for _ in 0..<100 { if cond() { return }; try? await Task.sleep(nanoseconds: 50_000_000) }
+    }
+    func assertGone(_ pid: pid_t, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertGreaterThan(pid, 0, file: file, line: line)
+        errno = 0
+        XCTAssertEqual(kill(pid, 0), -1, "pid \(pid) 가 아직 살아 있음", file: file, line: line)
+        XCTAssertEqual(errno, ESRCH, file: file, line: line)
+    }
+
+    func testWriteReachesChildAndCloseInputEndsIt() async throws {
+        let r = ProcessRunner(); let c = Collector()
+        let t = startInteractive(r, "/bin/cat", [], c)
+        await started(r)
+        try r.write("첫째 줄")
+        try r.write("{\"a\":1}\n")
+        await waitUntil { c.stdout.contains("{\"a\":1}") }
+        XCTAssertEqual(c.stdout, "첫째 줄\n{\"a\":1}\n") // 줄바꿈이 없으면 붙이고, 있으면 겹치지 않는다
+        r.closeInput()
+        let o = await t.value
+        XCTAssertEqual(o, .finished(code: 0))
+        assertGone(r.lastPID)
+    }
+    func testChildSeesEOFOnlyAfterCloseInput() async throws {
+        let r = ProcessRunner(); let c = Collector()
+        let t = startInteractive(r, "/bin/sh", ["-c", "read a; echo got:$a; read b || echo eof"], c)
+        await started(r)
+        try r.write("hi")
+        await waitUntil { c.stdout.contains("got:hi") }
+        XCTAssertFalse(c.stdout.contains("eof"))
+        r.closeInput()
+        let o = await t.value
+        XCTAssertEqual(o, .finished(code: 0))
+        XCTAssertEqual(c.stdout, "got:hi\neof\n")
+    }
+    func testCloseInputTwiceIsHarmless() async {
+        let r = ProcessRunner()
+        let t = startInteractive(r, "/bin/cat", [])
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        r.closeInput(); r.closeInput()
+        let o = await t.value
+        XCTAssertEqual(o, .finished(code: 0))
+    }
+    func testStopKillsChildWaitingOnInputAndLaterWritesAreIgnored() async throws {
+        let r = ProcessRunner(); let t0 = Date()
+        let t = startInteractive(r, "/bin/cat", [])
+        await started(r)
+        r.stop()
+        let o = await t.value
+        XCTAssertEqual(o, .stopped)
+        XCTAssertLessThan(Date().timeIntervalSince(t0), 3)
+        assertGone(r.lastPID)
+        XCTAssertNoThrow(try r.write("끝난 뒤"))
+        r.closeInput()
+    }
+    func testTimeoutKillsChildWaitingOnInput() async throws {
+        let r = ProcessRunner()
+        let t = startInteractive(r, "/bin/cat", [], timeout: 1)
+        let o = await t.value
+        XCTAssertEqual(o, .timedOut)
+        assertGone(r.lastPID)
+        XCTAssertNoThrow(try r.write("x"))
+    }
+    func testWriteAfterNormalFinishIsIgnoredWithoutError() async throws {
+        let r = ProcessRunner()
+        let o = await r.runInteractive(executable: "echo", arguments: ["x"], workDir: tmp, path: sysPath, timeout: 5, onEvent: { _ in })
+        XCTAssertEqual(o, .finished(code: 0))
+        XCTAssertNoThrow(try r.write("late"))
+        r.closeInput()
+    }
+    func testWriteToChildThatAlreadyExitedDoesNotCrashOrThrow() async throws {
+        // 자식은 입력을 안 읽고 끝난다 — 끊긴 파이프에 써도 앱이 SIGPIPE 로 죽지 않아야 한다.
+        let r = ProcessRunner()
+        let t = startInteractive(r, "/bin/sh", ["-c", "exit 3"])
+        let o = await t.value
+        XCTAssertEqual(o, .finished(code: 3))
+        for _ in 0..<5 { XCTAssertNoThrow(try r.write("x")) }
+    }
+    func testInitialLinesAreDeliveredFirstWithoutRacing() async throws {
+        let r = ProcessRunner(); let c = Collector()
+        let t = startInteractive(r, "/bin/cat", [], initial: ["하나", "둘"], c)
+        await waitUntil { c.stdout == "하나\n둘\n" }
+        try r.write("셋")
+        await waitUntil { c.stdout.hasSuffix("셋\n") }
+        r.closeInput()
+        let o = await t.value
+        XCTAssertEqual(o, .finished(code: 0))
+        XCTAssertEqual(c.stdout, "하나\n둘\n셋\n")
+    }
+    func testWriteWithoutRunIsIgnored() {
+        let r = ProcessRunner()
+        XCTAssertNoThrow(try r.write("nothing running"))
+        r.closeInput()
+    }
+    func testLargeWritesAreDeliveredInFull() async throws {
+        let r = ProcessRunner(); let c = Collector()
+        let t = startInteractive(r, "/bin/cat", [], c)
+        await started(r)
+        let line = String(repeating: "가나다라", count: 40_000) // 약 480KB — 파이프 한 번 크기보다 큼
+        try r.write(line)
+        r.closeInput()
+        let o = await t.value
+        XCTAssertEqual(o, .finished(code: 0))
+        XCTAssertEqual(c.stdout, line + "\n")
+    }
+    func testDefaultRunStillGivesDevNullStdin() async {
+        // 기본 실행은 그대로 /dev/null — cat 이 바로 끝난다. 쓰기는 무시.
+        let r = ProcessRunner(); let c = Collector()
+        let o = await r.run(executable: "/bin/cat", arguments: [], workDir: tmp, path: sysPath, timeout: 5, onEvent: { c.handle($0) })
+        XCTAssertEqual(o, .finished(code: 0))
+        XCTAssertEqual(c.stdout, "")
+        XCTAssertNoThrow(try r.write("ignored"))
+    }
+    func testRunnerIsReusableForInteractiveAfterInteractive() async throws {
+        let r = ProcessRunner(); let c = Collector()
+        let t1 = startInteractive(r, "/bin/cat", [], c)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        r.closeInput()
+        _ = await t1.value
+        let c2 = Collector()
+        let old = r.lastPID
+        let t2 = startInteractive(r, "/bin/cat", [], c2)
+        await started(r, after: old)
+        try r.write("again")
+        await waitUntil { c2.stdout.contains("again") }
+        r.closeInput()
+        let o = await t2.value
+        XCTAssertEqual(o, .finished(code: 0))
+        XCTAssertEqual(c2.stdout, "again\n")
+    }
+}
