@@ -821,6 +821,110 @@ describe('TabRegistry', () => {
       expect(sf.readSpotLog).toHaveLength(55);
     });
 
+    // R4: 스스로 새 문서가 돼 표시를 잃은 우리 탭(늦은 리디렉트)은, 마지막으로 기록한 창 모습과 비교해 탭 수 · 이웃 주소가 같고 주소가 다른 탭들의 기록 주소가 아닐 때만 되찾는다.
+    describe('스스로 옮겨 간 우리 탭(R4)', () => {
+      /** 호스트가 하는 확인을 흉내 낸다: 표시가 맞거나, 표시 안 한 탭이면 표시가 없고 주소가 같을 때 표시를 적고 일한다. */
+      const run = (sf: FakeSafari) => async (s: Spot): Promise<Guarded<string>> => {
+        const t = sf.tabs[s.index - 1];
+        if (!t) return { stale: true };
+        if (t.marker === s.key) return { value: 'ok' };
+        if (s.unstamped && t.marker === '' && t.url === s.url) {
+          t.marker = s.key;
+          return { value: 'ok' };
+        }
+        return { stale: true };
+      };
+      /** [u1, 우리 탭, u2] 를 열고 창 모습을 기록(sync)해 둔다. */
+      async function threeTabs() {
+        const sf = new FakeSafari();
+        const reg = new TabRegistry(sf);
+        sf.tabs.push({ url: 'http://user/1', marker: '' });
+        const k = openOwned(sf, reg, 'http://a/x');
+        sf.tabs.push({ url: 'http://user/2', marker: '' });
+        await reg.sync(await sf.list());
+        return { sf, reg, k };
+      }
+      const lateRedirect = (sf: FakeSafari) => {
+        sf.tabs[1]!.marker = ''; // 새 문서가 떠 표시가 사라짐
+        sf.tabs[1]!.url = 'http://a/next';
+      };
+
+      test('(a) 늦은 리디렉트로 표시를 잃어도 탭 수 · 이웃이 그대로면 다음 일에서 되찾아 표시를 다시 적고 일한다', async () => {
+        const { sf, reg, k } = await threeTabs();
+        lateRedirect(sf);
+        expect(await reg.withTab(k, run(sf))).toBe('ok');
+        expect(sf.tabs[1]!.marker).toBe(reg.markerOf(k));
+        expect(sf.tabs[0]!.marker + sf.tabs[2]!.marker).toBe(''); // 사용자 탭에는 안 적었다
+        expect(reg.urlOf(k)).toBe('http://a/next');
+      });
+
+      test('(a) 끝낼 때(closeOwned)도 탭 수 · 이웃이 그대로면 그 탭을 닫는다', async () => {
+        const { sf, reg } = await threeTabs();
+        lateRedirect(sf);
+        expect(await reg.closeOwned()).toEqual({ closed: 1, missing: 0 });
+        expect(sf.tabs.map((t) => t.url)).toEqual(['http://user/1', 'http://user/2']);
+      });
+
+      test('(b) 사용자가 우리 탭을 닫아 u2 가 우리 순번으로 당겨지면(탭 수가 줄었다) 건드리지 않는다', async () => {
+        const { sf, reg, k } = await threeTabs();
+        sf.tabs.splice(1, 1);
+        const before = JSON.stringify(sf.tabs);
+        await expect(reg.withTab(k, run(sf))).rejects.toMatchObject({ code: 'TAB_CLOSED' });
+        expect(await reg.closeOwned()).toEqual({ closed: 0, missing: 0 });
+        expect(JSON.stringify(sf.tabs)).toBe(before);
+      });
+
+      test('(c) 우리 탭을 닫고 끝에 새 탭을 열어 탭 수가 같아도 이웃 주소가 달라 건드리지 않는다', async () => {
+        const { sf, reg, k } = await threeTabs();
+        sf.tabs.splice(1, 1);
+        sf.tabs.push({ url: 'http://user/3', marker: '' });
+        const before = JSON.stringify(sf.tabs);
+        await expect(reg.withTab(k, run(sf))).rejects.toMatchObject({ code: 'TAB_CLOSED' });
+        expect(await reg.closeOwned()).toEqual({ closed: 0, missing: 0 });
+        expect(JSON.stringify(sf.tabs)).toBe(before);
+      });
+
+      test('이웃이 같아도 자리의 탭 주소가 창의 다른 탭이 기록된 주소면 우리 탭이 아니다(사용자가 탭을 맞바꿈)', async () => {
+        const { sf, reg } = await threeTabs();
+        sf.tabs[1] = { url: 'http://user/2', marker: '' }; // 우리 탭이 닫히고 같은 주소의 다른 탭이 자리에 있다
+        const before = JSON.stringify(sf.tabs);
+        expect(await reg.closeOwned()).toEqual({ closed: 0, missing: 0 });
+        expect(JSON.stringify(sf.tabs)).toBe(before);
+      });
+
+      test('창 모습을 기록한 적이 없으면(sync · 열기 기록 없음) 되찾지 않는다', async () => {
+        const sf = new FakeSafari();
+        const reg = new TabRegistry(sf);
+        sf.tabs.push({ url: 'http://user/1', marker: '' });
+        openOwned(sf, reg, 'http://a/x');
+        sf.tabs.push({ url: 'http://user/2', marker: '' });
+        lateRedirect(sf);
+        expect(await reg.closeOwned()).toEqual({ closed: 0, missing: 0 });
+        expect(sf.tabs).toHaveLength(3);
+      });
+
+      test('열기 기록(noteWindow)만으로도 되찾는다 — 열자마자 늦게 리디렉트되는 경우', async () => {
+        const sf = new FakeSafari();
+        const reg = new TabRegistry(sf);
+        sf.tabs.push({ url: 'http://user/1', marker: '' });
+        openOwned(sf, reg, 'http://a/x');
+        reg.noteWindow(1, sf.tabs.map((t) => t.url)); // 드라이버가 열고 나서 호스트가 알려 준 창 모습을 기록
+        sf.tabs[1]!.marker = '';
+        sf.tabs[1]!.url = 'http://a/next';
+        expect(await reg.closeOwned()).toEqual({ closed: 1, missing: 0 });
+        expect(sf.tabs.map((t) => t.url)).toEqual(['http://user/1']);
+      });
+
+      // 알려진 드문 한계: 우리 탭이 닫히고 같은 주소 · 같은 이웃 · 같은 탭 수의 다른 탭이 같은 자리에 오면 구별할 수 없다.
+      // (그 탭의 주소가 창의 다른 탭 기록 주소와 같지 않아야 하므로, 사용자가 그 자리에 완전히 새 주소의 탭을 열었을 때다.)
+      test('(d) 알려진 한계: 우리 탭을 닫고 탭 수 · 이웃이 똑같게 새 주소의 사용자 탭이 그 자리에 오면 우리 탭으로 본다', async () => {
+        const { sf, reg } = await threeTabs();
+        sf.tabs[1] = { url: 'http://user/brand-new', marker: '' };
+        expect(await reg.closeOwned()).toEqual({ closed: 1, missing: 0 });
+        expect(sf.tabs.map((t) => t.url)).toEqual(['http://user/1', 'http://user/2']);
+      });
+    });
+
     test('우리 탭이 여럿이고 뒤섞여 밀려도 모두 닫는다(닫을수록 순번이 당겨져도)', async () => {
       const sf = new FakeSafari();
       const reg = new TabRegistry(sf);

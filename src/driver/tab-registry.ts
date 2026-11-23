@@ -150,6 +150,11 @@ function tabClosed(key: string): SafariError {
 export class TabRegistry {
   private entries = new Map<string, Entry>();
   private seq = 0;
+  /**
+   * 창마다 마지막으로 기록한 모습: 순번대로 탭 주소들(탭 수 = 길이). 목록을 알게 될 때(sync · resolve)와 우리가 열 때(noteWindow) · 닫을 때 새로 한다.
+   * 스스로 새 문서가 돼 표시를 잃은 우리 탭을 되찾을 때 「그 자리의 표시 없는 탭이 사용자 탭이 밀려 온 것이 아님」을 확인하는 데만 쓴다.
+   */
+  private windowShape = new Map<number, string[]>();
 
   /**
    * instanceId 는 이 서버 프로세스를 가리키는 값(기본은 무작위). 페이지 안 표시를 `키.instanceId` 로 적어,
@@ -160,6 +165,34 @@ export class TabRegistry {
   /** 키(t1)에 대응하는 페이지 안 표시 — 호스트와 사파리 쪽에는 이 값을 키로 넘긴다. 서버 프로세스마다 다르다. */
   markerOf(key: string): string {
     return `${key}.${this.instanceId}`;
+  }
+
+  /** 창의 지금 모습(순번대로 탭 주소들)을 기록한다. 우리가 탭을 연 직후 호스트가 알려 준 값을 넣는다. */
+  noteWindow(windowId: number, urls: string[]): void {
+    this.windowShape.set(windowId, [...urls]);
+  }
+
+  /** 탭 목록(raw)을 알게 됐다 — 목록에 든 창마다 모습을 새로 기록한다. */
+  private recordWindows(raw: RawTab[]): void {
+    const byWindow = new Map<number, RawTab[]>();
+    for (const t of raw) byWindow.set(t.windowId, [...(byWindow.get(t.windowId) ?? []), t]);
+    for (const [windowId, tabs] of byWindow) this.windowShape.set(windowId, tabs.sort((a, b) => a.index - b.index).map((t) => t.url));
+  }
+
+  /**
+   * 우리 탭이 스스로 새 문서가 돼(늦은 리디렉트) 표시를 잃었을 때 기록한 자리의 표시 없는 탭을 우리 탭으로 봐도 되는가.
+   * 마지막으로 기록한 창 모습과 견줘 (1) 탭 수가 같고 (2) 바로 앞 · 뒤 이웃의 주소가 같고 (3) 그 탭의 주소가 창의 다른 탭들의 기록된 주소가 아닐 때만.
+   * 아니면 사용자 탭이 우리 자리로 밀려 온 것일 수 있어 건드리지 않는다. 알려진 한계: 우리 탭이 닫히고 탭 수 · 이웃이 똑같게 새 주소의 사용자 탭이 그 자리에 오면 구별하지 못한다.
+   */
+  private stayedPut(e: Entry, raw: RawTab[], here: RawTab): boolean {
+    const shape = this.windowShape.get(e.windowId);
+    if (!shape) return false;
+    const now = raw.filter((t) => t.windowId === e.windowId).sort((a, b) => a.index - b.index).map((t) => t.url);
+    const i = e.index - 1;
+    if (now.length !== shape.length || i < 0 || i >= now.length) return false;
+    if (i > 0 && !sameUrl(shape[i - 1], now[i - 1])) return false;
+    if (i + 1 < now.length && !sameUrl(shape[i + 1], now[i + 1])) return false;
+    return !shape.some((u, j) => j !== i && sameUrl(u, here.url));
   }
 
   /** 새 키를 미리 정한다(탭을 열 때 호스트가 표시를 적도록). */
@@ -218,6 +251,7 @@ export class TabRegistry {
     if (!e) throw tabClosed(key);
     const raw = await this.backend.list();
     const found = await this.locate(e, raw, new Set(), newScan());
+    this.recordWindows(raw);
     if (!found) {
       this.drop(key);
       throw tabClosed(key);
@@ -521,6 +555,7 @@ export class TabRegistry {
   /** 창이 닫혔다 — 그 창 안 탭의 기록을 모두 뺀다. */
   forgetWindow(windowId: number): void {
     for (const [key, e] of this.entries) if (e.windowId === windowId) this.entries.delete(key);
+    this.windowShape.delete(windowId);
   }
 
   /** 탭이 닫혔다 — 기록과 우리 탭 목록에서 뺀다. */
@@ -542,6 +577,7 @@ export class TabRegistry {
 
   /** 우리가 (windowId, index) 탭을 닫았다 — 같은 창에서 뒤에 있던 탭들은 순서가 하나 당겨진다. */
   shiftAfterClose(windowId: number, index: number): void {
+    this.windowShape.get(windowId)?.splice(index - 1, 1);
     for (const e of this.entries.values()) {
       if (e.windowId === windowId && e.index > index) e.index -= 1;
     }
@@ -567,6 +603,7 @@ export class TabRegistry {
         this.drop(e.key);
       }
     }
+    this.recordWindows(raw);
     return raw.map((t) => {
       let key = bySpot.get(spotId(t));
       if (!key) {
@@ -614,6 +651,7 @@ export class TabRegistry {
       .sort((a, b) => Number(b.windowId === e.windowId) - Number(a.windowId === e.windowId));
     const tryOrder = [...(here && free(here) ? [here] : []), ...rest];
     const tried = new Set<string>();
+    let hereMarkerless = false; // 기록한 자리의 탭을 읽어 보니 표시가 없었다
     let unprobed = false; // 멈춰서 표시를 못 읽은 후보가 있었다(그 탭이 우리 것일 수 있어 훑기가 「다 봤다」가 될 수 없다)
     for (const t of tryOrder) {
       let p: Probe;
@@ -636,6 +674,7 @@ export class TabRegistry {
       }
       tried.add(spotId(t));
       if (p.exists && p.marker === this.markerOf(e.key)) return take({ ...t, url: p.url });
+      if (p.exists && p.marker === "" && here && sameSpot(t, here)) hereMarkerless = true;
     }
 
     // 자리 · 같은 주소로 못 찾았다. 우리가 연 탭이면 사용자가 순번을 밀고 주소도 바뀐 것일 수 있다 —
@@ -652,6 +691,13 @@ export class TabRegistry {
     }
     e.scanSig = sig;
     e.scanComplete = complete && !unprobed; // 읽지 못한 탭이 없었다면 true
+    // 우리 표시가 어디에도 없다(모든 탭을 읽었다). 기록한 자리의 탭에 표시가 없으면 우리 탭이 스스로 새 문서가 된 것일 수 있다 —
+    // 창 모습(탭 수 · 이웃)이 그대로일 때만 「표시 안 한 우리 탭」으로 되찾아, 다음 일 때 호스트가 주소를 확인하고 표시를 다시 적게 한다.
+    if (e.scanComplete && !e.lost && !e.blocked && hereMarkerless && here && free(here) && this.stayedPut(e, raw, here)) {
+      take(here);
+      e.stamped = false;
+      return here;
+    }
     return null;
   }
 }

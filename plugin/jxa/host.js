@@ -379,6 +379,14 @@ function openedKey(u) {
   return host + rest;
 }
 
+function windowUrlsOf(win) {
+  try {
+    return win.tabs.url().map(str);
+  } catch (e) {
+    return undefined;
+  }
+}
+
 // 열기 전 창의 모습: 탭 수와 연 주소와 같은 주소의 탭 수. 열고 난 뒤 「이 주소 탭이 하나 늘었는지」를 보는 기준이다.
 function windowBefore(win, url) {
   const want = openedKey(url);
@@ -620,6 +628,7 @@ const ops = {
       url: str(tab.url()),
       isActive: index === current,
       stamped,
+      windowUrls: windowUrlsOf(win), // 연 직후 창의 모습(Node 쪽이 늦게 스스로 옮겨 간 탭을 되찾을 때 견준다)
     };
   },
 
