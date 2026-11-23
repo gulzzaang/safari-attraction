@@ -124,6 +124,14 @@ final class CommandBuilderTests: XCTestCase {
             XCTAssertTrue(promptArg.hasSuffix("--dangerously-skip-permissions"))
         }
     }
+    func testClaudeWithoutSessionGetsHistory() {
+        let h = [Turn(role: .user, text: "Q1"), Turn(role: .assistant, text: "A1")]
+        let c = CommandBuilder.build(req(.claude, history: h, session: nil), workDir: work)
+        XCTAssertEqual(c.arguments[1], "[앞 대화]\n사용자: Q1\n답: A1\n\n질문")
+        let c2 = CommandBuilder.build(req(.claude, history: h, session: ""), workDir: work)
+        XCTAssertEqual(c2.arguments[1], "[앞 대화]\n사용자: Q1\n답: A1\n\n질문")
+        XCTAssertFalse(c.arguments.contains("--resume"))
+    }
     func testClaudeNeverLoadsMCPAndModelConstant() {
         XCTAssertEqual(CommandBuilder.claudeModel, "sonnet")
         for web in [false, true] {

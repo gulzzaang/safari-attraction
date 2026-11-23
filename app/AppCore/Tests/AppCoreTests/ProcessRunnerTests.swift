@@ -165,4 +165,28 @@ final class ProcessRunnerTests: XCTestCase {
         let o = await run(r, "echo", ["x"])
         XCTAssertEqual(o, .finished(code: 0))
     }
+
+    func testChildEnvironmentDropsClaudeInternalsKeepsRest() {
+        let base = ["CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDE_CODE_OAUTH_TOKEN": "x",
+                    "CLAUDE_CONFIG_DIR": "/keep", "HOME": "/h", "PATH": "/old", "ANTHROPIC_API_KEY": "k"]
+        let env = ProcessRunner.childEnvironment(base: base, path: "/new:/p")
+        XCTAssertEqual(env, ["CLAUDE_CONFIG_DIR": "/keep", "HOME": "/h", "PATH": "/new:/p", "ANTHROPIC_API_KEY": "k"])
+    }
+    func testChildActuallyDoesNotSeeClaudeCodeVars() async {
+        setenv("CLAUDECODE", "1", 1); setenv("CLAUDE_CODE_TEST_X", "1", 1)
+        defer { unsetenv("CLAUDECODE"); unsetenv("CLAUDE_CODE_TEST_X") }
+        let c = Collector()
+        _ = await run(ProcessRunner(), "/usr/bin/env", [], c)
+        XCTAssertFalse(c.stdout.contains("CLAUDECODE"))
+        XCTAssertFalse(c.stdout.contains("CLAUDE_CODE_TEST_X"))
+        XCTAssertTrue(c.stdout.contains("PATH="))
+    }
+    /// SIGCHLD 를 무시하면 자식이 자동으로 거두어져 waitid 가 ECHILD 로 실패한다 — 0 으로 끝난 것처럼 보고하면 안 된다.
+    func testWaitErrorIsNotReportedAsSuccess() async {
+        let old = signal(SIGCHLD, SIG_IGN)
+        defer { signal(SIGCHLD, old) }
+        let r = ProcessRunner()
+        let o = await run(r, "echo", ["x"])
+        if case .failed = o {} else { XCTFail("기다리기 오류가 \(o) 로 보고됨") }
+    }
 }

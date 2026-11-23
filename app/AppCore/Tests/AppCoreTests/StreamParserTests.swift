@@ -136,10 +136,11 @@ final class StreamParserTests: XCTestCase {
         XCTAssertEqual(p.feed(Data([0xEA, 0xB0])), [])
         XCTAssertEqual(p.finish().count, 1) // 깨진 끝은 대체 문자로라도 내보낸다
     }
-    func testPlainLoginPhraseInShortOutputIsError() {
-        var p = PlainStreamParser(model: .chatgpt)
-        XCTAssertEqual(p.feed(Data("Error: not logged in\n".utf8)), [.error(ModelKind.chatgpt.loginNeededMessage)])
-        XCTAssertEqual(p.feed(Data("more".utf8)), [])
+    func testPlainNeverSwallowsShortAnswerMentioningLogin() {
+        var p = PlainStreamParser(model: .gemini)
+        let t = "'Please log in' 이라고 안내하고 있어요"
+        XCTAssertEqual(p.feed(Data(t.utf8)), [.text(t)])
+        XCTAssertEqual(p.feed(Data(" 더".utf8)), [.text(" 더")])
     }
     func testPlainLongAnswerMentioningLoginIsNotError() {
         var p = PlainStreamParser(model: .gemini)

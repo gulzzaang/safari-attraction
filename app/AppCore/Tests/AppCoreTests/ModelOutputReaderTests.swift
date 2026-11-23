@@ -8,13 +8,37 @@ final class ModelOutputReaderTests: XCTestCase {
         ev += r.finish(outcome: .finished(code: 0))
         XCTAssertEqual(ev, [.text("안녕")])
     }
-    func testLoginTextOnStderrBecomesKoreanErrorOnce() {
+    func testRealLoggedOutCaseNonZeroExitWithPhraseInStderr() {
+        for model in [ModelKind.gemini, .chatgpt] {
+            var r = ModelOutputReader(model: model)
+            XCTAssertEqual(r.handle(.stderr(Data("Error: not logged in, please login\n".utf8))), []) // 도중에는 판정하지 않는다
+            XCTAssertEqual(r.finish(outcome: .finished(code: 1)), [.error(model.loginNeededMessage)])
+        }
+    }
+    func testLoggedOutWithNoStdoutEvenIfExitZero() {
         var r = ModelOutputReader(model: .gemini)
-        let e1 = r.handle(.stderr(Data("Error: not logged in, please login\n".utf8)))
-        let e2 = r.handle(.stderr(Data("not logged in again\n".utf8)))
-        let e3 = r.finish(outcome: .finished(code: 1))
-        XCTAssertEqual(e1, [.error(ModelKind.gemini.loginNeededMessage)])
-        XCTAssertEqual(e2, []); XCTAssertEqual(e3, [])
+        _ = r.handle(.stderr(Data("Please log in to continue\n".utf8)))
+        XCTAssertEqual(r.finish(outcome: .finished(code: 0)), [.error(ModelKind.gemini.loginNeededMessage)])
+    }
+    func testLoggedOutPhraseOnShortStdoutWithFailure() {
+        var r = ModelOutputReader(model: .gemini)
+        var ev = r.handle(.stdout(Data("Error: not logged in\n".utf8)))
+        ev += r.finish(outcome: .finished(code: 1))
+        XCTAssertEqual(ev, [.text("Error: not logged in\n"), .error(ModelKind.gemini.loginNeededMessage)])
+    }
+    func testShortGeminiAnswerMentioningLoginIsShownAsAnswerOnExitZero() {
+        var r = ModelOutputReader(model: .gemini)
+        let t = "'Please log in' 이라고 안내하고 있어요"
+        var ev = r.handle(.stdout(Data(t.utf8)))
+        ev += r.finish(outcome: .finished(code: 0))
+        XCTAssertEqual(ev, [.text(t)])
+    }
+    func testStderrEchoWithPhraseIgnoredWhenExitZeroAndAnswerExists() {
+        var r = ModelOutputReader(model: .chatgpt)
+        _ = r.handle(.stderr(Data("user\n페이지: Please log in to continue\n".utf8)))
+        var ev = r.handle(.stdout(Data("요약이에요".utf8)))
+        ev += r.finish(outcome: .finished(code: 0))
+        XCTAssertEqual(ev, [.text("요약이에요")])
     }
     func testNonZeroExitShowsStderrTail() {
         var r = ModelOutputReader(model: .chatgpt)

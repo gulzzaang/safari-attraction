@@ -39,11 +39,11 @@ public enum CommandBuilder {
         (r.model == .chatgpt && r.webSearch) ? chatgptNoWebNotice : nil
     }
 
-    /// 순서: 웹 검색 안내(제미나이만) → 앞 대화(클로드 `--resume` 이 아닌 모델만) → 사파리 탭 → 질문.
+    /// 순서: 웹 검색 안내(제미나이만) → 앞 대화(클로드는 `--resume` 이 없을 때만 — 대화 도중 모델을 바꾼 경우) → 사파리 탭 → 질문.
     static func composedPrompt(_ r: AskRequest) -> String {
         var s = ""
         if r.model == .gemini && r.webSearch { s += webSearchPrefix }
-        if r.model != .claude { s += historyBlock(r.history) }
+        if r.model != .claude || (r.claudeSessionID ?? "").isEmpty { s += historyBlock(r.history) }
         if let page = r.page { s += pageBlock(page) }
         s += r.question
         // 「-」 로 시작하면 CLI 가 질문을 옵션으로 읽을 수 있다 — 형태는 그대로 두고 앞에 말머리를 붙인다.

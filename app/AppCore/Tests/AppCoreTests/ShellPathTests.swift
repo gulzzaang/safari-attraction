@@ -38,4 +38,20 @@ final class ShellPathTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir) && isDir.boolValue)
         XCTAssertEqual(try AppPaths.workDirectory(applicationSupport: base), dir) // 두 번째도 문제없음
     }
+
+    func testFailedReadIsRetriedAfterIntervalButSuccessIsCachedForever() {
+        final class Counter: @unchecked Sendable { var n = 0; var ok = false }
+        let c = Counter()
+        let cache = LoginPathCache(failureRetryInterval: 30) { c.n += 1; return c.ok ? "/real:/path" : nil }
+        let t0 = Date()
+        XCTAssertEqual(cache.path(now: t0), ShellPath.fallback())
+        XCTAssertEqual(cache.path(now: t0.addingTimeInterval(10)), ShellPath.fallback())
+        XCTAssertEqual(c.n, 1) // 30초 안에는 다시 안 읽음
+        c.ok = true
+        XCTAssertEqual(cache.path(now: t0.addingTimeInterval(31)), "/real:/path")
+        XCTAssertEqual(c.n, 2)
+        c.ok = false
+        XCTAssertEqual(cache.path(now: t0.addingTimeInterval(500)), "/real:/path") // 성공은 영구
+        XCTAssertEqual(c.n, 2)
+    }
 }

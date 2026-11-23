@@ -3,23 +3,13 @@ import Foundation
 /// 앱은 로그인 셸이 아니라서 PATH 가 짧다 — 사용자의 로그인 셸에서 PATH 를 한 번 읽어 캐시한다.
 public enum ShellPath {
     static let marker = "__SAPATH__"
-    private static let cache = Cache()
+    private static let shared = LoginPathCache(resolver: {
+        resolve(shell: "/bin/zsh", arguments: ["-lic", "printf '\(marker)%s\(marker)' \"$PATH\""], timeout: 8)
+    })
 
-    private final class Cache: @unchecked Sendable {
-        let lock = NSLock()
-        var value: String?
-    }
-
-    /// 로그인 셸(`/bin/zsh -lic`)의 PATH. 처음 한 번만 읽고, 못 읽으면 `fallback()`.
-    public static func loginPath() -> String {
-        cache.lock.lock(); defer { cache.lock.unlock() }
-        if let v = cache.value { return v }
-        let v = resolve(shell: "/bin/zsh",
-                        arguments: ["-lic", "printf '\(marker)%s\(marker)' \"$PATH\""],
-                        timeout: 8) ?? fallback()
-        cache.value = v
-        return v
-    }
+    /// 로그인 셸(`/bin/zsh -lic`)의 PATH. 읽기에 성공하면 영구 캐시, 실패하면 `fallback()` 을 주되
+    /// 30초 뒤 다음 호출에서 다시 읽어 본다. **처음 읽을 때 최대 8초 막힐 수 있으니 메인 스레드에서 부르지 말 것.**
+    public static func loginPath() -> String { shared.path() }
 
     /// 셸이 안 되거나 느릴 때 쓰는 기본 PATH(`$HOME` 은 코드에서 펼친다).
     public static func fallback(home: String = NSHomeDirectory()) -> String {
@@ -50,6 +40,29 @@ public enum ShellPath {
         private var data = Data()
         func append(_ d: Data) { lock.withLock { data.append(d) } }
         var string: String { lock.withLock { String(decoding: data, as: UTF8.self) } }
+    }
+}
+
+/// 로그인 PATH 읽기 결과 캐시 — 성공은 영구, 실패(fallback)는 `failureRetryInterval` 동안만.
+public final class LoginPathCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private let resolver: @Sendable () -> String?
+    private let failureRetryInterval: TimeInterval
+    private var value: String?
+    private var fallbackSince: Date?
+
+    public init(failureRetryInterval: TimeInterval = 30, resolver: @escaping @Sendable () -> String?) {
+        self.failureRetryInterval = failureRetryInterval
+        self.resolver = resolver
+    }
+
+    public func path(now: Date = Date()) -> String {
+        lock.lock(); defer { lock.unlock() }
+        if let v = value { return v }
+        if let since = fallbackSince, now.timeIntervalSince(since) < failureRetryInterval { return ShellPath.fallback() }
+        if let v = resolver() { value = v; fallbackSince = nil; return v }
+        fallbackSince = now
+        return ShellPath.fallback()
     }
 }
 

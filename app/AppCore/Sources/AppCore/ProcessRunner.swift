@@ -56,6 +56,8 @@ public final class ProcessRunner: @unchecked Sendable {
         }
     }
 
+    /// `onEvent` 는 이 객체 안의 전용 직렬 큐에서 순서대로 불리고, `run` 이 돌아오기 전에 모두 전달된다.
+    /// 메인 스레드가 아니므로 화면을 만지는 쪽은 스스로 스레드를 옮겨야 한다.
     public func run(executable: String, arguments: [String], workDir: URL, path: String,
                     timeout: TimeInterval, onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
         guard begin() else { return .failed("이미 실행 중이에요") }
@@ -110,6 +112,13 @@ public final class ProcessRunner: @unchecked Sendable {
         lock.withLock { active = false; killItem?.cancel(); killItem = nil }
     }
 
+    /// 자식 CLI 에 넘길 환경 — 이 앱을 띄운 Claude 의 내부 값(`CLAUDECODE` · `CLAUDE_CODE_*`)은 빼고 나머지는 그대로, PATH 는 지정값.
+    public static func childEnvironment(base: [String: String], path: String) -> [String: String] {
+        var env = base.filter { $0.key != "CLAUDECODE" && !$0.key.hasPrefix("CLAUDE_CODE_") }
+        env["PATH"] = path
+        return env
+    }
+
     static func resolve(_ name: String, path: String) -> String? {
         let fm = FileManager.default
         if name.contains("/") { return fm.isExecutableFile(atPath: name) ? name : nil }
@@ -149,8 +158,7 @@ public final class ProcessRunner: @unchecked Sendable {
         posix_spawn_file_actions_adddup2(&actions, errFds[1], 2)
         let chdirRC = posix_spawn_file_actions_addchdir_np(&actions, workDir.path)
 
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = path
+        let env = Self.childEnvironment(base: ProcessInfo.processInfo.environment, path: path)
         let argv = ([exe] + arguments).map { strdup($0) } + [nil]
         let envp = env.map { strdup("\($0.key)=\($0.value)") } + [nil]
         defer { argv.forEach { free($0) }; envp.forEach { free($0) } }
@@ -191,12 +199,20 @@ public final class ProcessRunner: @unchecked Sendable {
 
         // 자식이 끝나길 기다림(거두지는 않고) → 그룹에 남은 것 정리 → 거둠.
         var info = siginfo_t()
-        while waitid(P_PID, id_t(child), &info, WEXITED | WNOWAIT) == -1 && errno == EINTR {}
+        var waitError: Int32 = 0
+        while waitid(P_PID, id_t(child), &info, WEXITED | WNOWAIT) == -1 {
+            if errno == EINTR { continue }
+            waitError = errno; break
+        }
         var status: Int32 = 0
         lock.withLock {
             exited = true
             kill(-child, SIGKILL) // 손자 · 백그라운드 프로세스(좀비가 아직 pid 를 쥐고 있어 안전)
-            while waitpid(child, &status, 0) == -1 && errno == EINTR {}
+            while waitpid(child, &status, 0) == -1 {
+                if errno == EINTR { continue }
+                if waitError == 0 { waitError = errno }
+                break
+            }
             reaped = true
         }
         timeoutItem?.cancel()
@@ -208,6 +224,9 @@ public final class ProcessRunner: @unchecked Sendable {
         case .timedOut: return .timedOut
         case .stopped: return .stopped
         case nil:
+            if waitError != 0 {
+                return .failed("\(executable) 의 끝난 상태를 읽지 못했어요(\(String(cString: strerror(waitError))))")
+            }
             if status & 0x7f == 0 { return .finished(code: (status >> 8) & 0xff) }
             return .finished(code: 128 + (status & 0x7f))
         }
