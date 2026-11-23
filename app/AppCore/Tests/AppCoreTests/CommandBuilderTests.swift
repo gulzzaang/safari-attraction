@@ -14,11 +14,11 @@ final class CommandBuilderTests: XCTestCase {
     func testClaudeNoToolsNoPage() {
         let c = CommandBuilder.build(req(.claude), workDir: work)
         XCTAssertEqual(c.executable, "claude")
-        XCTAssertEqual(c.arguments, ["-p", "질문", "--output-format", "stream-json", "--verbose", "--allowedTools", ""])
+        XCTAssertEqual(c.arguments, ["-p", "질문", "--output-format", "stream-json", "--verbose", "--model", "sonnet", "--tools", "", "--allowedTools", "", "--strict-mcp-config"])
     }
     func testClaudeWebSearchOn() {
         let c = CommandBuilder.build(req(.claude, web: true), workDir: work)
-        XCTAssertEqual(c.arguments, ["-p", "질문", "--output-format", "stream-json", "--verbose", "--allowedTools", "WebSearch,WebFetch"])
+        XCTAssertEqual(c.arguments, ["-p", "질문", "--output-format", "stream-json", "--verbose", "--model", "sonnet", "--tools", "WebSearch,WebFetch", "--allowedTools", "WebSearch,WebFetch", "--strict-mcp-config"])
     }
     func testClaudeWithPage() {
         let c = CommandBuilder.build(req(.claude, page: page), workDir: work)
@@ -37,8 +37,9 @@ final class CommandBuilderTests: XCTestCase {
     }
     func testClaudeResumeAppended() {
         let c = CommandBuilder.build(req(.claude, web: true, session: "abc-123"), workDir: work)
-        XCTAssertEqual(c.arguments, ["-p", "질문", "--output-format", "stream-json", "--verbose",
-                                     "--allowedTools", "WebSearch,WebFetch", "--resume", "abc-123"])
+        XCTAssertEqual(c.arguments, ["-p", "질문", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
+                                     "--tools", "WebSearch,WebFetch", "--allowedTools", "WebSearch,WebFetch",
+                                     "--strict-mcp-config", "--resume", "abc-123"])
     }
     func testClaudeIgnoresHistoryWhenResuming() {
         let h = [Turn(role: .user, text: "앞 질문"), Turn(role: .assistant, text: "앞 답")]
@@ -67,11 +68,11 @@ final class CommandBuilderTests: XCTestCase {
     func testChatGPTPlain() {
         let c = CommandBuilder.build(req(.chatgpt), workDir: work)
         XCTAssertEqual(c.executable, "codex")
-        XCTAssertEqual(c.arguments, ["exec", "질문"])
+        XCTAssertEqual(c.arguments, ["exec", "--skip-git-repo-check", "질문"])
     }
     func testChatGPTWebSearchOnlyNotice() {
         let r = req(.chatgpt, web: true)
-        XCTAssertEqual(CommandBuilder.build(r, workDir: work).arguments, ["exec", "질문"])
+        XCTAssertEqual(CommandBuilder.build(r, workDir: work).arguments, ["exec", "--skip-git-repo-check", "질문"])
         XCTAssertEqual(CommandBuilder.notice(for: r), "이 모델은 웹 검색을 못 해요 — 검색 없이 답해요")
         XCTAssertNil(CommandBuilder.notice(for: req(.chatgpt)))
         XCTAssertNil(CommandBuilder.notice(for: req(.claude, web: true)))
@@ -80,7 +81,7 @@ final class CommandBuilderTests: XCTestCase {
     func testChatGPTHistoryAndPage() {
         let h = [Turn(role: .user, text: "Q1"), Turn(role: .assistant, text: "A1")]
         let c = CommandBuilder.build(req(.chatgpt, page: page, history: h), workDir: work)
-        XCTAssertEqual(c.arguments, ["exec", "[앞 대화]\n사용자: Q1\n답: A1\n\n[지금 사파리 탭]\n제목: 제목\n주소: https://example.com/a\n\n질문"])
+        XCTAssertEqual(c.arguments, ["exec", "--skip-git-repo-check", "[앞 대화]\n사용자: Q1\n답: A1\n\n[지금 사파리 탭]\n제목: 제목\n주소: https://example.com/a\n\n질문"])
     }
 
     // MARK: History limits
@@ -93,7 +94,7 @@ final class CommandBuilderTests: XCTestCase {
     func testHistoryCappedAt4000Characters() {
         let long = String(repeating: "나", count: 3000)
         let h = [Turn(role: .user, text: "오래된 " + long), Turn(role: .assistant, text: long), Turn(role: .user, text: "마지막 질문")]
-        let q = CommandBuilder.build(req(.chatgpt, history: h), workDir: work).arguments[1]
+        let q = CommandBuilder.build(req(.chatgpt, history: h), workDir: work).arguments[2]
         let body = q.dropFirst("[앞 대화]\n".count).dropLast("\n질문".count)
         XCTAssertLessThanOrEqual(body.count, 4000 + 1)
         XCTAssertTrue(q.contains("마지막 질문"))
@@ -118,9 +119,17 @@ final class CommandBuilderTests: XCTestCase {
     func testQuestionStartingWithDashCannotBecomeAFlag() {
         for model in ModelKind.allCases {
             let c = CommandBuilder.build(req(model, q: "--dangerously-skip-permissions"), workDir: work)
-            let promptArg = model == .chatgpt ? c.arguments[1] : c.arguments[1]
+            let promptArg = model == .chatgpt ? c.arguments[2] : c.arguments[1]
             XCTAssertFalse(promptArg.hasPrefix("-"), "\(model)")
             XCTAssertTrue(promptArg.hasSuffix("--dangerously-skip-permissions"))
+        }
+    }
+    func testClaudeNeverLoadsMCPAndModelConstant() {
+        XCTAssertEqual(CommandBuilder.claudeModel, "sonnet")
+        for web in [false, true] {
+            let a = CommandBuilder.build(req(.claude, web: web), workDir: work).arguments
+            XCTAssertTrue(a.contains("--strict-mcp-config"))
+            XCTAssertFalse(a.contains("--mcp-config"))
         }
     }
     func testModelKindBasics() {

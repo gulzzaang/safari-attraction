@@ -6,6 +6,9 @@ public enum CommandBuilder {
     public static let historyCharLimit = 4_000
     public static let selectionCharLimit = 2_000
     public static let geminiModel = "gemini-3.8-flash-medium"
+    /// 옆 창 Claude 의 기본 모델(빠르고 구독 한도를 덜 씀). 나중에 바꿀 땐 여기 한 곳만.
+    public static let claudeModel = "sonnet"
+    public static let claudeWebTools = "WebSearch,WebFetch"
     public static let webSearchPrefix = "웹에서 찾아서 답해 줘. 출처 주소도 적어 줘.\n\n"
     public static let chatgptNoWebNotice = "이 모델은 웹 검색을 못 해요 — 검색 없이 답해요"
 
@@ -15,14 +18,19 @@ public enum CommandBuilder {
         let prompt = composedPrompt(r)
         switch r.model {
         case .claude:
+            // --tools 로 쓸 수 있는 도구 자체를 줄이고(끔이면 "" = 없음), --allowedTools 로 -p 에서 허락 없이 돌게 한다.
+            // --strict-mcp-config 만 주고 --mcp-config 는 안 줘서 사용자의 MCP 서버는 불러오지 않는다(대화만).
+            let tools = r.webSearch ? claudeWebTools : ""
             var args = ["-p", prompt, "--output-format", "stream-json", "--verbose",
-                        "--allowedTools", r.webSearch ? "WebSearch,WebFetch" : ""]
+                        "--model", claudeModel,
+                        "--tools", tools, "--allowedTools", tools,
+                        "--strict-mcp-config"]
             if let id = r.claudeSessionID, !id.isEmpty { args += ["--resume", id] }
             return ("claude", args)
         case .gemini:
             return ("agy", ["-p", prompt, "--model", geminiModel, "--print-timeout", "120s"])
         case .chatgpt:
-            return ("codex", ["exec", prompt])
+            return ("codex", ["exec", "--skip-git-repo-check", prompt])
         }
     }
 
