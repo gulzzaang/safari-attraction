@@ -271,6 +271,33 @@ describe("기록 쓰기 실패 안내", () => {
   });
 });
 
+describe("쓰기 실패 안내는 한 줄이 실제로 만들어진 뒤에만 한 번으로 친다", () => {
+  test("이유를 알아보다 던져도 안내는 나오고(원래 오류 글로), 그다음부터 한 번만", async () => {
+    const h = new MemoryHome(tmp.dir);
+    h.writable = async () => {
+      throw new Error("확인 중 폭발");
+    };
+    const l = new ActivityLog(h, () => clock);
+    const line = await l.writeFailureNotice(new Error("쓰기 실패 원문"));
+    expect(line).toBe(`기억 폴더에 쓸 수 없어요: ${h.dir} — 쓰기 실패 원문`);
+    expect(l.state.writeWarned).toBe(true);
+    expect(await l.writeFailureNotice(new Error("again"))).toBeNull();
+  });
+
+  test("안내 글이 만들어지기 전에는 writeWarned 가 꺼져 있다", async () => {
+    const h = new MemoryHome(tmp.dir);
+    let release!: () => void;
+    h.writable = () => new Promise((res) => (release = () => res({ ok: false, reason: "이유" })));
+    const l = new ActivityLog(h, () => clock);
+    const p = l.writeFailureNotice(new Error("x"));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(l.state.writeWarned).toBe(false);
+    release();
+    expect(await p).toContain("— 이유");
+    expect(l.state.writeWarned).toBe(true);
+  });
+});
+
 describe("머신 상태 파일", () => {
   test("없거나 깨졌으면 {}", async () => {
     expect(await readMachineState(home)).toEqual({});

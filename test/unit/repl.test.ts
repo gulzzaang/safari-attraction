@@ -714,4 +714,25 @@ describe("touched — 호출마다 닿은 사이트", () => {
     const r = await s.run('await page.goto("http://x/n")');
     expect(r.touched).toEqual([{ kind: "nav", url: "http://x/n", userTab: true }]);
   });
+
+  test("같은 호출 안에서 이동시킨 뒤 closeTab 해도 이동이 기록된다", async () => {
+    const r = await s.run('const pc = await openTab("http://a/"); await pc.goto("http://a2/"); await closeTab(pc)');
+    expect(r.error).toBeUndefined();
+    expect(r.touched).toEqual([
+      { kind: "open", url: "http://a/", userTab: false },
+      { kind: "nav", url: "http://a2/", userTab: false },
+    ]);
+  });
+
+  test("이전 호출에서 연 탭을 이동시키고 같은 호출에서 closeTab 해도 이동이 기록된다", async () => {
+    await s.run('await openTab("http://a/")');
+    const r = await s.run('await page.goto("http://a2/"); await closeTab(page)');
+    expect(r.touched).toEqual([{ kind: "nav", url: "http://a2/", userTab: false }]);
+  });
+
+  test("우리가 연 탭을 attachBrowserTab 으로 붙이면 userTab 은 false", async () => {
+    await s.run('await openTab("http://a/")');
+    const r = await s.run('await attachBrowserTab("t1")');
+    expect(r.touched).toEqual([{ kind: "attach", url: "http://a/", userTab: false }]);
+  });
 });

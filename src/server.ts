@@ -64,6 +64,7 @@ export const STATUS_DESCRIPTION =
 async function memoryExtras(
   activity: ActivityLog,
   entry: { title: string; touched: Touch[]; ok: boolean; error?: string },
+  gate: { abandoned: boolean },
 ): Promise<string[]> {
   const extras: string[] = [];
   let failed: { error: unknown } | undefined;
@@ -80,7 +81,8 @@ async function memoryExtras(
       // 메모 · 안내를 못 읽어도 repl 결과는 그대로.
     }
   }
-  if (failed) {
+  if (failed && !gate.abandoned) {
+    // 기다리다 포기한 뒤에 늦게 실패한 것은 아무도 못 보므로 「대화당 한 번」 안내를 쓰지 않는다.
     try {
       const line = await activity.writeFailureNotice(failed.error);
       if (line) extras.push(line);
@@ -89,6 +91,35 @@ async function memoryExtras(
     }
   }
   return extras;
+}
+
+/** 기억 쪽 일을 기다려 주는 최대 시간(밀리초). 아이클라우드가 멈춰도 사파리 조작 결과는 막지 않는다. */
+export const MEMORY_TIMEOUT_MS = 2000;
+
+/**
+ * memoryExtras 를 ms 안에 기다린다. 못 끝나면 덧붙임 없이(빈 목록) 돌려주고, 하던 일은 뒤에서 마저 하게 둔다(거부는 여기서 잡는다).
+ */
+async function boundedExtras(
+  activity: ActivityLog,
+  entry: { title: string; touched: Touch[]; ok: boolean; error?: string },
+  ms: number,
+): Promise<string[]> {
+  const gate = { abandoned: false };
+  const work = memoryExtras(activity, entry, gate).catch(() => [] as string[]);
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
+  try {
+    const done = await Promise.race([work, late]);
+    if (done === null) {
+      gate.abandoned = true;
+      return [];
+    }
+    return done;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** 붙일 글을 하나씩 빈 줄로 이어 붙이되, 붙인 결과가 기존 출력 상한(16KB, 바이트)을 넘게 되는 것은 붙이지 않는다. */
@@ -114,11 +145,12 @@ export interface SafariServer {
 }
 
 /**
- * home · now 는 시험에서 임시 폴더 · 가짜 시계를 끼우는 자리다. 기본은 resolveHome() 의 기억 폴더와 진짜 시계.
+ * home · now · memoryTimeoutMs 는 시험에서 임시 폴더 · 가짜 시계를 끼우는 자리다. 기본은 resolveHome() 의 기억 폴더와 진짜 시계.
  */
-export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHome; now?: () => Date } = {}): SafariServer {
+export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHome; now?: () => Date; memoryTimeoutMs?: number } = {}): SafariServer {
   const home = opts.home ?? new MemoryHome(resolveHome().dir);
   const activity = new ActivityLog(home, opts.now);
+  const memoryTimeoutMs = opts.memoryTimeoutMs ?? MEMORY_TIMEOUT_MS;
   const session = createReplSession(driver);
   const server = new McpServer({ name: "safari-attraction", version: VERSION });
 
@@ -139,7 +171,7 @@ export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHo
       const images = (r.images ?? []).map((data) => ({ type: "image" as const, data, mimeType: "image/png" }));
       const err = r.error === undefined ? undefined : toKorean(r.error, r.errorCode);
       const base = err === undefined ? r.output : r.output ? `${r.output}\n\n오류: ${err}` : `오류: ${err}`;
-      const extras = await memoryExtras(activity, { title, touched: r.touched ?? [], ok: err === undefined, error: err });
+      const extras = await boundedExtras(activity, { title, touched: r.touched ?? [], ok: err === undefined, error: err }, memoryTimeoutMs);
       const text = attachWithinCap(base, extras);
       if (err === undefined) return { content: [{ type: "text" as const, text }, ...images] };
       return { isError: true, content: [{ type: "text" as const, text }, ...images] };

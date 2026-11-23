@@ -171,14 +171,22 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     if (w) w.last = url;
     addTouch(how, url, how === "attach" ? !owned.has(pg.key) : false);
   };
+  /** 한 Page 의 주소가 마지막으로 기록한 것과 달라졌으면 이동으로 기록한다. */
+  const collectOne = (w: { page: Page; last: string | null; how: "open" | "attach" }, slot?: Slot): void => {
+    const url = w.page.url();
+    if (url === w.last) return;
+    const kind: Touch["kind"] = w.last === null ? w.how : "nav";
+    w.last = url;
+    addTouch(kind, url, !owned.has(w.page.key), slot);
+  };
   const collectNavigations = (slot: Slot): void => {
-    for (const w of watched.values()) {
-      const url = w.page.url();
-      if (url === w.last) continue;
-      const kind: Touch["kind"] = w.last === null ? w.how : "nav";
-      w.last = url;
-      addTouch(kind, url, !owned.has(w.page.key), slot);
-    }
+    for (const w of watched.values()) collectOne(w, slot);
+  };
+  /** 세션이 Page 를 더 이상 지켜보지 않기 전(closeTab 등)에 그 Page 가 옮겨 간 것을 이번 호출 몫으로 거둔다. */
+  const untrack = (key: string): void => {
+    const w = watched.get(key);
+    if (w) collectOne(w);
+    watched.delete(key);
   };
 
   const track = (p: Page, how: "open" | "attach" = "open") => {
@@ -298,6 +306,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
 
   sandbox.closeTab = async (p?: Page): Promise<void> => {
     const pg = needPage(p, "closeTab");
+    untrack(pg.key); // 닫기 전에 이번 호출에서 옮겨 간 것을 거둔다(닫으면 더 못 본다)
     try {
       // 우리가 연 탭만 닫는다. 사용자 탭은 떼기만 한다.
       if (owned.has(pg.key)) await driver.closeTab(pg.key);
@@ -307,7 +316,6 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     owned.delete(pg.key);
     aiKeys.delete(pg.key);
     store.forget(pg.key);
-    watched.delete(pg.key);
     const i = tabs.findIndex((t) => t.key === pg.key);
     if (i >= 0) tabs.splice(i, 1);
     if (currentPage()?.key === pg.key) sandbox.page = tabs.length ? tabs[tabs.length - 1]! : null;

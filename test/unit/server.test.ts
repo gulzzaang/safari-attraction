@@ -276,4 +276,45 @@ describe("repl 응답에 기록 · 메모 · 안내 붙이기", () => {
     const r = await repl(c, 'await openTab("https://a.example/")');
     expect(textOf(r)).toContain("이 사이트 메모(a.example)");
   });
+
+  test("붙일 글이 하나만 들어가는 자리면 들어가는 것만 붙인다(사이트 메모는 못 들어가고 정리 안내는 딱 맞게)", async () => {
+    const HINT = "… 기억 정리할 때가 됐어요 — memory 도구 tidy";
+    await put("기억/사이트/a.example.md", "메모".repeat(40));
+    await put("기억/일지/2026-11-20-옛맥.md", "- 옛 기록\n");
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    const n = 16384 - 2 - Buffer.byteLength(HINT);
+    const r = await repl(c, `await openTab("https://a.example/"); console.log("x".repeat(${n}))`);
+    expect(textOf(r)).toBe("x".repeat(n) + "\n\n" + HINT);
+    expect(Buffer.byteLength(textOf(r))).toBe(16384);
+  });
+
+  test("기억 쓰기가 멈춰도(2초 상한 — 시험은 줄여서) repl 결과는 덧붙임 없이 바로 온다", async () => {
+    await put("기억/사이트/a.example.md", "메모");
+    const stuck = new MemoryHome(tmp.dir);
+    stuck.append = () => new Promise<void>(() => {});
+    const c = await connect(createFakeDriver(), { home: stuck, now: () => clock, memoryTimeoutMs: 50 });
+    const t0 = Date.now();
+    const r = await repl(c, 'await openTab("https://a.example/"); console.log("본문")');
+    expect(Date.now() - t0).toBeLessThan(1500);
+    expect(r.isError).toBeFalsy();
+    expect(textOf(r)).toBe("본문");
+  });
+
+  test("늦게 실패하는 기억 쓰기는 처리 안 된 거부를 남기지 않고, 늦은 실패 안내도 쓰지 않는다", async () => {
+    const slow = new MemoryHome(tmp.dir);
+    slow.append = () => new Promise<void>((_, rej) => setTimeout(() => rej(new Error("늦은 실패")), 150));
+    const stray: unknown[] = [];
+    const onStray = (e: unknown) => stray.push(e);
+    process.on("unhandledRejection", onStray);
+    try {
+      const c = await connect(createFakeDriver(), { home: slow, now: () => clock, memoryTimeoutMs: 20 });
+      const r = await repl(c, 'await openTab("https://a.example/"); console.log("본문")');
+      expect(textOf(r)).toBe("본문");
+      await new Promise((res) => setTimeout(res, 400));
+      expect(stray).toEqual([]);
+      expect(srv!.activity.state.writeWarned).toBe(false); // 아무도 못 본 안내로 한 번을 쓰지 않는다
+    } finally {
+      process.off("unhandledRejection", onStray);
+    }
+  });
 });

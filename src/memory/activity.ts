@@ -204,12 +204,23 @@ export class ActivityLog {
     return TIDY_HINT;
   }
 
-  /** 기록 쓰기가 실패했을 때 응답에 붙일 한 줄(대화당 한 번, 이미 알렸으면 null). 이유는 폴더를 다시 써 보고 얻는다. */
+  /**
+   * 기록 쓰기가 실패했을 때 응답에 붙일 한 줄(대화당 한 번, 이미 알렸으면 null). 이유는 폴더를 다시 써 보고 얻는다(그것도 못 하면 원래 오류 글).
+   * 「알렸다」 표시는 글이 실제로 만들어진 뒤에 한다.
+   */
   async writeFailureNotice(error: unknown): Promise<string | null> {
     if (this.state.writeWarned) return null;
+    const original = error instanceof Error ? error.message : String(error);
+    let reason = original;
+    try {
+      const w = await this.home.writable();
+      if (!w.ok) reason = w.reason;
+    } catch {
+      // 이유를 알아볼 수 없으면 원래 오류 글로.
+    }
+    if (this.state.writeWarned) return null; // 기다리는 사이 다른 호출이 먼저 알렸다
+    const line = `기억 폴더에 쓸 수 없어요: ${this.home.dir} — ${reason}`;
     this.state.writeWarned = true;
-    const w = await this.home.writable();
-    const reason = w.ok ? (error instanceof Error ? error.message : String(error)) : w.reason;
-    return `기억 폴더에 쓸 수 없어요: ${this.home.dir} — ${reason}`;
+    return line;
   }
 }
