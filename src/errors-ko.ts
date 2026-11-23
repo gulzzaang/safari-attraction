@@ -15,6 +15,7 @@ export const GUIDE_KO: Record<SafariErrorCode, string> = {
   SCREEN_CAPTURE_DENIED:
     "화면 찍기 권한이 없어요. 시스템 설정 → 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 Claude 를 띄운 앱(터미널 · Claude 등)을 켜고, 그 앱을 다시 켜 주세요.",
   WINDOW_CLOSED: "AI 전용 창이 닫혔어요. openAiWindow() 로 다시 열 수 있어요.",
+  ACTION_DENIED: "사용자가 이 동작을 허락하지 않았어요. 같은 동작을 되풀이하지 말고, 다른 방법을 찾거나 지금까지 한 일을 정리해 끝내세요.",
   SAFARI_ERROR: "사파리가 오류를 돌려줬어요.",
 };
 

@@ -3,6 +3,7 @@ import { createReplSession, type ReplSession } from "../../src/repl/context.js";
 import { hoistTopLevel } from "../../src/repl/transform.js";
 import { SNAPSHOT_LIMIT_BYTES } from "../../src/snapshot/diff.js";
 import { SafariError } from "../../src/driver/types.js";
+import type { ActionGate, GateRequest } from "../../src/gate/gate.js";
 import { createFakeDriver, type FakeDriver } from "../helpers/fake-driver.js";
 
 let d: FakeDriver;
@@ -261,6 +262,60 @@ describe("REPL 세부", () => {
     const sent = d.calls.runJs.find((c) => c.source.includes('__saA'))!.source;
     expect(sent).toContain("/api");
     expect(sent).toContain("POST");
+  });
+
+  describe("fetch 와 동작 관문", () => {
+    const fetchAnswer = (_k: string, src: string) =>
+      src.includes("__saA") ? JSON.stringify({ ok: true, r: { s: JSON.stringify({ status: 200, ok: true, statusText: "OK", url: "http://a/api", headers: {}, body: "{}" }) } }) : "";
+    function gatedSession(allow = true) {
+      const asked: GateRequest[] = [];
+      const gate: ActionGate = { check: async (r) => (asked.push(r), allow ? { allow: true } : { allow: false, reason: "막음" }) };
+      const dd = createFakeDriver();
+      dd.answer = fetchAnswer;
+      return { asked, dd, ss: createReplSession(dd, { gate }) };
+    }
+    test("POST · PUT · PATCH · DELETE 는 action fetch(irreversible true)로 한 번만 묻는다", async () => {
+      const { asked, ss } = gatedSession();
+      await ss.run('await openTab("http://a/")');
+      for (const m of ["POST", "put", "PATCH", "DELETE"]) await ss.run(`await fetch("/api", { method: "${m}", body: "비밀 본문" })`);
+      expect(asked.map((r) => [r.action, r.irreversible])).toEqual([["fetch", true], ["fetch", true], ["fetch", true], ["fetch", true]]);
+      expect(asked[0]).toMatchObject({ host: "a", target: "POST /api", value: "" });
+      expect(JSON.stringify(asked)).not.toContain("비밀 본문"); // 본문은 관문에 가지 않는다
+      await ss.dispose();
+    });
+    test("GET · HEAD · 메서드 없음은 안 묻는다(안쪽 evaluate 도 다시 묻지 않는다)", async () => {
+      const { asked, ss } = gatedSession();
+      await ss.run('await openTab("http://a/")');
+      await ss.run('await fetch("/api"); await fetch("/api", { method: "GET" }); await fetch("/api", { method: "head" })');
+      expect(asked).toHaveLength(0);
+      await ss.dispose();
+    });
+    test("거절되면 ACTION_DENIED 이고 페이지 안 fetch 는 돌지 않는다", async () => {
+      const { dd, ss } = gatedSession(false);
+      await ss.run('await openTab("http://a/")');
+      const r = await ss.run('await fetch("/api", { method: "POST" })');
+      expect(r.errorCode).toBe("ACTION_DENIED");
+      expect(r.error).toContain("사용자가 거절했어요: 막음");
+      expect(dd.calls.runJs.some((c) => c.source.includes("__saA"))).toBe(false);
+      await ss.dispose();
+    });
+    test("관문이 없으면 POST 도 묻지 않고 예전처럼 돈다", async () => {
+      const dd = createFakeDriver();
+      dd.answer = fetchAnswer;
+      const ss = createReplSession(dd);
+      await ss.run('await openTab("http://a/")');
+      expect((await ss.run('const r = await fetch("/api", { method: "POST" }); console.log(r.status)')).output).toBe("200");
+      await ss.dispose();
+    });
+    test("repl 안 page.evaluate 도 같은 관문을 쓴다(읽기 전용은 안 묻는다)", async () => {
+      const { asked, ss } = gatedSession();
+      await ss.run('await openTab("http://a/")');
+      await ss.run('await page.evaluate("document.title")');
+      expect(asked).toHaveLength(0);
+      await ss.run('await page.evaluate("document.body.remove()")');
+      expect(asked.map((r) => r.action)).toEqual(["evaluate"]);
+      await ss.dispose();
+    });
   });
 
   test("시간 초과한 호출의 늦은 출력이 다음 호출에 섞이지 않는다", async () => {

@@ -2,6 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import vm from "node:vm";
 import { inspect } from "node:util";
 import { GUIDES, listGuides, type SiteGuide } from "../guides/index.js";
+import { fetchIsIrreversible } from "../gate/classify.js";
+import type { ActionGate } from "../gate/gate.js";
 import { guideAnswer } from "../guides/notes.js";
 import type { Touch } from "../memory/activity.js";
 import { SafariError, type SafariDriver, type SafariErrorCode, type TabInfo } from "../driver/types.js";
@@ -9,7 +11,7 @@ import { buildSnapshotSource, type SnapshotOptions } from "../snapshot/inpage.js
 import { SnapshotStore, splitSnapshotMeta } from "../snapshot/store.js";
 import { LOAD_TIMEOUT_MS, MAX_HOST_BUDGET_MS, parseWaitUntil, type WaitUntil } from "./load-state.js";
 import { normTimeout } from "./locator.js";
-import { Page, WAIT_LOAD, type AiWindowAccess } from "./page.js";
+import { GATE_ASK, Page, RAW_EVALUATE, WAIT_LOAD, type AiWindowAccess, type PageOptions } from "./page.js";
 import { OutputBuffer } from "./output.js";
 import { hoistTopLevel } from "./transform.js";
 
@@ -81,8 +83,10 @@ const errorText = (e: unknown): string => {
  * Aside 의 repl 처럼 자바스크립트를 돌리는 세션. node:vm 컨텍스트 하나를 세션 내내 쓰므로 최상위 const/let/함수가
  * 다음 호출에도 남고, top-level await 가 된다. 호출은 겹쳐도 차례로 돈다.
  */
-export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGuide[] } = {}): ReplSession {
+export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGuide[]; gate?: ActionGate | null; noPermissionPrompts?: boolean } = {}): ReplSession {
   const guides = opts.guides ?? GUIDES;
+  // 동작 관문(없으면 null — 아무것도 묻지 않는다)과 허락 창 없는 모드. 모든 Page 가 같은 것을 쓴다.
+  const pageOpts: PageOptions = { gate: opts.gate ?? null, noPermissionPrompts: opts.noPermissionPrompts === true };
   const store = new SnapshotStore();
   const owned = new Set<string>();
   // 호출마다 출력 칸(slot)을 따로 둔다. AsyncLocalStorage 가 칸을 await · 타이머 · 드라이버 호출을 건너 따라가므로,
@@ -271,7 +275,7 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
       throw new Error("openTab: 서버가 끝나는 중이라 탭을 열 수 없음");
     }
     owned.add(tab.key);
-    const pg = track(new Page(driver, tab.key, aiAccess));
+    const pg = track(new Page(driver, tab.key, aiAccess, pageOpts));
     await wait.finish(pg, more);
     touchOpened(pg, "open");
     return pg;
@@ -315,7 +319,7 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
     if (front) log("주의: 사파리가 맨 앞으로 나왔어요");
     owned.add(key);
     aiKeys.set(key, winId);
-    const pg = track(new Page(driver, key, aiAccess));
+    const pg = track(new Page(driver, key, aiAccess, pageOpts));
     await wait.finish(pg, more);
     touchOpened(pg, "open");
     return pg;
@@ -380,7 +384,7 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
 
   const attach = (key: string): Page => {
     const existing = tabs.find((t) => t.key === key);
-    const pg = existing ?? track(new Page(driver, key, aiAccess), "attach");
+    const pg = existing ?? track(new Page(driver, key, aiAccess, pageOpts), "attach");
     sandbox.page = pg;
     touchOpened(pg, "attach");
     return pg;
@@ -432,7 +436,10 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
       (h as { forEach(f: (v: string, k: string) => void): void }).forEach((v, k) => (o[k] = v));
       clean.headers = o;
     }
-    const r = await pg.evaluate<{ status: number; ok: boolean; statusText: string; url: string; headers: Record<string, string>; body: string }>(IN_PAGE_FETCH, {
+    // GET · HEAD 가 아니면 페이지에 요청을 바꾸는 일이라 관문에 한 번 묻는다. 안쪽 evaluate 는 관문을 거치지 않는 길로 부른다(같은 일을 두 번 묻지 않게).
+    const method = String(clean.method ?? "GET").trim() || "GET";
+    if (fetchIsIrreversible(method)) await pg[GATE_ASK]("fetch", `${method.toUpperCase()} ${String(url)}`, "", true);
+    const r = await pg[RAW_EVALUATE]<{ status: number; ok: boolean; statusText: string; url: string; headers: Record<string, string>; body: string }>(IN_PAGE_FETCH, {
       url: String(url),
       init: clean,
     });

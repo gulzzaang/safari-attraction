@@ -1,5 +1,7 @@
 import { SafariError, type SafariDriver } from "../driver/types.js";
 import { sameUrl } from "../driver/url.js";
+import { isReadOnlyExpression } from "../gate/classify.js";
+import { assertAllowed, buildElementRequest, clipTarget, hostOf, type ActionGate, type ElementDesc, type GateAction } from "../gate/gate.js";
 import {
   buildActionSource,
   buildEvalSource,
@@ -24,6 +26,20 @@ const ACTION_POLL_MS = 150;
  * (REPL 에는 이 파일의 내보내기가 들어 있지 않다).
  */
 export const WAIT_LOAD = Symbol("safari-attraction.waitLoad");
+/** 서버 안에서만 쓰는 길의 이름표(심볼이라 REPL 코드의 page.… 로는 부를 수 없다): 관문에 직접 묻기 · 관문을 거치지 않는 evaluate(서버가 읽기용으로 부를 때). */
+export const GATE_ASK = Symbol("safari-attraction.gateAsk");
+export const RAW_EVALUATE = Symbol("safari-attraction.rawEvaluate");
+
+/** 관문이 동작 전에 묻는 요소 동작(Locator 의 act). 읽기 · hover · focus · scroll 은 묻지 않는다. */
+const GATED_OPS: ReadonlySet<ActionOp> = new Set<ActionOp>(["click", "fill", "check", "select", "lpress", "ltype", "press", "type"]);
+
+/** Page 를 만들 때 켜는 선택. 아무것도 안 주면 예전과 똑같이 돈다. */
+export interface PageOptions {
+  /** 동작 관문. null · 없음이면 아무것도 묻지 않는다. */
+  gate?: ActionGate | null;
+  /** 맥 허락 창이 뜰 수 있는 일(화면 찍기)을 미리 확인하고, 권한이 없으면 부르지 않는다. */
+  noPermissionPrompts?: boolean;
+}
 
 /** 이동 하나의 기다림: 무엇을 기다리고(wait) 얼마 안에(timeoutMs, 시작 t0 부터) 끝내야 하는지. 호스트가 기다리는 시간도 남은 만큼으로 맞춘다. */
 class NavWait {
@@ -119,6 +135,7 @@ export class Page {
     private readonly driver: SafariDriver,
     readonly key: string,
     private readonly ai?: AiWindowAccess,
+    private readonly opts: PageOptions = {},
   ) {}
 
   /** console.log(page) 가 드라이버 안쪽까지 쏟아내지 않게. */
@@ -132,6 +149,15 @@ export class Page {
    */
   async goto(url: string, opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<void> {
     const nav = new NavWait(parseWaitUntil(opts?.waitUntil, "goto", true), normTimeout(opts?.timeout, LOAD_TIMEOUT_MS));
+    if (this.opts.gate) {
+      let dest = String(url);
+      try {
+        dest = new URL(dest, this.currentUrl() || undefined).href;
+      } catch {
+        // 주소로 못 읽으면 받은 글 그대로 묻는다
+      }
+      await this.askGate("goto", dest, "", false, dest);
+    }
     await this.act("goto", { url }, nav);
     if (nav.replaced) await this.afterNav(nav); // 같은 문서 안 이동(#해시만 바뀜)이면 기다릴 새 문서가 없다
   }
@@ -185,13 +211,18 @@ export class Page {
    * 함수는 소스 글로 보내므로 바깥 변수를 쓸 수 없고, 필요한 값은 arg(JSON 으로 오간다)로 넘긴다. 약속은 기다린다.
    */
   async evaluate<T = unknown>(fn: string | ((arg: any) => T), arg?: unknown): Promise<Awaited<T>> {
-    const src = typeof fn === "function" ? `(${fn.toString()})` : fn;
-    try {
-      // 소스를 스크립트 글에 그대로 끼우므로 문법 오류는 미리 걸러 한국어로 알린다(안 그러면 스크립트 전체가 깨진다).
-      new Function(`return (${src}\n)`);
-    } catch (e) {
-      throw new Error(`evaluate 식의 문법이 잘못됨: ${(e as Error).message} (식 하나나 함수여야 합니다)`);
-    }
+    const src = evalSource(fn);
+    // 페이지를 바꿀 수 있는 식만 묻는다(읽기 전용으로 읽히는 식은 안 묻는다). 문법 오류는 묻기 전에 위에서 이미 알렸다.
+    if (this.opts.gate && !isReadOnlyExpression(src)) await this.askGate("evaluate", clipTarget(src), "", null);
+    return this.runEvaluate<T>(src, arg);
+  }
+
+  /** 서버가 읽기용으로 부르는 evaluate(content · 페이지 안 fetch 의 본체). 관문을 거치지 않는다. */
+  async [RAW_EVALUATE]<T = unknown>(fn: string | ((arg: any) => T), arg?: unknown): Promise<Awaited<T>> {
+    return this.runEvaluate<T>(evalSource(fn), arg);
+  }
+
+  private async runEvaluate<T>(src: string, arg: unknown): Promise<Awaited<T>> {
     const tok = newToken();
     const r = await this.run(buildEvalSource(src, arg, tok), NAVIGATING_SRC.test(src));
     let s = r.s;
@@ -287,16 +318,22 @@ export class Page {
 
   /** 문서 전체 HTML 글(doctype 포함, 안쪽 iframe · shadow 는 들어 있지 않다). */
   content(): Promise<string> {
-    return this.evaluate<string>(
+    return this[RAW_EVALUATE]<string>(
       "(function(){var d=document.doctype;return (d?new XMLSerializer().serializeToString(d):'')+document.documentElement.outerHTML})()",
     );
   }
 
   keyboard = {
     /** 글쇠 하나(`Enter`, `Tab`, `Escape`, `Backspace`, `ArrowDown`, `a` …). 포커스된 요소가 받는다. */
-    press: async (key: string): Promise<void> => void (await this.act("press", { key })),
+    press: async (key: string): Promise<void> => {
+      await this.gateFocused("press", { key });
+      await this.act("press", { key });
+    },
     /** 글자를 한 자씩 쳐 넣는다(`\n` 은 Enter). 포커스된 입력칸에 들어간다. */
-    type: async (text: string): Promise<void> => void (await this.act("type", { text })),
+    type: async (text: string): Promise<void> => {
+      await this.gateFocused("type", { text });
+      await this.act("type", { text });
+    },
   };
 
   /**
@@ -321,6 +358,10 @@ export class Page {
    */
   async screenshot(): Promise<Buffer> {
     const id = await this.aiWindow("화면 찍기");
+    // 허락 창이 뜨면 안 되는 모드: 화면 기록 권한을 미리 확인하고, 없으면 screencapture 를 부르지 않는다(부르면 맥이 허락 창을 띄울 수 있다).
+    if (this.opts.noPermissionPrompts && !(await this.driver.screenCaptureAllowed())) {
+      throw new SafariError("SCREEN_CAPTURE_DENIED", "화면 기록 권한이 없어 찍지 않았어요(허락 창을 띄우지 않는 모드)");
+    }
     return this.guardClosed(id, async () => {
       await this.driver.showTab(this.key);
       await this.waitForPaint();
@@ -416,8 +457,20 @@ export class Page {
     const timeoutMs = normTimeout(timeout, DEFAULT_ACTION_WAIT_MS);
     const full = { ...args, wait: { visible: cond.visible, enabled: cond.enabled } };
     const t0 = Date.now();
+    // 관문이 있고 묻는 동작이면, 대상이 준비된 뒤 동작 전에 딱 한 번 묻는다(아래 재시도는 다시 묻지 않는다).
+    let toAsk = !!this.opts.gate && kind === "act" && GATED_OPS.has(op);
     for (;;) {
-      const r = await (kind === "act" ? this.act(op, full) : this.read(op, full)); // act · read 가 호출이 끝났는지 먼저 본다
+      let r;
+      if (toAsk) {
+        r = await this.read("desc", full); // 요소를 읽을 뿐 아무것도 바꾸지 않는다. 준비 전이면 아래에서 다시 시도한다
+        if (!r.notReady) {
+          await this.askElement(op, args, r.v as ElementDesc | undefined);
+          toAsk = false;
+          r = await this.act(op, full);
+        }
+      } else {
+        r = await (kind === "act" ? this.act(op, full) : this.read(op, full)); // act · read 가 호출이 끝났는지 먼저 본다
+      }
       if (!r.notReady) return r;
       if (Date.now() - t0 >= timeoutMs) {
         const why = { missing: "아직 없음", hidden: "있지만 안 보임", disabled: "있지만 비활성", option: "고를 선택지가 아직 없음" }[r.notReady];
@@ -430,12 +483,53 @@ export class Page {
     }
   }
 
+  // ---- 동작 관문 ----
+
+  /** 지금 알려진 이 탭의 주소(드라이버가 안 알려 주면 마지막으로 본 값). */
+  private currentUrl(): string {
+    const u = this.driver.lastUrl?.(this.key);
+    if (u !== undefined) this.knownUrl = u;
+    return this.knownUrl;
+  }
+
+  /**
+   * 관문에 묻는다(관문이 없으면 아무것도 안 한다). 거절이면 ACTION_DENIED 를 던진다. 기다리는 동안 repl 호출이 끝났으면(시간 초과) 허락돼도 동작하지 않는다.
+   * urlOverride 는 goto 처럼 동작이 가려는 주소(그 호스트로 묻는다).
+   */
+  private async askGate(action: GateAction, target: string, value: string, irreversible: boolean | null, urlOverride?: string): Promise<void> {
+    const gate = this.opts.gate;
+    if (!gate) return;
+    this.checkAbort();
+    const url = urlOverride ?? this.currentUrl();
+    assertAllowed(await gate.check({ host: hostOf(url), url, action, target: clipTarget(target), value, irreversible }));
+    this.checkAbort();
+  }
+
+  /** 요소 동작(click · fill …) 하나를 desc 로 읽은 설명에 맞춰 묻는다. */
+  private async askElement(op: ActionOp, args: Record<string, unknown>, desc: ElementDesc | undefined): Promise<void> {
+    const q = buildElementRequest(op, args, desc);
+    await this.askGate(q.action, q.target, q.value, q.irreversible);
+  }
+
+  /** keyboard.press · keyboard.type: 초점이 있는 요소를 읽고 한 번 묻는다. */
+  private async gateFocused(op: "press" | "type", args: Record<string, unknown>): Promise<void> {
+    if (!this.opts.gate) return;
+    const r = await this.read("desc", {});
+    await this.askElement(op, args, r.v as ElementDesc | undefined);
+  }
+
+  /** 서버 안에서 관문에 직접 묻는 길(페이지 안 fetch 의 바꾸는 메서드). */
+  async [GATE_ASK](action: GateAction, target: string, value: string, irreversible: boolean | null): Promise<void> {
+    await this.askGate(action, target, value, irreversible);
+  }
+
   /**
    * 제자리 이동(reload · back · forward) 뒤 새 문서를 쓸 수 있을 때까지(waitUntil). 되살아난(bfcache) 문서는 표시가 그대로라 새 문서로 보이지 않으므로,
    * 주소가 바뀌었는지도 함께 본다. 갈 곳이 없으면(뒤로 갈 이력이 없음) 잠깐 기다린 뒤 그대로 끝낸다.
    */
   private async navigate(dir: "reload" | "back" | "forward", opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<void> {
     const nav = new NavWait(parseWaitUntil(opts?.waitUntil, dir === "reload" ? "reload" : dir === "back" ? "goBack" : "goForward", true), normTimeout(opts?.timeout, LOAD_TIMEOUT_MS));
+    await this.askGate("nav", { reload: "새로고침", back: "뒤로 가기", forward: "앞으로 가기" }[dir], "", false);
     // 이동하기 전 주소는 이동을 시키는 그 runJs 가 알려 준다(캐시가 한 박자 늦을 수 있다).
     const sent = await this.read("nav", { dir });
     const before = typeof sent.v === "string" ? sent.v : (this.driver.lastUrl?.(this.key) ?? this.knownUrl);
@@ -558,6 +652,18 @@ export class Page {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** evaluate 의 식 · 함수를 소스 글로 바꾸고, 문법 오류는 미리 걸러 한국어로 알린다. */
+function evalSource(fn: string | ((arg: any) => unknown)): string {
+  const src = typeof fn === "function" ? `(${fn.toString()})` : fn;
+  try {
+    // 소스를 스크립트 글에 그대로 끼우므로 문법 오류는 미리 걸러 한국어로 알린다(안 그러면 스크립트 전체가 깨진다).
+    new Function(`return (${src}\n)`);
+  } catch (e) {
+    throw new Error(`evaluate 식의 문법이 잘못됨: ${(e as Error).message} (식 하나나 함수여야 합니다)`);
+  }
+  return src;
+}
 
 const showSeconds = (ms: number) => String(Math.round(ms) / 1000);
 

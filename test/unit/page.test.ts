@@ -1,7 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { SafariDriver, TabInfo } from '../../src/driver/types.js';
 import { SafariError } from '../../src/driver/types.js';
-import { Page } from '../../src/repl/page.js';
+import type { ActionGate, GateRequest } from '../../src/gate/gate.js';
+import { GATE_ASK, Page, RAW_EVALUATE } from '../../src/repl/page.js';
 
 type Settle = { navigated: boolean; leaving: boolean };
 
@@ -385,5 +386,277 @@ describe('Page: 이동 신호가 없을 때 settleTab 을 건너뛰는 동작(fi
     const { page, log } = fake(() => ok({}), [same]);
     await page.locator('e1').fill('값');
     expect(log.settle).toBe(1);
+  });
+});
+
+describe('Page 의 동작 관문(gate)', () => {
+  type Desc = { text?: string; aria?: string; value?: string; inputType?: string; isPassword?: boolean; formSubmitText?: string; hint?: string };
+  type Asked = Omit<GateRequest, never>;
+
+  /** 가짜 관문(받은 요청을 적고 정해 둔 답을 준다) + 가짜 드라이버(desc 읽기에는 desc 로, 나머지 동작에는 ok 로 답한다). */
+  function gated(opts: { desc?: Desc; allow?: boolean; reason?: string; notReadyFirst?: number; url?: string } = {}) {
+    const asked: Asked[] = [];
+    const calls: string[] = [];
+    const gate: ActionGate = {
+      async check(req) {
+        calls.push('gate');
+        asked.push(req);
+        return opts.allow === false ? { allow: false, reason: opts.reason ?? '거절' } : { allow: true };
+      },
+    };
+    let notReady = opts.notReadyFirst ?? 0;
+    const tab: TabInfo = { key: 't1', windowId: 1, index: 1, title: '', url: opts.url ?? 'https://shop.example.com/cart', isActive: false, owned: true };
+    const d = {
+      async runJs(_key: string, source: string) {
+        const op = /"op":"(\w+)"/.exec(source)?.[1] ?? 'evaluate';
+        calls.push(`runJs:${op}`);
+        if ((op === 'desc' || op === 'click' || op === 'fill') && notReady > 0) {
+          notReady--;
+          return ok({ notReady: 'missing' });
+        }
+        if (op === 'desc') return ok({ v: opts.desc ?? { text: '확인' } });
+        if (source.includes('document.title')) return ok({ s: '"제목"' });
+        return ok({});
+      },
+      async settleTab() {
+        return { navigated: false, leaving: false, tab };
+      },
+      lastUrl: () => tab.url,
+    } as unknown as SafariDriver;
+    return { page: new Page(d, 't1', undefined, { gate }), asked, calls, gate };
+  }
+
+  test('관문이 없으면(null) 아무것도 묻지 않고 desc 도 읽지 않고 예전처럼 돈다', async () => {
+    const { page, calls } = gated();
+    const d = (page as unknown as { driver: SafariDriver }).driver;
+    const plain = new Page(d, 't1', undefined, { gate: null });
+    await plain.locator('e1').click();
+    await new Page(d, 't1').locator('e1').click();
+    expect(calls.filter((c) => c === 'gate')).toHaveLength(0);
+    expect(calls.filter((c) => c === 'runJs:desc')).toHaveLength(0);
+    expect(calls.filter((c) => c === 'runJs:click')).toHaveLength(2);
+  });
+
+  test('click 앞에 {action:click, target:버튼 글, irreversible} 을 묻는다 — 되돌릴 수 없는 글이면 true', async () => {
+    const { page, asked, calls } = gated({ desc: { text: '결제하기' } });
+    await page.locator('e1').click();
+    expect(asked).toEqual([{ host: 'shop.example.com', url: 'https://shop.example.com/cart', action: 'click', target: '결제하기', value: '', irreversible: true }]);
+    expect(calls).toEqual(['runJs:desc', 'gate', 'runJs:click']); // 읽고 → 묻고 → 동작
+    const ok2 = gated({ desc: { text: '다음 단계' } });
+    await ok2.page.locator('e1').click();
+    expect(ok2.asked[0]).toMatchObject({ target: '다음 단계', irreversible: false });
+  });
+
+  test('거절이면 ACTION_DENIED 를 던지고 페이지 동작은 돌지 않는다', async () => {
+    const { page, calls } = gated({ allow: false, reason: '읽기만 허락한 사이트예요' });
+    const err = await page.locator('e1').click().catch((e) => e);
+    expect(err).toBeInstanceOf(SafariError);
+    expect(err.code).toBe('ACTION_DENIED');
+    expect(err.message).toBe('사용자가 거절했어요: 읽기만 허락한 사이트예요');
+    expect(calls).not.toContain('runJs:click');
+  });
+
+  test('버튼 이름이 aria 에만 있어도 되돌릴 수 없음 판정에 쓴다', async () => {
+    const { page, asked } = gated({ desc: { text: '', aria: '주문하기' } });
+    await page.locator('e1').click();
+    expect(asked[0]).toMatchObject({ target: '주문하기', irreversible: true });
+  });
+
+  test('fill: 글 칸이면 값이 가고(40자까지), 비밀번호 칸이면 (비밀)', async () => {
+    const a = gated({ desc: { text: '', aria: '검색', inputType: 'text' } });
+    await a.page.locator('e1').fill('가'.repeat(60));
+    expect(a.asked[0]).toMatchObject({ action: 'fill', target: '검색', value: '가'.repeat(40), irreversible: false });
+    const b = gated({ desc: { text: '', aria: '비밀번호', inputType: 'password', isPassword: true } });
+    await b.page.locator('e1').fill('hunter2');
+    expect(b.asked[0]).toMatchObject({ action: 'fill', value: '(비밀)' });
+    expect(JSON.stringify(b.asked)).not.toContain('hunter2');
+    const c = gated({ desc: { isPassword: true, inputType: 'password' } });
+    await c.page.keyboard.type('hunter2');
+    expect(c.asked[0]).toMatchObject({ action: 'type', value: '(비밀)' });
+  });
+
+  test('Enter 를 누를 때는 폼의 제출 단추 글(「주문하기」)로 되돌릴 수 없음을 판정한다', async () => {
+    const a = gated({ desc: { text: '', aria: '쿠폰', inputType: 'text', formSubmitText: '주문하기' } });
+    await a.page.keyboard.press('Enter');
+    expect(a.asked[0]).toMatchObject({ action: 'press', value: 'Enter', irreversible: true });
+    const b = gated({ desc: { text: '', aria: '쿠폰', formSubmitText: '주문하기' } });
+    await b.page.locator('e1').press('Enter');
+    expect(b.asked[0]).toMatchObject({ action: 'press', irreversible: true });
+    const c = gated({ desc: { text: '', aria: '쿠폰', formSubmitText: '주문하기' } });
+    await c.page.keyboard.press('Tab'); // Enter 가 아니면 폼 단추 글은 보지 않는다
+    expect(c.asked[0]).toMatchObject({ action: 'press', irreversible: false });
+    const d = gated({ desc: { text: '', aria: '메모', formSubmitText: '주문하기' } });
+    await d.page.keyboard.type('안녕\n'); // 줄바꿈은 Enter
+    expect(d.asked[0]).toMatchObject({ action: 'type', irreversible: true });
+  });
+
+  test('check · uncheck · select 도 묻는다(action 이름 · 값)', async () => {
+    const a = gated({ desc: { text: '약관 동의' } });
+    await a.page.locator('e1').check();
+    await a.page.locator('e1').uncheck();
+    await a.page.locator('e1').selectOption({ label: '빠른 배송' });
+    expect(a.asked.map((r) => r.action)).toEqual(['check', 'uncheck', 'select']);
+    expect(a.asked[2]!.value).toBe('빠른 배송');
+  });
+
+  test('읽기 동작 · hover · focus · scroll 은 묻지 않는다', async () => {
+    const { page, asked } = gated();
+    await page.locator('e1').textContent();
+    await page.locator('e1').innerText();
+    await page.locator('e1').inputValue();
+    await page.locator('e1').getAttribute('href');
+    await page.locator('e1').isVisible();
+    await page.locator('e1').count();
+    await page.locator('e1').hover();
+    await page.locator('e1').focus();
+    await page.locator('e1').scrollIntoViewIfNeeded();
+    await page.title();
+    expect(asked).toHaveLength(0);
+  });
+
+  test('요소를 기다리며 여러 번 다시 시도해도 관문은 한 번만 묻는다', async () => {
+    const { page, asked, calls } = gated({ desc: { text: '결제하기' }, notReadyFirst: 3 });
+    await page.locator('e1').click();
+    expect(asked).toHaveLength(1);
+    expect(calls.filter((c) => c === 'runJs:desc').length).toBeGreaterThanOrEqual(4); // 준비될 때까지 desc 로 다시 확인
+    expect(calls.filter((c) => c === 'runJs:click')).toHaveLength(1);
+  });
+
+  test('허락 뒤 동작이 「아직 아님」이어도 다시 묻지 않는다', async () => {
+    const asked: GateRequest[] = [];
+    const gate: ActionGate = { check: async (r) => (asked.push(r), { allow: true }) };
+    let clicks = 0;
+    const tab: TabInfo = { key: 't1', windowId: 1, index: 1, title: '', url: 'http://x/', isActive: false, owned: true };
+    const d = {
+      async runJs(_k: string, s: string) {
+        if (s.includes('"op":"desc"')) return ok({ v: { text: '확인' } });
+        return clicks++ < 2 ? ok({ notReady: 'hidden' }) : ok({});
+      },
+      async settleTab() {
+        return { navigated: false, leaving: false, tab };
+      },
+      lastUrl: () => 'http://x/',
+    } as unknown as SafariDriver;
+    await new Page(d, 't1', undefined, { gate }).locator('e1').click();
+    expect(asked).toHaveLength(1);
+    expect(clicks).toBe(3);
+  });
+
+  test('시간 초과 오류는 그대로(허락 뒤가 아니라 준비 전)이고, 그때는 묻지도 않는다', async () => {
+    const { page, asked } = gated({ notReadyFirst: 1000 });
+    await expect(page.locator('e1').click({ timeout: 300 })).rejects.toThrow(/요소가 없어요/);
+    expect(asked).toHaveLength(0);
+  });
+
+  test('goto · reload · back 은 action goto / nav 로 묻는다(irreversible false)', async () => {
+    const { page, asked } = gated();
+    await page.goto('https://other.example.org/a?b=1');
+    expect(asked[0]).toEqual({ host: 'other.example.org', url: 'https://other.example.org/a?b=1', action: 'goto', target: 'https://other.example.org/a?b=1', value: '', irreversible: false });
+    await page.goBack({ timeout: 200 });
+    expect(asked[1]).toMatchObject({ action: 'nav', host: 'shop.example.com', irreversible: false });
+    const denied = gated({ allow: false, reason: '막음' });
+    await expect(denied.page.goto('https://x.example.org/')).rejects.toMatchObject({ code: 'ACTION_DENIED' });
+    expect(denied.calls).not.toContain('runJs:goto');
+  });
+
+  test('바꾸는 evaluate 는 irreversible null 로 묻고, 읽기 전용이면 묻지 않는다', async () => {
+    const { page, asked } = gated();
+    await page.evaluate("document.querySelector('b').click()");
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ action: 'evaluate', target: "document.querySelector('b').click()", value: '', irreversible: null });
+    await page.evaluate('document.title');
+    await page.evaluate("[...document.querySelectorAll('a')].map(a => a.href)");
+    await page.evaluate(() => document.title.length);
+    expect(asked).toHaveLength(1);
+    await page.evaluate('x'.repeat(300) + '.click()');
+    expect(asked[1]!.target).toHaveLength(120);
+  });
+
+  test('거절된 evaluate 는 ACTION_DENIED 이고 페이지 글을 돌리지 않는다', async () => {
+    const { page, calls } = gated({ allow: false });
+    await expect(page.evaluate("document.body.remove()")).rejects.toMatchObject({ code: 'ACTION_DENIED' });
+    expect(calls.filter((c) => c.startsWith('runJs'))).toHaveLength(0);
+  });
+
+  test('content() 는 서버 안 읽기라 관문을 거치지 않는다', async () => {
+    const { page, asked } = gated();
+    await page.content();
+    expect(asked).toHaveLength(0);
+  });
+
+  test('문법이 틀린 evaluate 는 묻기 전에 한국어 오류로 알린다', async () => {
+    const { page, asked } = gated();
+    await expect(page.evaluate('document.title +')).rejects.toThrow(/문법/);
+    expect(asked).toHaveLength(0);
+  });
+
+  test('서버 안 fetch 길([GATE_ASK] · [RAW_EVALUATE]): 묻는 길과 관문 없는 읽기 길', async () => {
+    const { page, asked } = gated();
+    await page[GATE_ASK]('fetch', 'POST https://shop.example.com/api', '', true);
+    expect(asked[0]).toMatchObject({ action: 'fetch', irreversible: true, host: 'shop.example.com' });
+    expect(await page[RAW_EVALUATE]('document.title')).toBe('제목');
+    expect(asked).toHaveLength(1);
+  });
+
+  test('허락을 기다리는 사이 repl 호출이 끝났으면 허락돼도 동작하지 않는다', async () => {
+    let aborted = false;
+    const asked: GateRequest[] = [];
+    const gate: ActionGate = { check: async (r) => (asked.push(r), (aborted = true), { allow: true }) };
+    const runs: string[] = [];
+    const tab: TabInfo = { key: 't1', windowId: 1, index: 1, title: '', url: 'http://x/', isActive: false, owned: true };
+    const d = {
+      async runJs(_k: string, s: string) {
+        runs.push(/"op":"(\w+)"/.exec(s)?.[1] ?? '');
+        return s.includes('"op":"desc"') ? ok({ v: { text: '결제하기' } }) : ok({});
+      },
+      async settleTab() {
+        return { navigated: false, leaving: false, tab };
+      },
+      lastUrl: () => 'http://x/',
+    } as unknown as SafariDriver;
+    const ai = { windowFor: async () => 1, closed: () => {}, note: () => {}, aborted: () => aborted };
+    await expect(new Page(d, 't1', ai, { gate }).locator('e1').click()).rejects.toThrow(/이미 끝나서/);
+    expect(runs).toEqual(['desc']);
+  });
+});
+
+describe('Page.screenshot: 허락 창 없는 모드(SAFARI_ATTRACTION_NO_PERMISSION_PROMPTS)에서 화면 기록 권한 미리 확인', () => {
+  function shotWith(allowed: boolean, noPrompts: boolean) {
+    const order: string[] = [];
+    const d = {
+      async screenCaptureAllowed() {
+        order.push('preflight');
+        return allowed;
+      },
+      async showTab() {
+        order.push('showTab');
+      },
+      async runJs(_k: string, s: string) {
+        return s.includes('readyState') ? 'complete|1' : 'visible';
+      },
+      async captureWindow() {
+        order.push('capture');
+        return Buffer.from('png');
+      },
+    } as unknown as SafariDriver;
+    const ai = { windowFor: async () => 7, closed: () => {}, note: () => {} };
+    return { page: new Page(d, 't1', ai, { noPermissionPrompts: noPrompts }), order };
+  }
+  test('켜져 있고 권한이 없으면 찍기(screencapture)를 부르지 않고 SCREEN_CAPTURE_DENIED', async () => {
+    const { page, order } = shotWith(false, true);
+    const err = await page.screenshot().catch((e) => e);
+    expect(err).toBeInstanceOf(SafariError);
+    expect(err.code).toBe('SCREEN_CAPTURE_DENIED');
+    expect(order).toEqual(['preflight']);
+  });
+  test('켜져 있고 권한이 있으면 그대로 찍는다', async () => {
+    const { page, order } = shotWith(true, true);
+    await page.screenshot();
+    expect(order).toEqual(['preflight', 'showTab', 'capture']);
+  });
+  test('꺼져 있으면(기본) 미리 확인하지 않고 예전처럼 찍는다', async () => {
+    const { page, order } = shotWith(false, false);
+    await page.screenshot();
+    expect(order).toEqual(['showTab', 'capture']);
   });
 });

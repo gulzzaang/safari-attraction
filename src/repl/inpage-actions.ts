@@ -15,8 +15,9 @@ import { LOCATOR_SOURCE } from "./inpage-locator.js";
 /**
  * 동작 이름. click · fill · text · prop · count · state · check · select · lpress · ltype · hover · focus · scroll 은 Locator 의 chain(args.chain)을
  * 풀어 요소를 찾고 바로 동작한다. press · type 은 포커스된 요소에(keyboard), goto · nav 는 문서 이동이다.
+ * desc 는 읽기 전용이다 — 동작 관문(src/gate)이 동작 전에 요소(chain 이 없으면 초점 요소)의 글 · 이름표 · 폼 제출 단추 글을 읽는 데 쓴다.
  */
-export const ACTION_OPS = ["click", "fill", "text", "prop", "count", "state", "check", "select", "lpress", "ltype", "hover", "focus", "scroll", "press", "type", "goto", "nav"] as const;
+export const ACTION_OPS = ["click", "fill", "text", "prop", "count", "state", "check", "select", "lpress", "ltype", "hover", "focus", "scroll", "press", "type", "goto", "nav", "desc"] as const;
 export type ActionOp = (typeof ACTION_OPS)[number];
 
 /** 페이지 안에서 동작이 끝난 뒤 보내는 결과. */
@@ -459,6 +460,50 @@ const BODY = String.raw`
       case 'scroll': {
         var el = locOne();
         el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        break;
+      }
+      case 'desc': {
+        // 읽기 전용. 동작 관문이 묻기 전에 대상 요소를 설명하는 값을 읽는다(요소가 없으면 chain 이 있을 때만 locOne 이 기다림 · 오류를 낸다).
+        var el = A.chain ? locOne() : activeTarget();
+        var squash = function (t) { return String(t || '').replace(/\s+/g, ' ').trim().slice(0, 200); };
+        var isRoot = el === el.ownerDocument.body || el === el.ownerDocument.documentElement;
+        var tag = el.tagName ? el.tagName.toLowerCase() : '';
+        var textOf = function (x) {
+          if (x.tagName === 'INPUT' && /^(submit|button|reset|image)$/i.test(x.type)) return squash(x.value || x.getAttribute('alt'));
+          return squash(x.innerText || x.textContent);
+        };
+        var labelOf = function (x) {
+          var a = x.getAttribute ? x.getAttribute('aria-label') : '';
+          var by = !a && x.getAttribute ? x.getAttribute('aria-labelledby') : '';
+          if (by) {
+            var parts = by.split(/\s+/), got = [];
+            for (var bi = 0; bi < parts.length; bi++) { var le = x.ownerDocument.getElementById(parts[bi]); if (le) got.push(le.textContent); }
+            a = got.join(' ');
+          }
+          if (!a && x.labels && x.labels.length) a = x.labels[0].textContent;
+          if (!a && x.getAttribute) a = x.getAttribute('title') || x.getAttribute('alt');
+          return squash(a);
+        };
+        var holder = (!isRoot && el.closest) ? (el.closest('button,a[href],[role=button],input[type=submit],input[type=button]') || el) : el;
+        var form = el.form || (el.closest ? el.closest('form') : null);
+        var subText = '';
+        if (form) {
+          var subs = form.querySelectorAll('button:not([type]),button[type=submit],input[type=submit],input[type=image]'), sl = [];
+          for (var ui = 0; ui < subs.length; ui++) sl.push(textOf(subs[ui]) || labelOf(subs[ui]));
+          subText = squash(sl.join(' | '));
+        }
+        var isPw = tag === 'input' && String(el.type).toLowerCase() === 'password';
+        var isField = tag === 'input' || tag === 'textarea' || tag === 'select';
+        var hint = tag + (el.getAttribute && el.getAttribute('name') ? '[name=' + el.getAttribute('name') + ']' : (el.id ? '#' + el.id : '')) + (el.getAttribute && el.getAttribute('placeholder') ? ' ' + el.getAttribute('placeholder') : '');
+        r.v = {
+          text: isRoot ? '' : textOf(holder),
+          aria: labelOf(el) || (holder !== el ? labelOf(holder) : ''),
+          value: (isField && !isPw) ? squash(el.value).slice(0, 40) : '',
+          inputType: (isField || tag === 'button') ? String(el.type || '').toLowerCase() : '',
+          isPassword: isPw,
+          formSubmitText: subText,
+          hint: squash(hint)
+        };
         break;
       }
       case 'nav': {
