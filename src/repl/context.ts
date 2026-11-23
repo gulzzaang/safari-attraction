@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import vm from "node:vm";
 import { inspect } from "node:util";
+import type { Touch } from "../memory/activity.js";
 import { SafariError, type SafariDriver, type SafariErrorCode, type TabInfo } from "../driver/types.js";
 import { buildSnapshotSource, type SnapshotOptions } from "../snapshot/inpage.js";
 import { SnapshotStore, splitSnapshotMeta } from "../snapshot/store.js";
@@ -16,6 +17,11 @@ export interface ReplResult {
   error?: string;
   errorCode?: SafariErrorCode;
   images?: string[];
+  /**
+   * 이 호출에서 사파리가 닿은 곳(열기 · 붙이기 · 열려 있던 탭의 이동). 같은 주소는 한 번, about:blank · 빈 주소는 뺀다.
+   * 오류 · 시간 초과로 끝나도 그때까지 모은 것이 온다. 닿은 곳이 없으면 빠진다.
+   */
+  touched?: Touch[];
 }
 
 export interface ReplSession {
@@ -64,7 +70,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
   const owned = new Set<string>();
   // 호출마다 출력 칸(slot)을 따로 둔다. AsyncLocalStorage 가 칸을 await · 타이머 · 드라이버 호출을 건너 따라가므로,
   // 시간 초과로 끝난 호출의 코드가 나중에 찍어도 닫힌 칸에 찍혀 버려진다(다음 호출 출력에 섞이지 않는다).
-  type Slot = { buf: OutputBuffer; closed: boolean };
+  type Slot = { buf: OutputBuffer; closed: boolean; touched: Touch[]; touchedUrls: Set<string> };
   const slots = new AsyncLocalStorage<Slot>();
   let queue: Promise<unknown> = Promise.resolve();
   let disposed = false;
@@ -148,8 +154,36 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     aborted: () => slots.getStore()?.closed === true,
   };
 
-  const track = (p: Page) => {
+  // 닿은 곳 모으기: 세션이 아는 Page 마다 「마지막으로 기록한 주소」를 둔다. 호출이 시작될 때 지금 주소로 맞춰 두고(닿은 것으로 치지 않는다),
+  // 열기 · 붙이기가 끝나면 그 자리에서 기록하고, 호출이 끝날 때(오류 · 시간 초과 포함) 주소가 달라진 Page 를 이동으로 기록한다.
+  // last === null 은 열렸지만 아직 기록 못 한 것(기다림이 시간 초과로 끝난 열기 등)이다.
+  const watched = new Map<string, { page: Page; last: string | null; how: "open" | "attach" }>();
+  const addTouch = (kind: Touch["kind"], url: string, userTab: boolean, given?: Slot): void => {
+    const slot = given ?? slots.getStore();
+    if (!slot || slot.closed) return; // 시간 초과로 닫힌 호출의 늦은 코드는 버려진다
+    if (!url || url === "about:blank" || slot.touchedUrls.has(url)) return;
+    slot.touchedUrls.add(url);
+    slot.touched.push({ kind, url, userTab });
+  };
+  const touchOpened = (pg: Page, how: "open" | "attach"): void => {
+    const url = pg.url();
+    const w = watched.get(pg.key);
+    if (w) w.last = url;
+    addTouch(how, url, how === "attach" ? !owned.has(pg.key) : false);
+  };
+  const collectNavigations = (slot: Slot): void => {
+    for (const w of watched.values()) {
+      const url = w.page.url();
+      if (url === w.last) continue;
+      const kind: Touch["kind"] = w.last === null ? w.how : "nav";
+      w.last = url;
+      addTouch(kind, url, !owned.has(w.page.key), slot);
+    }
+  };
+
+  const track = (p: Page, how: "open" | "attach" = "open") => {
     tabs.push(p);
+    watched.set(p.key, { page: p, last: null, how });
     sandbox.page = p;
     return p;
   };
@@ -214,6 +248,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     owned.add(tab.key);
     const pg = track(new Page(driver, tab.key, aiAccess));
     await wait.finish(pg, more);
+    touchOpened(pg, "open");
     return pg;
   };
 
@@ -257,6 +292,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     aiKeys.set(key, winId);
     const pg = track(new Page(driver, key, aiAccess));
     await wait.finish(pg, more);
+    touchOpened(pg, "open");
     return pg;
   };
 
@@ -271,6 +307,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
     owned.delete(pg.key);
     aiKeys.delete(pg.key);
     store.forget(pg.key);
+    watched.delete(pg.key);
     const i = tabs.findIndex((t) => t.key === pg.key);
     if (i >= 0) tabs.splice(i, 1);
     if (currentPage()?.key === pg.key) sandbox.page = tabs.length ? tabs[tabs.length - 1]! : null;
@@ -318,8 +355,9 @@ export function createReplSession(driver: SafariDriver): ReplSession {
 
   const attach = (key: string): Page => {
     const existing = tabs.find((t) => t.key === key);
-    const pg = existing ?? track(new Page(driver, key, aiAccess));
+    const pg = existing ?? track(new Page(driver, key, aiAccess), "attach");
     sandbox.page = pg;
+    touchOpened(pg, "attach");
     return pg;
   };
 
@@ -398,7 +436,8 @@ export function createReplSession(driver: SafariDriver): ReplSession {
   };
 
   async function exec(code: string, timeoutMs: number): Promise<ReplResult> {
-    const slot: Slot = { buf: new OutputBuffer(), closed: false };
+    const slot: Slot = { buf: new OutputBuffer(), closed: false, touched: [], touchedUrls: new Set() };
+    for (const w of watched.values()) w.last = w.page.url(); // 이미 열려 있던 탭의 시작 주소(이번 호출에서 닿은 것이 아니다)
     const buf = slot.buf;
     let timer: NodeJS.Timeout | undefined;
     let error: string | undefined;
@@ -416,11 +455,13 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       error = (e as { code?: string })?.code === "ERR_SCRIPT_EXECUTION_TIMEOUT" ? `시간 초과: ${Math.round(timeoutMs / 1000)}초 안에 끝나지 않음` : errorText(e);
     } finally {
       clearTimeout(timer);
+      collectNavigations(slot); // 오류 · 시간 초과로 끝나도 그때까지 옮겨 간 탭은 닿은 것으로 센다
       slot.closed = true;
     }
     const result: ReplResult = { output: buf.text() };
     if (error !== undefined) result.error = error;
     if (errorCode) result.errorCode = errorCode;
+    if (slot.touched.length > 0) result.touched = slot.touched;
     if (buf.images.length > 0) result.images = buf.images.map((b) => b.toString("base64"));
     return result;
   }
@@ -451,6 +492,7 @@ export function createReplSession(driver: SafariDriver): ReplSession {
         aiWindowId = null;
         workWindowId = null;
         aiKeys.clear();
+        watched.clear();
         tabs.length = 0;
         sandbox.page = null;
       }

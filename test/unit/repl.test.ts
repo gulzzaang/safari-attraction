@@ -629,3 +629,89 @@ describe("AI 창 기억 정리(Task 3 검토 반영)", () => {
     expect(r.error).not.toContain("AI 전용 창에서만 돼요");
   });
 });
+
+describe("touched — 호출마다 닿은 사이트", () => {
+  const ok = (r: object) => JSON.stringify({ ok: true, r });
+  /** goto 가 목적지로 옮겨 간 것처럼 보이게 한다: 동작 글에 든 주소를 lastUrl 이 알려 준다(레지스트리가 settleTab 에서 주소를 새로 하듯). */
+  let urls: Map<string, string>;
+  beforeEach(() => {
+    urls = new Map();
+    const orig = d.lastUrl.bind(d);
+    d.lastUrl = (key) => urls.get(key) ?? orig(key);
+    d.answer = (key, source) => {
+      if (source.includes("readyState")) return "complete";
+      const m = /http:\/\/[a-z0-9.]+\/[a-z0-9]*/.exec(source.replace(/^[\s\S]*?"url":/, ""));
+      if (source.includes('"goto"') && m) urls.set(key, m[0]);
+      return ok({ expectNav: true });
+    };
+    d.settleTab = async (key) => ({ navigated: true, leaving: false, tab: { key, windowId: 1, index: 1, title: "", url: urls.get(key) ?? "", isActive: false, owned: true } });
+  });
+
+  test("openTab 두 번 + goto 한 번 → 닿은 곳 3개(열기 2 · 이동 1)", async () => {
+    const r = await s.run('await openTab("http://a/"); const pb = await openTab("http://b/"); await pb.goto("http://b2/")');
+    expect(r.error).toBeUndefined();
+    expect(r.touched).toEqual([
+      { kind: "open", url: "http://a/", userTab: false },
+      { kind: "open", url: "http://b/", userTab: false },
+      { kind: "nav", url: "http://b2/", userTab: false },
+    ]);
+  });
+
+  test("읽기만 한 호출은 닿은 곳이 없다", async () => {
+    await s.run('await openTab("http://a/")');
+    const r = await s.run("console.log(page.url(), await page.title())");
+    expect(r.touched ?? []).toEqual([]);
+  });
+
+  test("이전 호출에서 열어 둔 탭을 이번 호출에서 옮기면 이동으로 잡힌다(시작 때 주소와 비교)", async () => {
+    await s.run('await openTab("http://a/")');
+    const r = await s.run('await page.goto("http://a2/")');
+    expect(r.touched).toEqual([{ kind: "nav", url: "http://a2/", userTab: false }]);
+    expect((await s.run("console.log(page.url())")).touched ?? []).toEqual([]);
+  });
+
+  test("openTab 뒤 throw 해도 그때까지 닿은 것 1개 + 오류", async () => {
+    const r = await s.run('await openTab("http://a/"); throw new Error("앗")');
+    expect(r.error).toContain("앗");
+    expect(r.touched).toEqual([{ kind: "open", url: "http://a/", userTab: false }]);
+  });
+
+  test("시간 초과로 끝나도 그때까지 닿은 것을 돌려준다(이동 포함)", async () => {
+    const r = await s.run('const pt = await openTab("http://a/"); await pt.goto("http://a2/"); await sleep(1000)', { timeoutMs: 150 });
+    expect(r.error).toContain("시간 초과");
+    expect(r.touched).toEqual([
+      { kind: "open", url: "http://a/", userTab: false },
+      { kind: "nav", url: "http://a2/", userTab: false },
+    ]);
+  });
+
+  test("같은 주소는 한 번만", async () => {
+    const r = await s.run('await openTab("http://a/"); await openTab("http://a/")');
+    expect(r.touched).toEqual([{ kind: "open", url: "http://a/", userTab: false }]);
+  });
+
+  test("about:blank 는 건너뛴다", async () => {
+    const r = await s.run("await openAiWindow()");
+    expect(r.touched ?? []).toEqual([]);
+  });
+
+  test("openAiWindow 로 연 곳도 열기로 잡힌다", async () => {
+    const r = await s.run('await openAiWindow("http://w/")');
+    expect(r.touched).toEqual([{ kind: "open", url: "http://w/", userTab: false }]);
+  });
+
+  test("attachBrowserTab · attachActiveBrowserTab 은 사용자 탭(attach)으로 잡힌다", async () => {
+    d.userTabs.push({ key: "u1", windowId: 1, index: 1, title: "", url: "https://user.example/inbox", isActive: true, owned: false });
+    const r = await s.run('await attachBrowserTab("u1")');
+    expect(r.touched).toEqual([{ kind: "attach", url: "https://user.example/inbox", userTab: true }]);
+    const r2 = await s.run("await attachActiveBrowserTab()");
+    expect(r2.touched).toEqual([{ kind: "attach", url: "https://user.example/inbox", userTab: true }]);
+  });
+
+  test("붙인 사용자 탭을 이동시키면 이동도 사용자 탭 표시", async () => {
+    d.userTabs.push({ key: "u1", windowId: 1, index: 1, title: "", url: "https://user.example/a", isActive: true, owned: false });
+    await s.run('await attachBrowserTab("u1")');
+    const r = await s.run('await page.goto("http://x/n")');
+    expect(r.touched).toEqual([{ kind: "nav", url: "http://x/n", userTab: true }]);
+  });
+});

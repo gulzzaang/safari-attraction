@@ -3,7 +3,10 @@ import { z } from "zod";
 import type { SafariDriver } from "./driver/types.js";
 import { formatDoctor, runDoctor } from "./doctor.js";
 import { toKorean } from "./errors-ko.js";
+import { ActivityLog, type Touch } from "./memory/activity.js";
+import { MemoryHome, resolveHome } from "./memory/home.js";
 import { createReplSession } from "./repl/context.js";
+import { SNAPSHOT_LIMIT_BYTES } from "./snapshot/diff.js";
 import { VERSION } from "./version.js";
 
 export const REPL_DESCRIPTION = `사용자의 진짜 사파리(로그인된 그대로)를 자바스크립트로 조작한다. 새 탭은 뒤쪽 탭으로 열려 사용자 화면을 가로채지 않는다.
@@ -54,15 +57,68 @@ Read values with console.log (the last expression is NOT printed). Errors come b
 export const STATUS_DESCRIPTION =
   "빠진 준비를 한국어로 점검한다 — 사파리 실행, 자동화 허락, 「Apple 이벤트의 JavaScript 허용」, 화면 기록(찍기용). 항목마다 ✓ / ✗ / ? 와 고칠 곳을 보여 준다. 막혔을 때 먼저 부른다. 빈 탭을 잠깐 열었다 닫는다. / Reports Safari connection status.";
 
+/**
+ * repl 한 번이 끝난 뒤의 기억 쪽 일: 하루 기록을 쓰고, 응답 끝에 붙일 글(사이트 메모 → 정리 안내 → 쓰기 실패 안내)을 모은다.
+ * 기억 쪽이 어떻게 실패해도 repl 결과를 바꾸지 않는다 — 쓰기 실패는 대화당 한 번 한 줄로만 알린다.
+ */
+async function memoryExtras(
+  activity: ActivityLog,
+  entry: { title: string; touched: Touch[]; ok: boolean; error?: string },
+): Promise<string[]> {
+  const extras: string[] = [];
+  let failed: { error: unknown } | undefined;
+  try {
+    await activity.record(entry);
+  } catch (error) {
+    failed = { error };
+  }
+  for (const part of [() => activity.siteNoteFor(entry.touched), () => activity.tidyHint()]) {
+    try {
+      const t = await part();
+      if (t) extras.push(t);
+    } catch {
+      // 메모 · 안내를 못 읽어도 repl 결과는 그대로.
+    }
+  }
+  if (failed) {
+    try {
+      const line = await activity.writeFailureNotice(failed.error);
+      if (line) extras.push(line);
+    } catch {
+      // 안내조차 못 만들면 조용히 넘어간다.
+    }
+  }
+  return extras;
+}
+
+/** 붙일 글을 하나씩 빈 줄로 이어 붙이되, 붙인 결과가 기존 출력 상한(16KB, 바이트)을 넘게 되는 것은 붙이지 않는다. */
+function attachWithinCap(base: string, extras: string[]): string {
+  let text = base;
+  for (const extra of extras) {
+    const next = text ? `${text}\n\n${extra}` : extra;
+    if (Buffer.byteLength(next, "utf8") <= SNAPSHOT_LIMIT_BYTES) text = next;
+  }
+  return text;
+}
+
 export interface SafariServer {
   server: McpServer;
   /** 우리가 연 탭을 닫고 기억을 비운다(드라이버 자체는 닫지 않는다). */
   shutdown(): Promise<void>;
   /** REPL 코드에서 비롯된, 아무도 받지 않은 거부 · 오류를 해당 호출 출력에 알린다(ReplSession.handleStray). */
   handleStray(reason: unknown, kind: "rejection" | "exception"): boolean;
+  /** 기억 폴더(하루 기록 · 사이트 메모 · 프로젝트 …). */
+  home: MemoryHome;
+  /** 대화 상태 · 하루 기록 · 사이트 메모 붙이기 · 정리 안내. 도구 호출이 시작될 때 touch() 를 부른다. */
+  activity: ActivityLog;
 }
 
-export function createSafariServer(driver: SafariDriver): SafariServer {
+/**
+ * home · now 는 시험에서 임시 폴더 · 가짜 시계를 끼우는 자리다. 기본은 resolveHome() 의 기억 폴더와 진짜 시계.
+ */
+export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHome; now?: () => Date } = {}): SafariServer {
+  const home = opts.home ?? new MemoryHome(resolveHome().dir);
+  const activity = new ActivityLog(home, opts.now);
   const session = createReplSession(driver);
   const server = new McpServer({ name: "safari-attraction", version: VERSION });
 
@@ -76,21 +132,28 @@ export function createSafariServer(driver: SafariDriver): SafariServer {
         code: z.string().describe("실행할 자바스크립트(최상위 await 가능)"),
       },
     },
-    async ({ code }) => {
+    async ({ title, code }) => {
+      activity.touch();
       const r = await session.run(code);
       // display() 로 붙인 이미지는 글 뒤에 붙는다(오류로 끝나도 그 전에 붙인 것은 남는다).
       const images = (r.images ?? []).map((data) => ({ type: "image" as const, data, mimeType: "image/png" }));
-      if (r.error === undefined) return { content: [{ type: "text" as const, text: r.output }, ...images] };
-      const err = toKorean(r.error, r.errorCode);
-      return { isError: true, content: [{ type: "text" as const, text: r.output ? `${r.output}\n\n오류: ${err}` : `오류: ${err}` }, ...images] };
+      const err = r.error === undefined ? undefined : toKorean(r.error, r.errorCode);
+      const base = err === undefined ? r.output : r.output ? `${r.output}\n\n오류: ${err}` : `오류: ${err}`;
+      const extras = await memoryExtras(activity, { title, touched: r.touched ?? [], ok: err === undefined, error: err });
+      const text = attachWithinCap(base, extras);
+      if (err === undefined) return { content: [{ type: "text" as const, text }, ...images] };
+      return { isError: true, content: [{ type: "text" as const, text }, ...images] };
     },
   );
 
   server.registerTool(
     "status",
     { title: "사파리 연결 상태", description: STATUS_DESCRIPTION, inputSchema: {} },
-    async () => ({ content: [{ type: "text", text: formatDoctor(await runDoctor(driver)) }] }),
+    async () => {
+      activity.touch();
+      return { content: [{ type: "text", text: formatDoctor(await runDoctor(driver)) }] };
+    },
   );
 
-  return { server, shutdown: () => session.dispose(), handleStray: (reason, kind) => session.handleStray(reason, kind) };
+  return { server, home, activity, shutdown: () => session.dispose(), handleStray: (reason, kind) => session.handleStray(reason, kind) };
 }

@@ -1,15 +1,19 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { createSafariServer, type SafariServer } from "../../src/server.js";
+import { MemoryHome, machineName } from "../../src/memory/home.js";
+import { makeTempHome } from "../helpers/memory-home.js";
 import { SafariError } from "../../src/driver/types.js";
 import { createFakeDriver, type FakeDriver } from "../helpers/fake-driver.js";
 
 let client: Client | undefined;
 let srv: SafariServer | undefined;
 
-async function connect(d: FakeDriver) {
-  srv = createSafariServer(d);
+async function connect(d: FakeDriver, opts: Parameters<typeof createSafariServer>[1] = {}) {
+  srv = createSafariServer(d, opts);
   const [a, b] = InMemoryTransport.createLinkedPair();
   await srv.server.connect(a);
   client = new Client({ name: "test", version: "0" });
@@ -178,5 +182,98 @@ describe("MCP 서버", () => {
     await srv!.shutdown();
     expect(closed).toBe(1);
     expect(d.calls.openTab).toHaveLength(1);
+  });
+});
+
+describe("repl 응답에 기록 · 메모 · 안내 붙이기", () => {
+  const NOW = new Date(2026, 10, 23, 14, 5, 0);
+  let tmp: Awaited<ReturnType<typeof makeTempHome>>;
+  let home: MemoryHome;
+  let clock: Date;
+  beforeEach(async () => {
+    tmp = await makeTempHome();
+    home = new MemoryHome(tmp.dir);
+    clock = new Date(NOW);
+  });
+  afterEach(async () => {
+    await client?.close();
+    await srv?.shutdown();
+    client = undefined;
+    srv = undefined;
+    await tmp.remove();
+  });
+  const put = async (rel: string, text: string) => {
+    const p = home.path(rel);
+    await mkdir(dirname(p), { recursive: true });
+    await writeFile(p, text, "utf8");
+  };
+  const repl = (c: Client, code: string, title = "시험") => c.callTool({ name: "repl", arguments: { title, code } });
+
+  test("닿은 사이트가 하루 기록에 쓰이고, 사이트 메모가 출력 끝에 한 번만 붙는다", async () => {
+    await put("기억/사이트/a.example.md", "로그인 필요");
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    const r1 = await repl(c, 'await openTab("https://a.example/x?q=1"); console.log("본문")', "첫 열기");
+    expect(textOf(r1)).toBe("본문\n\n… 이 사이트 메모(a.example): 로그인 필요");
+    const r2 = await repl(c, 'await openTab("https://a.example/y"); console.log("본문2")');
+    expect(textOf(r2)).toBe("본문2");
+    const log = (await home.read(`기억/일지/2026-11-23-${machineName()}.md`))!;
+    expect(log).toContain("- 14:05 「첫 열기」 — https://a.example/x · 성공");
+    expect(log).not.toContain("q=1");
+  });
+
+  test("오류 응답에도 메모가 붙고 기록에는 실패 이유가 남는다", async () => {
+    await put("기억/사이트/a.example.md", "메모");
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    const r = await repl(c, 'await openTab("https://a.example/"); throw new Error("앗")');
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe("오류: 앗\n\n… 이 사이트 메모(a.example): 메모");
+    expect((await home.read(`기억/일지/2026-11-23-${machineName()}.md`))!).toContain("실패(앗)");
+  });
+
+  test("정리 안내가 메모 뒤에 붙고 한 번만", async () => {
+    await put("기억/사이트/a.example.md", "메모");
+    await put("기억/일지/2026-11-20-옛맥.md", "- 옛 기록\n");
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    const r1 = await repl(c, 'await openTab("https://a.example/"); console.log("x")');
+    expect(textOf(r1)).toBe("x\n\n… 이 사이트 메모(a.example): 메모\n\n… 기억 정리할 때가 됐어요 — memory 도구 tidy");
+    const r2 = await repl(c, 'console.log("y")');
+    expect(textOf(r2)).toBe("y");
+  });
+
+  test("붙이면 16KB 를 넘는 출력에는 붙이지 않는다(기록은 남는다)", async () => {
+    await put("기억/사이트/a.example.md", "메모".repeat(40));
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    const r = await repl(c, 'await openTab("https://a.example/"); console.log("x".repeat(16350))');
+    expect(textOf(r)).not.toContain("이 사이트 메모");
+    expect(Buffer.byteLength(textOf(r))).toBeLessThanOrEqual(16384);
+    expect(await home.read(`기억/일지/2026-11-23-${machineName()}.md`)).toContain("a.example");
+  });
+
+  test("기억 폴더에 쓸 수 없어도 repl 결과는 그대로, 안내는 한 줄씩 대화당 한 번", async () => {
+    await writeFile(tmp.dir + "/막힘", "파일");
+    const bad = new MemoryHome(tmp.dir + "/막힘");
+    const c = await connect(createFakeDriver(), { home: bad, now: () => clock });
+    const r1 = await repl(c, 'await openTab("https://a.example/"); console.log("본문")');
+    expect(r1.isError).toBeFalsy();
+    expect(textOf(r1)).toMatch(/^본문\n\n기억 폴더에 쓸 수 없어요: .*막힘 — .+$/);
+    const r2 = await repl(c, 'await openTab("https://a.example/z"); console.log("본문2")');
+    expect(textOf(r2)).toBe("본문2");
+  });
+
+  test("status 도 사용 시각을 갱신한다", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    const before = srv!.activity.state.lastUse;
+    clock = new Date(clock.getTime() + 60_000);
+    await c.callTool({ name: "status", arguments: {} });
+    expect(srv!.activity.state.lastUse).toBe(before + 60_000);
+  });
+
+  test("30분 넘게 안 쓰면 사이트 메모를 다시 붙인다", async () => {
+    await put("기억/사이트/a.example.md", "메모");
+    const c = await connect(createFakeDriver(), { home, now: () => clock });
+    await repl(c, 'await openTab("https://a.example/")');
+    clock = new Date(clock.getTime() + 1_800_001);
+    const r = await repl(c, 'await openTab("https://a.example/")');
+    expect(textOf(r)).toContain("이 사이트 메모(a.example)");
   });
 });

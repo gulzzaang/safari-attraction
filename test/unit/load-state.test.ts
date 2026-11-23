@@ -258,7 +258,7 @@ describe("openTab 의 waitUntil", () => {
     d.answer = (_k, src) => (src.includes("readyState") ? ++polls < 3 ? "interactive|1" : "complete|1" : "");
     const s = createReplSession(d);
     const r = await s.run('await openTab("http://a/", { waitUntil: "load" }); console.log("끝")');
-    expect(r).toEqual({ output: "끝" });
+    expect(r).toEqual({ output: "끝", touched: [{ kind: "open", url: "http://a/", userTab: false }] });
     expect(polls).toBe(3);
     await s.dispose();
   });
