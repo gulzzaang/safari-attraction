@@ -397,6 +397,22 @@ const ops = {
     return p ? { exists: true, url: p.url, marker: p.marker } : { exists: false, url: "", marker: "" };
   },
 
+  // 여러 자리의 탭 {windowId, index, url, marker} 를 읽기만 한다(표시는 페이지 안 dataset 을 읽을 뿐 아무것도 바꾸지 않는다. 사파리를 앞으로 가져오지 않는다).
+  // 없는 탭 · 읽지 못한 탭은 결과에서 뺀다. args.timeoutMs 는 탭 하나에 쓰는 시간이다 — 전체가 spots 수 × timeoutMs 를 넘기면 남은 탭은 건너뛰고,
+  // 한 탭이 아예 멈추면(경고창) 부르는 쪽의 요청 시간 제한이 호스트를 다시 띄운다.
+  readMarkers(args) {
+    const out = [];
+    const spots = args.spots || [];
+    const per = args.timeoutMs || 500;
+    const t0 = Date.now();
+    for (let i = 0; i < spots.length; i++) {
+      if (Date.now() - t0 > per * spots.length) break;
+      const p = probeTab(spots[i].windowId, spots[i].index);
+      if (p) out.push({ windowId: spots[i].windowId, index: spots[i].index, url: p.url, marker: p.marker });
+    }
+    return out;
+  },
+
   // 우리가 연 탭이 제자리에서 이동했다(주소 이동 · 링크 · 폼 전송). 새 문서에는 표시가 없다 — 불러오기가 끝나길 기다려
   // 표시를 다시 적고 탭 정보를 돌려준다. 자리에 다른 키의 표시가 있으면 {status:"other"}, 탭이 없으면 {status:"gone"}.
   // 아직 옛 문서(표시가 그대로)면 이동이 시작되길 잠깐(최대 1.5초) 기다리고, 그래도 안 바뀌면 같은 문서로 본다.

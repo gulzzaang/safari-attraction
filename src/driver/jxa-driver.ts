@@ -4,7 +4,7 @@ import { captureWindowPng } from "./capture.js";
 import { buildGuardedSource, expressionError } from "./guarded-source.js";
 import { urlForms } from "./url.js";
 import { HostError, HostTimeoutError, JxaHost } from "./jxa-host.js";
-import { TabRegistry, type Guarded, type Probe, type RawTab, type RebindResult, type SettleResult, type Spot } from "./tab-registry.js";
+import { TabRegistry, type Guarded, type MarkerRead, type Probe, type RawTab, type RebindResult, type SettleResult, type Spot } from "./tab-registry.js";
 import { SafariError, type RunJsDetail, type SafariDriver, type TabInfo, type WindowBounds, type WindowInfo } from "./types.js";
 
 export { SafariError } from "./types.js";
@@ -24,6 +24,8 @@ const MAX_LOAD_BUDGET_MS = 100_000;
 const LOAD_REQUEST_SLACK_MS = 5_000;
 /** 호스트 요청 시간 제한의 상한. */
 const MAX_REQUEST_TIMEOUT_MS = 115_000;
+/** 탭 표시를 읽는 요청에서, 탭당 시간 말고 더 걸릴 수 있는 여유(호스트가 다시 뜨는 시간 등). */
+const READ_MARKERS_SLACK_MS = 5_000;
 
 /** 호스트가 기다릴 시간을 바로잡는다(상한 100초). 안 주면 undefined. */
 const clampBudget = (loadBudgetMs: number | undefined): number | undefined =>
@@ -89,7 +91,8 @@ export function opError(op: string, e: unknown): SafariError {
 /** 드라이버가 호스트에 바라는 것(시험에서는 가짜로 바꿔 끼운다). */
 export type HostLike = Pick<JxaHost, "call" | "close">;
 
-export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLike } = {}): SafariDriver {
+export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLike; /** 알릴 것(기본은 표준 오류 출력). */ warn?: (line: string) => void } = {}): SafariDriver {
+  const warn = opts.warn ?? ((line: string) => void process.stderr.write(`${line}\n`));
   const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const host: HostLike = opts.host ?? new JxaHost(requestTimeoutMs);
   const withBudget = (loadBudgetMs: number | undefined, base?: number) => budgetTimeout(clampBudget(loadBudgetMs), base, requestTimeoutMs);
@@ -123,6 +126,8 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     rebind: (a) => call<RebindResult>("rebind", a),
     settle: (a) => call<SettleResult>("settle", { ...a, loadBudgetMs: clampBudget(a.loadBudgetMs) }, withBudget(a.loadBudgetMs)),
     close: (spot, urlOnly, timeoutMs) => call<Guarded<null>>("closeTab", { ...guardArgs(spot), urlOnly }, timeoutMs),
+    // 표시 읽기는 읽기 전용. 호스트가 탭 하나에 쓸 시간(timeoutMs)을 지키고, 한 탭이 멈추면 요청 시간 제한이 끊는다.
+    readMarkers: (spots, timeoutMs) => call<MarkerRead[]>("readMarkers", { spots, timeoutMs }, spots.length * timeoutMs + READ_MARKERS_SLACK_MS),
   });
 
   // 우리가 openWindow 로 연 창(창 번호). 이 안의 창만 setWindowSize · closeWindow 가 만진다.
@@ -360,7 +365,9 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
         }
       }
       try {
-        closed += await registry.closeOwned();
+        const r = await registry.closeOwned();
+        closed += r.closed;
+        if (r.missing > 0) warn(`우리 탭 ${r.missing}개를 못 찾았어요(이미 닫혔을 수 있어요)`);
       } catch (err) {
         firstError ??= err;
       }

@@ -487,24 +487,26 @@ describe("드라이버 runJs: 빠른 길 → 안 되면 느린 길(가짜 호스
     const { calls, d } = setup((op) => {
       if (op === "runJsFast") return ++fastCalls === 1 ? { fallback: true } : { value: "ok", url: "http://x/" };
       if (op === "runJs") return { stale: true };
+      if (op === "probe") return { exists: true, url: "http://x/", marker: "t9.other" }; // 자리에 표시 있는 탭(표시 없는 탭이면 settle 전에 표시로 먼저 찾는다)
       if (op === "settle") return { status: "navigated", tab: { windowId: 5, index: 1, title: "", url: "http://x/", isActive: false }, stamped: true };
       return undefined;
     });
     const { tab } = await d.openTab("http://x/");
     expect(await d.runJs(tab.key, "1")).toBe("ok");
-    expect(calls.map((c) => c.op)).toEqual(["openTab", "runJsFast", "runJs", "settle", "runJsFast"]);
+    expect(calls.map((c) => c.op)).toEqual(["openTab", "runJsFast", "runJs", "probe", "settle", "runJsFast"]);
   });
 
   test("빠른 길이 stale 이면(소스가 던진 뒤 자리 확인 실패) 탭을 다시 찾는다", async () => {
     let n = 0;
     const { calls, d } = setup((op) => {
       if (op === "runJsFast") return ++n === 1 ? { stale: true } : { value: "ok" };
+      if (op === "probe") return { exists: true, url: "http://x/", marker: "t9.other" };
       if (op === "settle") return { status: "same", leaving: false, tab: { windowId: 5, index: 1, title: "", url: "http://x/", isActive: false } };
       return undefined;
     });
     const { tab } = await d.openTab("http://x/");
     expect(await d.runJs(tab.key, "1")).toBe("ok");
-    expect(calls.map((c) => c.op)).toEqual(["openTab", "runJsFast", "settle", "runJsFast"]);
+    expect(calls.map((c) => c.op)).toEqual(["openTab", "runJsFast", "probe", "settle", "runJsFast"]);
   });
 
   test("식이 아닌 소스는 호스트에 보내지 않고 오류로 알린다(사파리가 조용히 빈 값을 주기 때문)", async () => {
