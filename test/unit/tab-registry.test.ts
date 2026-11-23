@@ -907,8 +907,8 @@ describe('TabRegistry', () => {
         const sf = new FakeSafari();
         const reg = new TabRegistry(sf);
         sf.tabs.push({ url: 'http://user/1', marker: '' });
-        openOwned(sf, reg, 'http://a/x');
-        reg.noteWindow(1, sf.tabs.map((t) => t.url)); // 드라이버가 열고 나서 호스트가 알려 준 창 모습을 기록
+        const k = openOwned(sf, reg, 'http://a/x');
+        reg.noteWindow(1, sf.tabs.map((t) => t.url), k); // 드라이버가 열고 나서 호스트가 알려 준 창 모습을 기록
         sf.tabs[1]!.marker = '';
         sf.tabs[1]!.url = 'http://a/next';
         expect(await reg.closeOwned()).toEqual({ closed: 1, missing: 0 });
@@ -968,6 +968,60 @@ describe('TabRegistry', () => {
         sf.tabs[1]!.marker = '';
         sf.tabs[1]!.url = 'http://www.a.example/next';
         expect(await reg.closeOwned()).toEqual({ closed: 1, missing: 0 });
+      });
+
+      test('[N1] 열기 직후의 창 모습 기록(noteWindow)도 다른 우리 탭이 정리되기 전의 낡은 모습을 새것으로 만들지 않는다', async () => {
+        const sf = new FakeSafari();
+        const reg = new TabRegistry(sf);
+        sf.tabs.push({ url: 'http://a.example/u1', marker: '' });
+        openOwned(sf, reg, 'http://a.example/x'); // A
+        sf.tabs.push({ url: 'http://a.example/u2', marker: '' });
+        await reg.sync(await sf.list()); // [u1, A, u2] 를 기록
+        sf.tabs.splice(1, 1); // 사용자가 A 를 닫음 — u2 가 A 의 자리로 당겨짐
+        const b = openOwned(sf, reg, 'http://b.example/y'); // B 를 끝에 연다
+        reg.noteWindow(1, sf.tabs.map((t) => t.url), b); // 드라이버가 하는 기록 — 이전 기록 [u1,A,u2] 는 [u1,u2] 와 다르다
+        expect(await reg.closeOwned()).toEqual({ closed: 1, missing: 0 }); // B 만
+        expect(sf.tabs.map((t) => t.url)).toEqual(['http://a.example/u1', 'http://a.example/u2']); // u2 는 산다
+      });
+
+      test('[N1] 이전 기록이 없고 같은 창에 다른 우리 탭이 있으면 열기 직후 모습을 기록하지 않는다', async () => {
+        const sf = new FakeSafari();
+        const reg = new TabRegistry(sf);
+        sf.tabs.push({ url: 'http://a.example/u1', marker: '' });
+        openOwned(sf, reg, 'http://a.example/x'); // A (기록 없음)
+        sf.tabs.push({ url: 'http://a.example/u2', marker: '' });
+        sf.tabs.splice(1, 1); // A 가 닫히고 u2 가 당겨짐
+        const b = openOwned(sf, reg, 'http://b.example/y');
+        reg.noteWindow(1, sf.tabs.map((t) => t.url), b);
+        expect(await reg.closeOwned()).toEqual({ closed: 1, missing: 0 });
+        expect(sf.tabs.map((t) => t.url)).toEqual(['http://a.example/u1', 'http://a.example/u2']);
+      });
+
+      test('[N1] 이전 기록 뒤에 우리 탭 하나만 끝에 붙은 것이면 기록을 새로 한다(바로 이어서 되찾기가 된다)', async () => {
+        const { sf, reg } = await threeTabs(); // [u1, A, u2] 기록됨
+        const b = openOwned(sf, reg, 'http://b/y');
+        reg.noteWindow(1, sf.tabs.map((t) => t.url), b); // [u1, A, u2, B]
+        sf.tabs[1]!.marker = '';
+        sf.tabs[1]!.url = 'http://a/next'; // A 가 스스로 옮겨 감
+        expect(await reg.closeOwned()).toEqual({ closed: 2, missing: 0 });
+        expect(sf.tabs.map((t) => t.url)).toEqual(['http://user/1', 'http://user/2']);
+      });
+
+      test('[N2] 잃어버린 우리 탭은 경고창에 막힌 같은 주소 사용자 탭을 주소로 닫지 않는다(blocked 로 만들지도 않는다)', async () => {
+        const sf = new FakeSafari();
+        const reg = new TabRegistry(sf);
+        sf.tabs.push({ url: 'http://a.example/u1', marker: '' });
+        const k = openOwned(sf, reg, 'http://a.example/x');
+        sf.tabs.push({ url: 'http://a.example/u2', marker: '' });
+        await reg.sync(await sf.list());
+        sf.tabs[1] = { url: 'http://zzz.example/other', marker: '' }; // 우리 탭이 다른 곳으로 가 표시를 잃음
+        sf.tabs.push({ url: 'http://c.example/unread', marker: '', unreadable: true }); // 못 읽은 탭이 있어 「없다」고 단정 못 함
+        await reg.sync(await sf.list()); // 잃어버림
+        expect(reg.ownedKeys()).toEqual([]);
+        sf.tabs[1] = { url: 'http://a.example/x', marker: '', probeStuck: true }; // 우리 옛 자리에 같은 주소 · 경고창에 막힌 사용자 탭
+        await reg.withTab(k, async () => { throw new SafariError('ALERT_BLOCKED', 'x'); }).catch(() => undefined);
+        await reg.closeTab(k).catch(() => undefined);
+        expect(sf.tabs.map((t) => t.url)).toContain('http://a.example/x');
       });
 
       test('[치명] resolve 만으로 창 모습을 새로 기록하지 않는다 — 다른 우리 탭이 정리되기 전에 낡은 모습이 새것이 되어 사용자 탭을 닫던 일', async () => {

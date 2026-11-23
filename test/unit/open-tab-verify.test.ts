@@ -25,12 +25,12 @@ describe("openTab: 표시를 적기 전에 탭 확인", () => {
     expect(markers(h)).toEqual(["", "", KEY]);
   });
 
-  test("끼어든 사용자 탭이 같은 주소여도(표시 없음) 연 탭을 뒤에서부터 찾아 그 탭에 적는다", () => {
+  test("[m1] 같은 주소의 사용자 탭이 새로 끼어들어 같은 주소 탭이 둘 늘면 어느 쪽이 연 탭인지 몰라 아무 탭에도 적지 않고 오류로 알린다", () => {
     const h = createHarness();
     h.addWindow(7, { url: "http://user/0" });
-    h.beforeFirstJs = () => h.windows.get(7)!.tabs.unshift(h.newTab("http://www.a.example/x"));
-    expect(open(h)).toMatchObject({ index: 3, stamped: true });
-    expect(markers(h)).toEqual(["", "", KEY]);
+    h.beforeFirstJs = () => h.windows.get(7)!.tabs.unshift(h.newTab("http://www.a.example/x")); // [사용자 a/x, user/0, 연 탭] — 같은 주소 탭이 0 → 2
+    expect(() => open(h)).toThrow(/확인/);
+    expect(markers(h)).toEqual(["", "", ""]);
   });
 
   test("사용자가 앞의 탭을 닫아 순번이 당겨져도 연 탭에 적는다", () => {
@@ -66,10 +66,10 @@ describe("openTab: 표시를 적기 전에 탭 확인", () => {
 
   test("이미 다른 표시가 있는 탭에는 적지 않는다", () => {
     const h = createHarness();
-    h.addWindow(7, { url: "http://user/0" });
-    h.beforeFirstJs = () => h.windows.get(7)!.tabs.unshift(h.newTab("http://www.a.example/x", "t9.other")); // 앞에 같은 주소 · 다른 표시 탭
-    expect(open(h)).toMatchObject({ index: 3, stamped: true });
-    expect(markers(h)).toEqual(["t9.other", "", KEY]);
+    h.addWindow(7, { url: "http://user/0" }, { url: "http://www.a.example/x", marker: "t9.other" }); // 다른 서버가 표시한 같은 주소 탭
+    h.beforeFirstJs = () => h.windows.get(7)!.tabs.unshift(h.newTab("http://user/new"));
+    expect(open(h)).toMatchObject({ index: 4, stamped: true });
+    expect(markers(h)).toEqual(["", "", "t9.other", KEY]);
   });
 
   test("같은 주소의 사용자 탭이 따로 있고 연 탭이 리디렉트돼도(밀림 없음) 사용자 탭이 아니라 연 탭에 적는다", () => {
@@ -135,5 +135,27 @@ describe("openTab: 표시를 적기 전에 탭 확인", () => {
     };
     expect(open(h)).toMatchObject({ index: 4, stamped: true });
     expect(markers(h)).toEqual(["", "", "", KEY]);
+  });
+
+  test("[m2] 같은 사이트로 리디렉트돼도 연 탭 앞의 탭들이 열기 전과 다르면(그 사이 사용자 탭이 바뀜) 적지 않고 오류로 알린다", () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/0" });
+    h.beforeFirstJs = () => {
+      const tabs = h.windows.get(7)!.tabs;
+      tabs[1]!.page.href = "http://login.a.example/x"; // 연 탭이 같은 사이트의 다른 주소로 감
+      tabs[0]!.page.href = "http://user/changed"; // 앞의 사용자 탭 주소가 바뀜
+    };
+    expect(() => open(h)).toThrow(/확인/);
+    expect(markers(h)).toEqual(["", ""]);
+  });
+
+  test("[m2] 앞의 탭들이 그대로면 같은 사이트 리디렉트는 연 탭에 적는다", () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/0" });
+    h.beforeFirstJs = () => {
+      h.windows.get(7)!.tabs[1]!.page.href = "http://login.a.example/x";
+    };
+    expect(open(h)).toMatchObject({ index: 2, stamped: true });
+    expect(markers(h)).toEqual(["", KEY]);
   });
 });

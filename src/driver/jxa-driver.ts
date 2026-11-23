@@ -265,7 +265,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
         raw = await call("openTab", args, withBudget(o.loadBudgetMs));
       }
       registry.register(key, raw.windowId, raw.index, raw.url, { owned: true, stamped: raw.stamped });
-      if (raw.windowUrls) registry.noteWindow(raw.windowId, raw.windowUrls); // 연 직후 창의 모습(늦게 스스로 옮겨 간 탭을 되찾는 데 쓴다)
+      if (raw.windowUrls) registry.noteWindow(raw.windowId, raw.windowUrls, key); // 연 직후 창의 모습(늦게 스스로 옮겨 간 탭을 되찾는 데 쓴다)
       const { stamped: _stamped, windowUrls: _windowUrls, ...rest } = raw;
       const tab = toTab({ raw: rest, key, owned: true });
       const after = await frontBundleId();
@@ -287,7 +287,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
       }
       ownedWindows.add(raw.windowId);
       registry.register(key, raw.windowId, raw.tab.index, raw.tab.url, { owned: true, stamped: raw.stamped });
-      registry.noteWindow(raw.windowId, [raw.tab.url]); // 새 창은 탭이 하나다
+      registry.noteWindow(raw.windowId, [raw.tab.url], key); // 새 창은 탭이 하나다
       if (o.width !== undefined || o.height !== undefined) {
         try {
           const cur = liveState(raw.windowId, await windowState(raw.windowId));

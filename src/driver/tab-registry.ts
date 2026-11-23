@@ -171,9 +171,21 @@ export class TabRegistry {
     return `${key}.${this.instanceId}`;
   }
 
-  /** 창의 지금 모습(순번대로 탭 주소들)을 기록한다. 우리가 탭을 연 직후 호스트가 알려 준 값을 넣는다. */
-  noteWindow(windowId: number, urls: string[]): void {
-    this.windowShape.set(windowId, [...urls]);
+  /**
+   * 우리가 탭을 연 직후 창의 모습(순번대로 탭 주소들, 맨 끝이 새로 연 탭 = key)을 기록한다. 같은 창의 다른 우리 탭이 아직 정리되기 전이라 낡은 모습을 새것으로 만들면 안 된다:
+   * 이전 기록이 「지금 모습에서 새 탭만 뺀 것」과 정확히 같을 때만 새로 기록하고, 다르면 그 창 기록을 버린다(다음 sync 가 우리 탭을 다 맞춘 뒤 기록할 때까지 되찾기 없음).
+   * 이전 기록이 없을 때는 같은 창에 다른 우리 탭(잃어버리지 않은)이 없을 때만 기록한다.
+   */
+  noteWindow(windowId: number, urls: string[], key?: string): void {
+    const prev = this.windowShape.get(windowId);
+    if (prev === undefined) {
+      const others = [...this.entries.values()].some((e) => e.owned && !e.lost && e.windowId === windowId && e.key !== key);
+      if (!others) this.windowShape.set(windowId, [...urls]);
+      return;
+    }
+    const head = urls.slice(0, -1);
+    if (prev.length === head.length && prev.every((u, i) => sameUrl(u, head[i]))) this.windowShape.set(windowId, [...urls]);
+    else this.windowShape.delete(windowId);
   }
 
   /** 탭 목록(raw)을 알게 됐다 — 목록에 든 창마다 모습을 새로 기록한다. */
@@ -329,11 +341,11 @@ export class TabRegistry {
     if (!e) throw tabClosed(key);
     const timedOut = (err: unknown) => err instanceof SafariError && (err.code === "TIMEOUT" || err.code === "ALERT_BLOCKED");
     const run = async (s: Spot): Promise<Guarded<null>> => {
-      if (e.blocked) return this.backend.close(s, true);
+      if (e.blocked && !e.lost) return this.backend.close(s, true);
       try {
         return await this.backend.close(s, false); // 창을 닫는 데는 시간이 걸릴 수 있어 보통 제한 시간을 쓴다
       } catch (err) {
-        if (!timedOut(err)) throw err;
+        if (!timedOut(err) || e.lost) throw err; // 잃어버린 탭은 주소로 닫는 길(아래)을 쓰지 않는다
         // 답이 없었다 — 경고창이 떠 JS 로 표시를 못 읽는 탭이거나, 닫는 중이었을 수 있다(호스트는 다시 떠 있다).
         const r = await this.backend.close(s, true);
         if (!("stale" in r)) return r;
@@ -560,7 +572,7 @@ export class TabRegistry {
 
   private markBlocked(key: string): void {
     const e = this.entries.get(key);
-    if (e) e.blocked = true;
+    if (e && !e.lost) e.blocked = true; // 잃어버린 탭은 어느 탭인지 모른다 — 경고창이 떴다는 소식이 우리 탭 것이라고 할 수 없다
   }
 
   /** 창이 닫혔다 — 그 창 안 탭의 기록을 모두 뺀다. */
