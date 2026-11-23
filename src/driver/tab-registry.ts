@@ -126,6 +126,8 @@ interface Scan {
 }
 const newScan = (): Scan => ({ reads: new Map(), failed: new Set() });
 const spotId = (t: { windowId: number; index: number }) => `${t.windowId}:${t.index}`;
+/** 우리 페이지 탭은 항상 http(s) 다(우리 AI 창은 창 id 로 닫는다). 시작 페이지 · 즐겨찾기 · about: · 빈 주소 탭은 우리 탭일 수 없어 표시를 읽지 않는다. */
+const isWebTab = (t: { url: string }) => /^https?:/i.test(t.url);
 
 function tabClosed(key: string): SafariError {
   return new SafariError("TAB_CLOSED", `탭 ${key} 을(를) 찾을 수 없음(닫혔거나 다른 주소로 옮겨 감)`);
@@ -477,12 +479,13 @@ export class TabRegistry {
   }
 
   /**
-   * 탭들의 표시를 읽어 scan 에 둔다(이미 읽은 것 · 이미 실패한 것은 다시 시도하지 않는다). 앞에서부터 SCAN_MAX_TABS 개까지만 들여다보고,
+   * 탭들의 표시를 읽어 scan 에 둔다(이미 읽은 것 · 이미 실패한 것은 다시 시도하지 않는다). http(s) 주소의 탭만 앞에서부터 SCAN_MAX_TABS 개까지 들여다보고,
    * 읽기만 한다. 멈췄거나 못 읽은 탭은 failed 에 적고 계속한다(예산 SCAN_BUDGET_MS 는 묶음마다 확인한다).
    * 다 읽었으면 true(상한 · 시간 · 못 읽음으로 빠진 탭이 없다).
    */
   private async readMarkersOf(tabs: RawTab[], scan: Scan): Promise<boolean> {
-    const look = tabs.slice(0, SCAN_MAX_TABS);
+    const web = tabs.filter(isWebTab); // 웹 주소가 아닌 탭은 읽지 않고, 훑은 것으로 센다
+    const look = web.slice(0, SCAN_MAX_TABS);
     const todo = look.filter((t) => !scan.reads.has(spotId(t)) && !scan.failed.has(spotId(t)));
     const t0 = Date.now();
     for (let i = 0; i < todo.length; i += SCAN_CHUNK) {
@@ -497,7 +500,7 @@ export class TabRegistry {
       for (const r of reads) scan.reads.set(spotId(r), r);
       for (const t of chunk) if (!scan.reads.has(spotId(t))) scan.failed.add(spotId(t)); // 돌려받지 못한 탭 = 못 읽음
     }
-    return tabs.length <= SCAN_MAX_TABS && look.every((t) => scan.reads.has(spotId(t)));
+    return web.length <= SCAN_MAX_TABS && look.every((t) => scan.reads.has(spotId(t)));
   }
 
   /** 호스트가 자리의 탭이 맞다고 확인해 일을 마쳤다 — 표시도 이제 적혀 있다. */
@@ -618,7 +621,8 @@ export class TabRegistry {
         p = await this.backend.probe(t.windowId, t.index, PROBE_TIMEOUT_MS);
       } catch (err) {
         // 멈춘 탭(경고창 등)은 표시를 못 읽는다 — 주소가 같으면 그 탭으로 본다.
-        if (err instanceof SafariError && (err.code === "TIMEOUT" || err.code === "ALERT_BLOCKED") && sameUrl(t.url, e.url)) {
+        // 단, 잃어버린 탭은 표시가 정확히 맞을 때만 돌아온다 — 같은 주소의 표시 없는 사용자 탭이 경고창에 막혀 있어도 우리 탭으로 되살리지 않는다(주소로 닫게 되므로).
+        if (!e.lost && err instanceof SafariError && (err.code === "TIMEOUT" || err.code === "ALERT_BLOCKED") && sameUrl(t.url, e.url)) {
           e.blocked = true;
           return take(t);
         }
@@ -639,7 +643,7 @@ export class TabRegistry {
     if (!e.owned) return null;
     const sig = raw.map((t) => `${t.windowId}:${t.index}:${t.url}`).join("|");
     if (fromSync && e.lost && e.scanSig === sig) return null; // 지난번 훑은 때와 탭 목록이 같다 — 되풀이해 들여다보지 않는다
-    const candidates = this.priorityOrder(raw.filter((t) => free(t) && !tried.has(spotId(t))), [e]);
+    const candidates = this.priorityOrder(raw.filter((t) => free(t) && !tried.has(spotId(t)) && isWebTab(t)), [e]);
     const complete = await this.readMarkersOf(candidates, scan);
     const mark = this.markerOf(e.key);
     for (const t of candidates.slice(0, SCAN_MAX_TABS)) {
