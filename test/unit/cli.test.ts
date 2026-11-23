@@ -3,6 +3,9 @@ import { runCli } from "../../src/cli.js";
 import { VERSION } from "../../src/version.js";
 import { createFakeDriver } from "../helpers/fake-driver.js";
 import { SafariError } from "../../src/driver/types.js";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function makeIo(stdinIsTTY: boolean) {
   const out: string[] = [];
@@ -86,5 +89,38 @@ describe("명령줄(runCli)", () => {
     const { out, io } = makeIo(true);
     expect(await runCli(["doctor"], io, { createDriver: () => d })).toBe(1);
     expect(out.join("\n")).toContain("✗");
+  });
+
+  test("doctor: 기억 줄이 붙는다(사파리 점검 뒤), 폴더 위치는 환경 변수를 따른다", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "safari-attraction-cli-"));
+    try {
+      const d = createFakeDriver();
+      d.answer = () => "2";
+      d.close = async () => {};
+      const { out, io } = makeIo(true);
+      expect(await runCli(["doctor"], io, { createDriver: () => d, env: { SAFARI_ATTRACTION_HOME: dir } })).toBe(0);
+      const t = out.join("\n");
+      expect(t).toContain(`✓ 기억 폴더: ${dir} · 환경 변수`);
+      expect(t).toContain("마지막 정리: 아직 없음");
+      expect(t.indexOf("준비 끝")).toBeLessThan(t.indexOf("기억 폴더"));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("doctor: 기억 폴더를 못 써도 종료 코드는 사파리 점검만 따른다(0), 줄에는 ✗ 로 나온다", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "safari-attraction-cli-"));
+    try {
+      await writeFile(join(dir, "막음"), "x", "utf8");
+      const d = createFakeDriver();
+      d.answer = () => "2";
+      d.close = async () => {};
+      const { out, io } = makeIo(true);
+      const env = { SAFARI_ATTRACTION_HOME: join(dir, "막음", "하위") };
+      expect(await runCli(["doctor"], io, { createDriver: () => d, env })).toBe(0);
+      expect(out.join("\n")).toContain("✗ 기억 폴더:");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

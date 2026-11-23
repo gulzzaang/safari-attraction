@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { formatDoctor, runDoctor } from "./doctor.js";
+import { MemoryHome, resolveHome } from "./memory/home.js";
+import { memoryStatusLines } from "./memory/status.js";
 import type { SafariDriver } from "./driver/types.js";
 import { createJxaDriver } from "./driver/jxa-driver.js";
 import { defaultServerCommand, runSetup, type ExecResult } from "./setup.js";
@@ -59,10 +61,13 @@ function realExec(cmd: string, args: string[], timeoutMs: number = EXEC_TIMEOUT_
 }
 
 /** 점검을 돌려 결과 글과 모두 ok 인지를 돌려준다. 어떤 길로 끝나든 시험 탭 · 사파리 호스트를 닫는다. */
-async function doctorText(driver: SafariDriver): Promise<{ text: string; allOk: boolean }> {
+async function doctorText(driver: SafariDriver, env: NodeJS.ProcessEnv): Promise<{ text: string; allOk: boolean }> {
   try {
     const report = await runDoctor(driver);
-    return { text: formatDoctor(report), allOk: report.items.every((i) => i.state === "ok") };
+    // 기억 폴더 줄은 사파리 점검과 따로다. allOk(종료 코드)는 사파리 점검만 따른다 — 기억 폴더를 못 써도 사파리 조작은 되므로.
+    const { kind, dir } = resolveHome(env);
+    const memory = await memoryStatusLines(new MemoryHome(dir), kind);
+    return { text: `${formatDoctor(report)}\n\n${memory.lines.join("\n")}`, allOk: report.items.every((i) => i.state === "ok") };
   } finally {
     try {
       await driver.closeOwned();
@@ -94,7 +99,7 @@ export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Pro
       return 0;
     case "doctor": {
       if (rest.length) break;
-      const { text, allOk } = await doctorText((deps.createDriver ?? createJxaDriver)());
+      const { text, allOk } = await doctorText((deps.createDriver ?? createJxaDriver)(), deps.env ?? process.env);
       io.stdout(text);
       return allOk ? 0 : 1;
     }
@@ -114,7 +119,7 @@ export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Pro
         exec: deps.exec ?? realExec,
         now: deps.now ?? (() => new Date()),
         log: io.stdout,
-        doctor: async () => (await doctorText((deps.createDriver ?? createJxaDriver)())).text,
+        doctor: async () => (await doctorText((deps.createDriver ?? createJxaDriver)(), deps.env ?? process.env)).text,
       });
     }
   }

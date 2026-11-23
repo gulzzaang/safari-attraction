@@ -192,6 +192,50 @@ describe("MCP 서버", () => {
     expect(t).toContain("시스템 설정 → 개인정보 보호 및 보안 → 자동화");
   });
 
+  test("status: 점검 줄 아래에 기억 줄(폴더 · 쓰기 · 충돌본 · 마지막 정리)이 붙는다", async () => {
+    const d = createFakeDriver();
+    d.answer = () => "2";
+    const tmp = await makeTempHome();
+    try {
+      const c = await connect(d, { home: new MemoryHome(tmp.dir), homeKind: "icloud" });
+      const t = textOf(await c.callTool({ name: "status", arguments: {} }));
+      expect(t).toContain("준비 끝 — 바로 쓰면 됩니다");
+      expect(t).toContain(`✓ 기억 폴더: ${tmp.dir} · iCloud`);
+      expect(t).toContain("마지막 정리: 아직 없음");
+      expect(t.indexOf("준비 끝")).toBeLessThan(t.indexOf("기억 폴더"));
+    } finally {
+      await tmp.remove();
+    }
+  });
+
+  test("status: 기억 폴더를 못 써도 사파리 점검은 그대로고, 사파리가 꺼져도 기억 줄은 나온다", async () => {
+    const tmp = await makeTempHome();
+    try {
+      await writeFile(`${tmp.dir}/막음`, "x", "utf8");
+      const bad = new MemoryHome(`${tmp.dir}/막음/하위`);
+      const d = createFakeDriver();
+      d.answer = () => "2";
+      const c = await connect(d, { home: bad, homeKind: "icloud" });
+      const t = textOf(await c.callTool({ name: "status", arguments: {} }));
+      expect(t).toContain("✓ 사파리 실행");
+      expect(t).toContain("준비 끝 — 바로 쓰면 됩니다");
+      expect(t).toContain("✗ 기억 폴더:");
+      expect(t).toContain("쓰기: 안 돼요 — ");
+      await client?.close();
+      await srv?.shutdown();
+      const off = createFakeDriver();
+      off.listWindows = async () => {
+        throw new SafariError("SAFARI_NOT_RUNNING", "꺼짐");
+      };
+      const c2 = await connect(off, { home: new MemoryHome(tmp.dir), homeKind: "env" });
+      const t2 = textOf(await c2.callTool({ name: "status", arguments: {} }));
+      expect(t2).toContain("✗ 사파리 실행");
+      expect(t2).toContain(`✓ 기억 폴더: ${tmp.dir} · 환경 변수`);
+    } finally {
+      await tmp.remove();
+    }
+  });
+
   test("서버를 닫으면 우리 탭을 닫는다", async () => {
     const d = createFakeDriver();
     let closed = 0;

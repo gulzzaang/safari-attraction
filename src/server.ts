@@ -4,8 +4,9 @@ import type { SafariDriver } from "./driver/types.js";
 import { formatDoctor, runDoctor } from "./doctor.js";
 import { toKorean } from "./errors-ko.js";
 import { ActivityLog, type Touch } from "./memory/activity.js";
-import { MemoryHome, resolveHome } from "./memory/home.js";
+import { MemoryHome, resolveHome, type HomeKind } from "./memory/home.js";
 import { MemoryIndex } from "./memory/search.js";
+import { memoryStatusLines } from "./memory/status.js";
 import { runMemoryTool } from "./memory/tool-memory.js";
 import { runProjectTool } from "./memory/tool-project.js";
 import { createReplSession } from "./repl/context.js";
@@ -55,7 +56,8 @@ Read values with console.log (the last expression is NOT printed). Errors come b
 - 사파리 스크립트는 개인정보 보호 창과 일반 창을 구별하지 못해, 맨 앞 창을 그대로 쓴다. 개인정보 보호 창이 앞에 있으면 거기에 열릴 수 있다.
 - 내린 뒤 읽기는 새로 보이는 줄만 내므로, 내리는 같은 사이에 내용이 바뀐 것(무한 스크롤 등)에서 사라진 줄은 알려 주지 않는다. 내렸는지는 창과 화면에 보이는 안쪽 스크롤 영역(입력칸 제외)의 위치로 알아본다. 모달이 body 를 고정해 창 위치가 바뀌는 경우에도 내린 것으로 보이니, 그때는 {full: true}. 찍지 않은 읽기는 읽은 것으로 치지 않는다. 화면 안에서 저절로 움직이는 목록 · 캐러셀도 내린 것으로 본다.
   After a scroll, snapshot lists only new lines, so lines genuinely removed in the same step (e.g. infinite scroll) are not reported; scrolling is detected from the window and visible inner scroll areas (not form fields), so a modal that fixes the body can look like a scroll (use {full: true}); a snapshot you never print does not count as read; an on-screen auto-moving list/carousel also counts as a scroll.
-- 처음 쓸 때 설정이 막히면 오류 글에 안내가 나온다. status 도구로 설정 상태를 볼 수 있다.`;
+- 처음 쓸 때 설정이 막히면 오류 글에 안내가 나온다. status 도구로 설정 상태를 볼 수 있다.
+사파리로 연 · 옮겨 간 사이트는 하루 기록에 남고 사이트 메모가 있으면 결과 끝에 붙는다 — 기억 · 프로젝트는 memory · project 도구로. Sites you open or navigate are logged to a daily note and a site memo, if any, is appended to the result; use the memory and project tools for memory and projects.`;
 
 export const STATUS_DESCRIPTION =
   "빠진 준비를 한국어로 점검한다 — 사파리 실행, 자동화 허락, 「Apple 이벤트의 JavaScript 허용」, 화면 기록(찍기용). 항목마다 ✓ / ✗ / ? 와 고칠 곳을 보여 준다. 막혔을 때 먼저 부른다. 빈 탭을 잠깐 열었다 닫는다. / Reports Safari connection status.";
@@ -176,8 +178,11 @@ export interface SafariServer {
 /**
  * home · now · memoryTimeoutMs 는 시험에서 임시 폴더 · 가짜 시계를 끼우는 자리다. 기본은 resolveHome() 의 기억 폴더와 진짜 시계.
  */
-export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHome; now?: () => Date; memoryTimeoutMs?: number } = {}): SafariServer {
-  const home = opts.home ?? new MemoryHome(resolveHome().dir);
+export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHome; homeKind?: HomeKind; now?: () => Date; memoryTimeoutMs?: number } = {}): SafariServer {
+  const resolved = opts.home ? undefined : resolveHome();
+  const home = opts.home ?? new MemoryHome(resolved!.dir);
+  // status 에 보일 위치 종류. 시험이 폴더를 직접 끼우면 환경 변수로 정한 것과 같은 취급.
+  const homeKind: HomeKind = opts.homeKind ?? resolved?.kind ?? "env";
   const now = opts.now ?? (() => new Date());
   const activity = new ActivityLog(home, now);
   const index = new MemoryIndex(home, { now });
@@ -214,7 +219,10 @@ export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHo
     { title: "사파리 연결 상태", description: STATUS_DESCRIPTION, inputSchema: {} },
     async () => {
       activity.touch();
-      return { content: [{ type: "text", text: formatDoctor(await runDoctor(driver)) }] };
+      // 사파리 점검(runDoctor)과 기억 줄은 서로 독립 — 어느 쪽이 실패해도 다른 쪽은 그대로 나온다.
+      const safari = formatDoctor(await runDoctor(driver));
+      const memory = await memoryStatusLines(home, homeKind);
+      return { content: [{ type: "text", text: `${safari}\n\n${memory.lines.join("\n")}` }] };
     },
   );
 
