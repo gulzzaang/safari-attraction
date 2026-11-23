@@ -49,6 +49,18 @@ public enum ClaudeControl {
                                              input: req["input"] as? [String: Any] ?? [:]))
     }
 
+    /// 클로드가 앞서 보낸 물음을 거둘 때 보내는 줄 `{"type":"control_cancel_request","request_id":"…"}` 의 물음 번호.
+    /// 이 줄을 받으면 그 물음에는 더 답하지 않는다. 다른 줄이면 nil.
+    public static func cancelledRequestID(_ line: Data) -> String? {
+        var raw = line
+        while let last = raw.last, last == 0x0A || last == 0x0D { raw.removeLast() }
+        guard !raw.isEmpty,
+              let obj = try? JSONSerialization.jsonObject(with: raw), let d = obj as? [String: Any],
+              d["type"] as? String == "control_cancel_request",
+              let id = d["request_id"] as? String, !id.isEmpty else { return nil }
+        return id
+    }
+
     /// 허락. `setModeManual` 이면 계획 모드에서 빠져나오게 한다(ExitPlanMode 승인 때) —
     /// `updatedPermissions: [{"type":"setMode","mode":"manual","destination":"session"}]`.
     public static func allow(requestID: String, updatedInput: [String: Any], setModeManual: Bool) -> String {

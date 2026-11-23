@@ -10,3 +10,17 @@ public protocol CommandRunning: Sendable {
 }
 
 extension ProcessRunner: CommandRunning {}
+
+/// 클로드를 양방향(표준 입력 파이프)으로 띄우는 쪽 — 실제로는 `ProcessRunner`, 시험에서는 가짜.
+/// 첫 입력 줄은 `initialLines` 로 넘긴다(띄우기 전의 `write` 는 무시된다). `write` 는 최대 몇 초 막힐 수 있으니
+/// 메인 스레드 · @MainActor 에서 부르지 않는다.
+public protocol InteractiveRunning: Sendable {
+    func runInteractive(executable: String, arguments: [String], workDir: URL, path: String,
+                        timeout: TimeInterval, initialLines: [String],
+                        onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome
+    func write(_ line: String) throws
+    func closeInput()
+    func stop()
+}
+
+extension ProcessRunner: InteractiveRunning {}

@@ -101,4 +101,13 @@ final class ClaudeControlTests: XCTestCase {
         let back = (obj(s)["message"] as! NSDictionary)["content"] as? String
         XCTAssertEqual(back, "가\u{2028}나\u{2029}다\r\n라")
     }
+
+    func testCancelRequestIDIsReadFromCancelLinesOnly() {
+        let cancel = Data(#"{"type":"control_cancel_request","request_id":"req-9"}"#.utf8) + Data([0x0A])
+        XCTAssertEqual(ClaudeControl.cancelledRequestID(cancel), "req-9")
+        XCTAssertNil(ClaudeControl.cancelledRequestID(Data(#"{"type":"control_cancel_request"}"#.utf8)))
+        XCTAssertNil(ClaudeControl.cancelledRequestID(Data(#"{"type":"control_request","request_id":"a","request":{}}"#.utf8)))
+        XCTAssertNil(ClaudeControl.cancelledRequestID(Data("not json".utf8)))
+        XCTAssertNil(ClaudeControl.parse(cancel), "취소 줄은 물음이 아니다")
+    }
 }

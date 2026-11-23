@@ -2,7 +2,7 @@ import XCTest
 @testable import AppCore
 
 /// 시험용 손님 — 유닉스 소켓에 붙어 줄을 보내고 줄을 읽는다.
-private final class TestClient {
+final class TestClient {
     let fd: Int32
     private var buffer = Data()
 
