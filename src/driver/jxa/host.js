@@ -115,7 +115,7 @@ function aroundOf(windowId, index) {
 // 기록한 주소(또는 가는 중이던 주소 args.altUrl)와 정확히 같을 때만 본다. 아니면 적지 않는다 — 호출한 쪽이 표시로 우리 탭을 다시 찾는다.
 function mayStamp(args, url) {
   const g = args.shape;
-  if (!g) return urlIs(url, args);
+  if (!g || !/^https?:/i.test(url)) return urlIs(url, args); // 모습을 모르거나 웹 주소가 아닌 탭(시작 페이지 · 즐겨찾기)이면 우리 탭일 수 없으니 주소로만 본다
   try {
     const urls = Safari.windows.byId(args.windowId).tabs.url().map(str);
     return urls.length === g.count && (!g.prev || g.prev.indexOf(urls[args.index - 2]) >= 0) && (!g.next || g.next.indexOf(urls[args.index]) >= 0);

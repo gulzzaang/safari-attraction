@@ -33,8 +33,11 @@ class FakeSafari implements TabBackend {
   loseStampOnCommit = false;
   /** settle 이 받은 waitUntil 기록. */
   settleWaits: Array<string | undefined> = [];
-  settle = async (a: { windowId: number; index: number; key: string; waitUntil?: 'commit'; loadBudgetMs?: number }): Promise<SettleResult> => {
+  /** settle 이 받은 창 모습(shape). */
+  settleShapes: unknown[] = [];
+  settle = async (a: { windowId: number; index: number; key: string; shape?: unknown; waitUntil?: 'commit'; loadBudgetMs?: number }): Promise<SettleResult> => {
     this.settleWaits.push(a.waitUntil);
+    this.settleShapes.push(a.shape);
     const t = this.tabs[a.index - 1];
     if (!t) return { status: 'gone' };
     const tab = { windowId: 1, index: a.index, title: t.url, url: t.url, isActive: false };
@@ -1195,6 +1198,38 @@ describe('TabRegistry', () => {
       for (const t of sf.tabs) if (t.marker !== '') t.url += '?r=1'; // 주소도 바뀜(같은 문서 안 이동)
       expect(await reg.closeOwned()).toEqual({ closed: 4, missing: 0 });
       expect(sf.tabs.map((t) => t.url)).toEqual(['http://user/front']);
+    });
+  });
+
+  describe('확인 모습의 나이 · 닫은 뒤 이웃 (R14)', () => {
+    const shape = { count: 3, prev: 'http://u/1', next: null };
+    const confirm = (reg: TabRegistry, k: string) => reg.withTab(k, async () => ({ value: 'ok', around: shape }));
+
+    test('확인한 지 60초 안에는 호스트에 모습을 넘기고, 넘으면 넘기지 않는다(탭 주소로만 알아본다)', async () => {
+      const sf = new FakeSafari();
+      let t = 1_000_000;
+      const reg = new TabRegistry(sf, 'inst', () => t);
+      sf.tabs.push({ url: 'http://u/1', marker: '' });
+      const k = openOwned(sf, reg, 'http://a/x');
+      await confirm(reg, k);
+      t += 50_000;
+      await reg.settle(k);
+      t += 61_000;
+      await reg.settle(k);
+      expect(sf.settleShapes[0]).toEqual(shape);
+      expect(sf.settleShapes[1]).toBeUndefined();
+    });
+
+    test('S3: 우리가 탭을 닫으면 같은 창 다른 우리 탭의 확인 모습은 버린다(순번 · 탭 수가 바뀌었다)', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf);
+      sf.tabs.push({ url: 'http://u/1', marker: '' });
+      const a = openOwned(sf, reg, 'http://a/x');
+      const b = openOwned(sf, reg, 'http://b/x');
+      await confirm(reg, b);
+      await reg.closeTab(a);
+      await reg.settle(b);
+      expect(sf.settleShapes).toEqual([undefined]);
     });
   });
 });

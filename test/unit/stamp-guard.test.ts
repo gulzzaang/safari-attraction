@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { createJxaDriver } from "../../src/driver/jxa-driver.js";
 import { HostError } from "../../src/driver/jxa-host.js";
 import { createHarness, type Harness } from "../helpers/host-harness.js";
@@ -333,5 +333,50 @@ describe("[R13] 끝낼 때 표시 읽기 요청 시간", () => {
     expect(timeouts.length).toBeGreaterThan(0);
     for (const t of timeouts) expect(t).toBeLessThanOrEqual(5_000);
     for (const t of timeouts) expect(t).toBeGreaterThanOrEqual(1_000);
+  });
+});
+
+// R14: 오래된 확인 모습으로 표시를 적지 않는다(S1 · S6) · 닫은 뒤 이웃 고치기(S3) · 놓쳤을 때 안내.
+describe("[R14] 우리 탭 자리에 사용자 탭이 온 뒤의 settle", () => {
+  afterEach(() => vi.useRealTimers());
+
+  test("S1: 확인한 지 한참(60초 넘게) 뒤 사용자가 우리 탭을 닫고 같은 자리에 다른 사이트 탭을 열면 표시를 적지 않고 닫지도 않는다 — 놓쳤어요 안내", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/1" });
+    const { d } = driverOn(h);
+    const { tab } = await d.openTab("http://a.example/x", { windowId: 7, loadBudgetMs: 20 });
+    vi.setSystemTime(Date.now() + 120_000);
+    tabsOf(h).splice(1, 1, h.newTab("http://bank.example/account")); // 우리 탭이 닫히고 같은 자리에 사용자 탭
+    const err = await d.settleTab(tab.key, FAST).catch((e) => e);
+    expect(err).toMatchObject({ code: "TAB_CLOSED" });
+    expect(err.message).toMatch(/놓쳤어요/);
+    expect(err.message).toContain("attachBrowserTab()");
+    expect(markers(h)).toEqual(["", ""]);
+    expect(await d.closeOwned()).toBe(0);
+    expect(urls(h)).toEqual(["http://user/1", "http://bank.example/account"]);
+  });
+
+  test("S6: 방금 확인했어도 자리에 온 탭이 http(s) 가 아니면(시작 페이지 · 즐겨찾기) 표시를 적지 않는다", async () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/1" });
+    const { d } = driverOn(h);
+    const { tab } = await d.openTab("http://a.example/x", { windowId: 7, loadBudgetMs: 20 });
+    tabsOf(h).splice(1, 1, h.newTab("favorites://"));
+    await expect(d.settleTab(tab.key, FAST)).rejects.toMatchObject({ code: "TAB_CLOSED" });
+    expect(markers(h)).toEqual(["", ""]);
+    expect(await d.closeOwned()).toBe(0);
+    expect(urls(h)).toEqual(["http://user/1", "favorites://"]);
+  });
+
+  test("60초 안에 우리가 한 동작으로 새 문서가 뜨면 지금처럼 표시를 다시 적는다", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/1" });
+    const { d } = driverOn(h);
+    const { tab } = await d.openTab("http://a.example/x", { windowId: 7, loadBudgetMs: 20 });
+    vi.setSystemTime(Date.now() + 50_000);
+    navigate(h, 1, "http://a.example/y");
+    expect((await d.settleTab(tab.key, FAST)).navigated).toBe(true);
   });
 });
