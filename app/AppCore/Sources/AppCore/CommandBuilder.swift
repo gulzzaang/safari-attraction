@@ -12,7 +12,7 @@ public enum CommandBuilder {
     public static let webSearchPrefix = "웹에서 찾아서 답해 줘. 출처 주소도 적어 줘.\n\n"
     /// 프롬프트(앞 대화 · 페이지 글 · 질문을 합친 것) 상한 — UTF-8 바이트 기준. 넘으면 CLI 를 띄우지 않는다.
     public static let maxPromptBytes = 200_000
-    public static let promptTooLongMessage = "질문이 너무 길어요 — 줄여서 다시 보내 주세요(최대 약 20만 자)"
+    public static let promptTooLongMessage = "질문이 너무 길어요 — 줄여서 다시 보내 주세요(한글 약 6만 자 · 20만 바이트까지)"
     public static let chatgptNoWebNotice = "이 모델은 웹 검색을 못 해요 — 검색 없이 답해요"
 
     /// `workDir` 는 실행 쪽(ProcessRunner)이 작업 폴더로 쓴다 — 명령줄에는 들어가지 않는다.
