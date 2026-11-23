@@ -411,7 +411,7 @@ function inDomain(u, domain) {
 
 // 열린 탭 {tab, index} 를 돌려준다. 못 찾으면 null — 그때는 아무 탭에도 표시를 적지 않고 닫지도 않는다(사용자 탭이 먼저).
 // 열 때 정한 자리(index)의 탭이 우리 탭이라는 증거는 「창의 탭 수가 열기 전보다 정확히 하나 늘었다」다(사용자가 사이에 탭을 열거나 닫으면 깨진다).
-// 1) 탭 수가 하나 늘었고, 우리 탭이 맨 끝이고, 그 앞의 탭 주소들이 열기 전과 같고, 그 자리의 탭에 표시가 없으면: 주소가 연 주소와 같거나, 같은 주소 탭이 열기 전보다 늘지 않았고(리디렉트로 주소가 바뀜)
+// 1) 탭 수가 하나 늘었고, 우리 탭이 맨 끝이고, 바로 앞 탭(열기 전의 맨 끝 탭)이 그대로 바로 앞에 같은 주소로 있고(멀리 있는 다른 탭의 주소 변화는 따지지 않는다), 그 자리의 탭에 표시가 없으면: 주소가 연 주소와 같거나, 같은 주소 탭이 열기 전보다 늘지 않았고(리디렉트로 주소가 바뀜)
 //    그 주소가 연 주소와 같은 등록 도메인(opts.domain)일 때 그 탭이다. 도메인이 다른 리디렉트는 사용자 탭과 구별할 수 없어 못 찾은 것으로 둔다(닫히지 않고 남을 수 있다).
 // 2) 아니면(순번이 밀렸을 수 있다) 창 끝에서부터 주소가 연 주소와 같고 표시가 없는 탭을 찾는다 — 같은 주소의 탭이 열기 전보다 정확히 하나 늘었을 때만(둘 이상이면 어느 쪽인지 몰라 못 찾은 것).
 // 표시는 항상 읽는다. 「Apple 이벤트에서 JavaScript 허용」이 꺼져 읽을 수 없으면(opts.jsOffOk 일 때만 — 연 탭을 치울 때) 탭 수가 +1 이고
@@ -436,8 +436,8 @@ function findOpened(win, index, url, before, opts) {
       throw e;
     }
   };
-  // 1) 은 우리 탭이 맨 끝이고 그 앞의 탭들이 열기 전과 같을 때만(그 사이 사용자 탭이 바뀌었으면 자리를 믿을 수 없다).
-  if (urls.length === before.count + 1 && index === urls.length && before.urls.every((u, i) => u === urls[i])) {
+  // 1) 은 우리 탭이 맨 끝이고 바로 앞 탭이 그대로일 때만(먼 탭의 주소 변화는 따지지 않는다 — 유튜브 · 지메일 같은 페이지는 저절로 주소가 바뀐다).
+  if (urls.length === before.count + 1 && index === urls.length && (before.count === 0 || urls[index - 2] === before.urls[before.count - 1])) {
     const u = urls[index - 1];
     if (openedKey(u) === want || (sameNow <= before.same && inDomain(u, opts.domain))) {
       const tab = markerless(index);

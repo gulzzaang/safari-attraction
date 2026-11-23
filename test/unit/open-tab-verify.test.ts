@@ -158,4 +158,41 @@ describe("openTab: 표시를 적기 전에 탭 확인", () => {
     expect(open(h)).toMatchObject({ index: 2, stamped: true });
     expect(markers(h)).toEqual(["", KEY]);
   });
+
+  test("[R7 i] 다른 곳의 사용자 탭 주소가 로딩 중에 바뀌어도 같은 사이트 리디렉트한 연 탭에 적는다(오류 아님)", () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/0" }, { url: "http://user/1" });
+    h.beforeFirstJs = () => {
+      const tabs = h.windows.get(7)!.tabs;
+      tabs[0]!.page.href = "http://user/spa#changed"; // 연 탭에서 멀리 있는 사용자 탭이 저절로 바뀜(유튜브 · 지메일 같은)
+      tabs[2]!.page.href = "http://login.a.example/x";
+    };
+    expect(open(h)).toMatchObject({ index: 3, stamped: true });
+    expect(markers(h)).toEqual(["", "", KEY]);
+  });
+
+  test("[R7 ii] 사용자가 연 탭 앞의 탭을 닫고 끝에 같은 사이트 탭을 열면(탭 수는 +1) 바로 앞 탭이 달라 적지 않고 오류로 알린다", () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/0" }, { url: "http://user/1" });
+    h.beforeFirstJs = () => {
+      const tabs = h.windows.get(7)!.tabs;
+      tabs[2]!.page.href = "http://login.a.example/x"; // 연 탭이 같은 사이트로 리디렉트
+      tabs.shift(); // 사용자가 앞 탭을 닫고
+      tabs.push(h.newTab("http://www.a.example/new")); // 같은 사이트의 새 탭을 끝에 연다 — 열 때 정한 자리(3)는 사용자의 새 탭
+    };
+    expect(() => open(h)).toThrow(/확인/);
+    expect(markers(h)).toEqual(["", "", ""]);
+  });
+
+  test("[R7 iii] 바로 앞 탭의 주소가 바뀌면 같은 사이트 리디렉트여도 오류로 알린다", () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/0" }, { url: "http://user/1" });
+    h.beforeFirstJs = () => {
+      const tabs = h.windows.get(7)!.tabs;
+      tabs[1]!.page.href = "http://user/changed"; // 바로 앞 탭
+      tabs[2]!.page.href = "http://login.a.example/x";
+    };
+    expect(() => open(h)).toThrow(/확인/);
+    expect(markers(h)).toEqual(["", "", ""]);
+  });
 });
