@@ -81,3 +81,32 @@ final class PanelPlacementTests: XCTestCase {
         XCTAssertEqual(PanelPlacement.defaultFrame(screens: []), CGRect(x: 0, y: 0, width: 380, height: 800))
     }
 }
+
+final class PanelPlacementVerticalTests: XCTestCase {
+    /// visibleFrame 같은 화면: 메뉴 막대 · 독 때문에 minY 가 0 이 아니다.
+    let screen = CGRect(x: 0, y: 75, width: 1920, height: 950)
+
+    func testNeverLeavesTheScreenVertically() {
+        for y in stride(from: -1500.0, through: 2500.0, by: 53.0) {
+            for h in [100.0, 600.0, 950.0, 1300.0] {
+                for x in [-300.0, 100.0, 1500.0, 2200.0] {
+                    let safari = CGRect(x: x, y: y, width: 900, height: h)
+                    let f = PanelPlacement.frame(safari: safari, screens: [screen])
+                    XCTAssertGreaterThanOrEqual(f.minY, screen.minY, "\(safari) → \(f)")
+                    XCTAssertLessThanOrEqual(f.maxY, screen.maxY, "\(safari) → \(f)")
+                    XCTAssertGreaterThan(f.height, 0, "\(safari) → \(f)")
+                }
+            }
+        }
+    }
+    func testSafariEntirelyAboveScreenTopStillOnScreen() {
+        let safari = CGRect(x: 100, y: 1200, width: 800, height: 900)
+        let f = PanelPlacement.frame(safari: safari, screens: [screen])
+        XCTAssertTrue(screen.contains(f), "\(f)")
+    }
+    func testSafariEntirelyBelowScreenBottomStillOnScreen() {
+        let safari = CGRect(x: 100, y: -2000, width: 800, height: 900)
+        let f = PanelPlacement.frame(safari: safari, screens: [screen])
+        XCTAssertTrue(screen.contains(f), "\(f)")
+    }
+}

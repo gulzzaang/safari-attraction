@@ -9,10 +9,16 @@ public enum PanelPlacement {
         guard let screen = homeScreen(of: safari, in: screens) else {
             return CGRect(x: safari.maxX + gap, y: safari.minY, width: width, height: safari.height)
         }
-        // 세로는 화면 안으로.
-        let minY = max(safari.minY, screen.minY)
-        let maxY = min(safari.maxY, screen.maxY)
-        let height = max(maxY - minY, 0) > 0 ? maxY - minY : min(safari.height, screen.height)
+        // 세로는 화면 안으로 — 겹치는 만큼만, 세로로 전혀 안 겹치면(화면 위 · 아래로 나간 창) 화면 안에 높이를 맞춰 넣는다.
+        let minY0 = max(safari.minY, screen.minY)
+        let maxY0 = min(safari.maxY, screen.maxY)
+        let minY: CGFloat, height: CGFloat
+        if maxY0 > minY0 {
+            minY = minY0; height = maxY0 - minY0
+        } else {
+            height = min(max(safari.height, 1), screen.height)
+            minY = min(max(safari.minY, screen.minY), screen.maxY - height)
+        }
         let outsideX = safari.maxX + gap
         if outsideX + width <= screen.maxX {
             return CGRect(x: outsideX, y: minY, width: width, height: height)
