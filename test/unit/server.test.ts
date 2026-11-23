@@ -3,7 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { createSafariServer, type SafariServer } from "../../src/server.js";
+import { createSafariServer, REPL_DESCRIPTION, type SafariServer } from "../../src/server.js";
 import { MemoryHome, machineName } from "../../src/memory/home.js";
 import { makeTempHome } from "../helpers/memory-home.js";
 import { SafariError } from "../../src/driver/types.js";
@@ -581,5 +581,132 @@ describe("project 도구(MCP 로 부르기)", () => {
       expect(md).toContain(`기억${i}`);
       expect(md).toContain(`고침${i}`);
     }
+  });
+});
+
+describe("사이트 안내 요약 자동 붙이기", () => {
+  const NOW = new Date(2026, 10, 23, 14, 5, 0);
+  const HINT = "… 기억 정리할 때가 됐어요 — memory 도구 tidy";
+  const fake = (id: string, name: string, hosts: string[]) => ({ id, name, hosts, summary: `${name} 요약`, body: `## 화면 구조\n${name} 화면`, checked: "2026-11-23" });
+  const GUIDES = [fake("aa", "에이", ["a.example"]), fake("bb", "비", ["b.example"]), fake("cc", "씨", ["c.example"]), fake("dd", "디", ["d.example"])];
+  const NOTE_A = "… 이 사이트 안내(에이): 에이 요약 — 자세히는 guide()";
+  let tmp: Awaited<ReturnType<typeof makeTempHome>>;
+  let home: MemoryHome;
+  let clock: Date;
+  beforeEach(async () => {
+    tmp = await makeTempHome();
+    home = new MemoryHome(tmp.dir);
+    clock = new Date(NOW);
+  });
+  afterEach(async () => {
+    await client?.close();
+    await srv?.shutdown();
+    client = undefined;
+    srv = undefined;
+    await tmp.remove();
+  });
+  const put = async (rel: string, text: string) => {
+    const p = home.path(rel);
+    await mkdir(dirname(p), { recursive: true });
+    await writeFile(p, text, "utf8");
+  };
+  const repl = (c: Client, code: string) => c.callTool({ name: "repl", arguments: { title: "시험", code } });
+  const open = (host: string, tail = 'console.log("본문")') => `await openTab("https://${host}/"); ${tail}`;
+
+  test("처음 열면 요약이 붙고, 같은 대화에서 다시 열면 안 붙는다", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock, guides: GUIDES });
+    expect(textOf(await repl(c, open("a.example")))).toBe(`본문\n\n${NOTE_A}`);
+    expect(textOf(await repl(c, open("a.example")))).toBe("본문");
+  });
+
+  test("붙이는 순서: 사이트 메모 → 안내 요약 → 정리 안내", async () => {
+    await put("기억/사이트/a.example.md", "메모");
+    await put("기억/일지/2026-11-20-옛맥.md", "- 옛 기록\n");
+    const c = await connect(createFakeDriver(), { home, now: () => clock, guides: GUIDES });
+    expect(textOf(await repl(c, open("a.example")))).toBe(`본문\n\n… 이 사이트 메모(a.example): 메모\n\n${NOTE_A}\n\n${HINT}`);
+  });
+
+  test("오류로 끝나도 붙는다", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock, guides: GUIDES });
+    const r = await repl(c, open("a.example", 'throw new Error("앗")'));
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain(NOTE_A);
+  });
+
+  test("16KB 가까운 결과면 안내를 못 붙이고 보였음으로 치지 않아 다음 호출에 붙는다", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock, guides: GUIDES });
+    const r1 = await repl(c, open("a.example", 'console.log("x".repeat(16350))'));
+    expect(textOf(r1)).not.toContain("이 사이트 안내");
+    expect(Buffer.byteLength(textOf(r1))).toBeLessThanOrEqual(16384);
+    expect(srv!.activity.state.seenGuides.has("aa")).toBe(false);
+    const r2 = await repl(c, open("a.example"));
+    expect(textOf(r2)).toBe(`본문\n\n${NOTE_A}`);
+    expect(srv!.activity.state.seenGuides.has("aa")).toBe(true);
+  });
+
+  test("메모는 못 들어가도 안내 요약이 들어가는 자리면 안내만 붙는다", async () => {
+    await put("기억/사이트/a.example.md", "메모".repeat(40));
+    const c = await connect(createFakeDriver(), { home, now: () => clock, guides: GUIDES });
+    const n = 16384 - 2 - Buffer.byteLength(NOTE_A);
+    const r = await repl(c, open("a.example", `console.log("x".repeat(${n}))`));
+    expect(textOf(r)).toBe("x".repeat(n) + "\n\n" + NOTE_A);
+  });
+
+  test("memory pause 여도 안내는 붙는다", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock, guides: GUIDES });
+    await c.callTool({ name: "memory", arguments: { action: "pause", on: true } });
+    expect(textOf(await repl(c, open("a.example")))).toBe(`본문\n\n${NOTE_A}`);
+  });
+
+  test("기억 폴더를 못 써도 안내는 붙는다(쓰기 실패 안내는 그 뒤)", async () => {
+    await writeFile(tmp.dir + "/막힘", "파일");
+    const bad = new MemoryHome(tmp.dir + "/막힘");
+    const c = await connect(createFakeDriver(), { home: bad, now: () => clock, guides: GUIDES });
+    expect(textOf(await repl(c, open("a.example")))).toMatch(new RegExp(`^본문\\n\\n${NOTE_A.replace(/[()]/g, "\\$&")}\\n\\n기억 폴더에 쓸 수 없어요: `));
+  });
+
+  test("기억 쓰기가 안 끝나 2초 상한에 걸려도 안내는 붙는다", async () => {
+    await put("기억/사이트/a.example.md", "메모");
+    const stuck = new MemoryHome(tmp.dir);
+    stuck.append = () => new Promise<void>(() => {});
+    const c = await connect(createFakeDriver(), { home: stuck, now: () => clock, guides: GUIDES, memoryTimeoutMs: 30 });
+    const r = await repl(c, open("a.example"));
+    expect(textOf(r)).toBe(`본문\n\n${NOTE_A}`);
+    expect(srv!.activity.state.seenGuides.has("aa")).toBe(true);
+  });
+
+  test("30분 넘게 안 쓰면 다시 붙는다", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock, guides: GUIDES });
+    await repl(c, open("a.example"));
+    expect(srv!.activity.state.seenGuides.size).toBe(1);
+    clock = new Date(clock.getTime() + 1_800_001);
+    expect(textOf(await repl(c, open("a.example")))).toBe(`본문\n\n${NOTE_A}`);
+  });
+
+  test("같은 안내서의 다른 호스트는 한 번만", async () => {
+    const guides = [fake("naver", "네이버", ["naver.com", "search.naver.com"])];
+    const c = await connect(createFakeDriver(), { home, now: () => clock, guides });
+    expect(textOf(await repl(c, open("cafe.naver.com")))).toContain("이 사이트 안내(네이버)");
+    expect(textOf(await repl(c, open("search.naver.com")))).toBe("본문");
+  });
+
+  test("project open_sites: 앞 두 편은 요약, 나머지는 한 줄, 다음 호출에서 그 사이트를 다루면 붙는다", async () => {
+    const c = await connect(createFakeDriver(), { home, now: () => clock, guides: GUIDES });
+    const proj = (args: Record<string, unknown>) => c.callTool({ name: "project", arguments: args });
+    await proj({ action: "create", name: "p" });
+    await proj({ action: "open", name: "p" });
+    await proj({ action: "update", section: "사이트", text: "https://a.example/\nhttps://b.example/\nhttps://c.example/\nhttps://d.example/" });
+    const r = textOf(await proj({ action: "open_sites" }));
+    expect(r).toContain(NOTE_A);
+    expect(r).toContain("… 이 사이트 안내(비): 비 요약 — 자세히는 guide()");
+    expect(r).not.toContain("이 사이트 안내(씨)");
+    expect(r).toContain('… 안내서 있음: 씨 · 디 — guide("주소")');
+    expect([...srv!.activity.state.seenGuides].sort()).toEqual(["aa", "bb"]);
+    expect(textOf(await repl(c, open("c.example")))).toBe("본문\n\n… 이 사이트 안내(씨): 씨 요약 — 자세히는 guide()");
+  });
+
+  test("REPL_DESCRIPTION 에 guide() 한 문장이 들어간다", () => {
+    expect(REPL_DESCRIPTION).toContain("guide()");
+    expect(REPL_DESCRIPTION).toMatch(/안내서가 있는 사이트를 처음 열면 요약이 붙고 guide\(\) 로 전체를 읽는다/);
   });
 });

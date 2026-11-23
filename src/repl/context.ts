@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import vm from "node:vm";
 import { inspect } from "node:util";
+import { GUIDES, listGuides, type SiteGuide } from "../guides/index.js";
+import { guideAnswer } from "../guides/notes.js";
 import type { Touch } from "../memory/activity.js";
 import { SafariError, type SafariDriver, type SafariErrorCode, type TabInfo } from "../driver/types.js";
 import { buildSnapshotSource, type SnapshotOptions } from "../snapshot/inpage.js";
@@ -74,7 +76,8 @@ const errorText = (e: unknown): string => {
  * Aside 의 repl 처럼 자바스크립트를 돌리는 세션. node:vm 컨텍스트 하나를 세션 내내 쓰므로 최상위 const/let/함수가
  * 다음 호출에도 남고, top-level await 가 된다. 호출은 겹쳐도 차례로 돈다.
  */
-export function createReplSession(driver: SafariDriver): ReplSession {
+export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGuide[] } = {}): ReplSession {
+  const guides = opts.guides ?? GUIDES;
   const store = new SnapshotStore();
   const owned = new Set<string>();
   // 호출마다 출력 칸(slot)을 따로 둔다. AsyncLocalStorage 가 칸을 await · 타이머 · 드라이버 호출을 건너 따라가므로,
@@ -444,6 +447,11 @@ export function createReplSession(driver: SafariDriver): ReplSession {
       },
     };
   };
+
+  // guide(주소?) — 내장 사이트 안내서 전체 글. 인자가 없으면 지금 page 주소. 던지지 않는다. guide.list() 는 있는 안내서 목록.
+  const guide = async (target?: unknown): Promise<string> => guideAnswer(target, () => currentPage()?.url(), guides);
+  guide.list = (): string => listGuides(guides);
+  sandbox.guide = guide;
 
   sandbox.display = (img: Buffer): void => {
     const slot = slots.getStore();

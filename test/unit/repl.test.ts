@@ -813,3 +813,73 @@ describe("openTabs — project 도구의 사이트 한꺼번에 열기", () => {
     expect((b.touched ?? []).map((t) => t.url)).toEqual(["http://b/"]);
   });
 });
+
+describe("guide() 전역", () => {
+  const fake = (id: string, name: string, hosts: string[]) => ({ id, name, hosts, summary: `${name} 요약`, body: `## 화면 구조\n${name} 화면`, checked: "2026-11-23" });
+  const G = [fake("coupang", "쿠팡", ["coupang.com"]), fake("naver", "네이버", ["naver.com"])];
+  let gs: ReplSession;
+  beforeEach(() => {
+    gs = createReplSession(d, { guides: G });
+  });
+  afterEach(async () => {
+    await gs.dispose();
+  });
+  const out = async (code: string) => {
+    const r = await gs.run(code);
+    expect(r.error).toBeUndefined();
+    return r.output;
+  };
+
+  test("인자 없이 부르면 지금 page 주소의 안내서 전체 글", async () => {
+    const o = await out('await openTab("https://m.coupang.com/x"); console.log(await guide())');
+    expect(o).toContain("# 쿠팡");
+    expect(o).toContain("## 요약\n쿠팡 요약");
+    expect(o).toContain("확인한 날: 2026-11-23");
+  });
+
+  test("주소를 넣으면 그 주소의 안내서(page 가 없어도 된다)", async () => {
+    const o = await out('console.log(await guide("https://m.coupang.com/x"))');
+    expect(o).toContain("# 쿠팡");
+    expect(await out('console.log(await guide("naver.com"))')).toContain("# 네이버");
+  });
+
+  test("page 가 없으면 한국어 안내와 목록, 던지지 않는다", async () => {
+    const o = await out("console.log(await guide())");
+    expect(o).toBe('지금 열린 사이트가 없어요 — guide("coupang.com") 처럼 주소를 넣어 주세요\n쿠팡 — coupang.com\n네이버 — naver.com');
+  });
+
+  test("about:blank 이면 같은 안내", async () => {
+    const o = await out('await openTab("about:blank"); console.log(await guide())');
+    expect(o).toContain("지금 열린 사이트가 없어요");
+    expect(o).toContain("쿠팡 — coupang.com");
+  });
+
+  test("안내서 없는 사이트 · 엉뚱한 글자는 「아직 없어요」 와 목록", async () => {
+    for (const arg of ['"없는곳.com"', '"ㅁㄴㅇㄹ"', '"🙂"', "123", "{}"]) {
+      const o = await out(`console.log(await guide(${arg}))`);
+      expect(o, arg).toBe("이 사이트 안내서는 아직 없어요 — 있는 곳:\n쿠팡 — coupang.com\n네이버 — naver.com");
+    }
+  });
+
+  test("열린 page 가 안내서 없는 사이트여도 던지지 않는다", async () => {
+    const o = await out('await openTab("https://z.example/"); console.log(await guide())');
+    expect(o).toContain("이 사이트 안내서는 아직 없어요");
+  });
+
+  test("guide.list() 는 목록 글", async () => {
+    expect(await out("console.log(guide.list())")).toBe("쿠팡 — coupang.com\n네이버 — naver.com");
+    expect(await out("console.log(typeof guide, typeof guide.list)")).toBe("function function");
+  });
+
+  test("안내서가 하나도 없어도 목록 자리에 한국어 말이 나온다", async () => {
+    const empty = createReplSession(d, { guides: [] });
+    try {
+      const r = await empty.run('console.log(await guide("a.com"))');
+      expect(r.error).toBeUndefined();
+      expect(r.output).toContain("이 사이트 안내서는 아직 없어요");
+      expect(r.output).not.toMatch(/있는 곳:\s*$/);
+    } finally {
+      await empty.dispose();
+    }
+  });
+});

@@ -3,6 +3,8 @@ import { z } from "zod";
 import type { SafariDriver } from "./driver/types.js";
 import { formatDoctor, runDoctor } from "./doctor.js";
 import { toKorean } from "./errors-ko.js";
+import { GUIDES, type SiteGuide } from "./guides/index.js";
+import { planGuideNotes } from "./guides/notes.js";
 import { ActivityLog, type Extra, type Touch } from "./memory/activity.js";
 import { MemoryHome, resolveHome, type HomeKind } from "./memory/home.js";
 import { MemoryIndex } from "./memory/search.js";
@@ -57,7 +59,8 @@ Read values with console.log (the last expression is NOT printed). Errors come b
 - 내린 뒤 읽기는 새로 보이는 줄만 내므로, 내리는 같은 사이에 내용이 바뀐 것(무한 스크롤 등)에서 사라진 줄은 알려 주지 않는다. 내렸는지는 창과 화면에 보이는 안쪽 스크롤 영역(입력칸 제외)의 위치로 알아본다. 모달이 body 를 고정해 창 위치가 바뀌는 경우에도 내린 것으로 보이니, 그때는 {full: true}. 찍지 않은 읽기는 읽은 것으로 치지 않는다. 화면 안에서 저절로 움직이는 목록 · 캐러셀도 내린 것으로 본다.
   After a scroll, snapshot lists only new lines, so lines genuinely removed in the same step (e.g. infinite scroll) are not reported; scrolling is detected from the window and visible inner scroll areas (not form fields), so a modal that fixes the body can look like a scroll (use {full: true}); a snapshot you never print does not count as read; an on-screen auto-moving list/carousel also counts as a scroll.
 - 처음 쓸 때 설정이 막히면 오류 글에 안내가 나온다. status 도구로 설정 상태를 볼 수 있다.
-사파리로 연 · 옮겨 간 사이트는 하루 기록에 남고 사이트 메모가 있으면 결과 끝에 붙는다 — 기억 · 프로젝트는 memory · project 도구로. Sites you open or navigate are logged to a daily note and a site memo, if any, is appended to the result; use the memory and project tools for memory and projects.`;
+사파리로 연 · 옮겨 간 사이트는 하루 기록에 남고 사이트 메모가 있으면 결과 끝에 붙는다 — 기억 · 프로젝트는 memory · project 도구로. Sites you open or navigate are logged to a daily note and a site memo, if any, is appended to the result; use the memory and project tools for memory and projects.
+안내서가 있는 사이트를 처음 열면 요약이 붙고 guide() 로 전체를 읽는다. When you first open a site that has a built-in guide, a summary is appended; read the full guide with guide().`;
 
 export const STATUS_DESCRIPTION =
   "빠진 준비를 한국어로 점검한다 — 사파리 실행, 자동화 허락, 「Apple 이벤트의 JavaScript 허용」, 화면 기록(찍기용). 항목마다 ✓ / ✗ / ? 와 고칠 곳을 보여 준다. 막혔을 때 먼저 부른다. 빈 탭을 잠깐 열었다 닫는다. / Reports Safari connection status.";
@@ -88,13 +91,14 @@ action:
 비밀번호 · 카드 · 토큰은 거절.`;
 
 /**
- * repl 한 번이 끝난 뒤의 기억 쪽 일: 하루 기록을 쓰고, 응답 끝에 붙일 글(사이트 메모 → 정리 안내 → 쓰기 실패 안내)을 모은다.
+ * repl 한 번이 끝난 뒤의 기억 쪽 일: 하루 기록을 쓰고, 응답 끝에 붙일 글(사이트 메모 → 안내 요약 → 정리 안내 → 쓰기 실패 안내)을 모은다.
  * 기억 쪽이 어떻게 실패해도 repl 결과를 바꾸지 않는다 — 쓰기 실패는 대화당 한 번 한 줄로만 알린다.
  */
 async function memoryExtras(
   activity: ActivityLog,
   entry: { title: string; touched: Touch[]; ok: boolean; error?: string },
   gate: { abandoned: boolean },
+  guide: Extra | null,
 ): Promise<Extra[]> {
   const extras: Extra[] = [];
   let failed: { error: unknown } | undefined;
@@ -104,7 +108,9 @@ async function memoryExtras(
     failed = { error };
   }
   // 「보였음」 표시(commit)는 글이 실제로 응답에 붙은 뒤에 attachWithinCap 이 한다.
-  for (const part of [() => activity.planSiteNote(entry.touched), () => activity.planTidyHint()]) {
+  // 붙이는 순서: 사이트 메모 → 안내 요약(이미 계획해 둠) → 정리 안내.
+  const parts: Array<() => Promise<Extra | null>> = [() => activity.planSiteNote(entry.touched), async () => guide, () => activity.planTidyHint()];
+  for (const part of parts) {
     try {
       const t = await part();
       if (t) extras.push(t);
@@ -128,15 +134,23 @@ async function memoryExtras(
 export const MEMORY_TIMEOUT_MS = 2000;
 
 /**
- * memoryExtras 를 ms 안에 기다린다. 못 끝나면 덧붙임 없이(빈 목록) 돌려주고, 하던 일은 뒤에서 마저 하게 둔다(거부는 여기서 잡는다).
+ * memoryExtras 를 ms 안에 기다린다. 못 끝나면 기억 쪽 덧붙임 없이 돌려주고(하던 일은 뒤에서 마저 하게 둔다, 거부는 여기서 잡는다),
+ * 안내 요약은 파일을 읽지 않으니 기다리지 않고 미리 계획해 두었다가 시간 초과 · 기억 폴더 문제와 상관없이 돌려준다.
  */
 async function boundedExtras(
   activity: ActivityLog,
   entry: { title: string; touched: Touch[]; ok: boolean; error?: string },
   ms: number,
+  guides: SiteGuide[],
 ): Promise<Extra[]> {
+  let guide: Extra | null = null;
+  try {
+    guide = planGuideNotes(entry.touched, activity.state.seenGuides, guides);
+  } catch {
+    // 안내서를 못 찾아도 repl 결과는 그대로.
+  }
   const gate = { abandoned: false };
-  const work = memoryExtras(activity, entry, gate).catch(() => [] as Extra[]);
+  const work = memoryExtras(activity, entry, gate, guide).catch(() => (guide ? [guide] : []) as Extra[]);
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<null>((resolve) => {
     timer = setTimeout(() => resolve(null), ms);
@@ -145,7 +159,7 @@ async function boundedExtras(
     const done = await Promise.race([work, late]);
     if (done === null) {
       gate.abandoned = true;
-      return [];
+      return guide ? [guide] : [];
     }
     return done;
   } finally {
@@ -181,9 +195,9 @@ export interface SafariServer {
 }
 
 /**
- * home · now · memoryTimeoutMs 는 시험에서 임시 폴더 · 가짜 시계를 끼우는 자리다. 기본은 resolveHome() 의 기억 폴더와 진짜 시계.
+ * home · now · memoryTimeoutMs · guides 는 시험에서 임시 폴더 · 가짜 시계 · 가짜 안내서를 끼우는 자리다. 기본은 resolveHome() 의 기억 폴더와 진짜 시계.
  */
-export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHome; homeKind?: HomeKind; now?: () => Date; memoryTimeoutMs?: number } = {}): SafariServer {
+export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHome; homeKind?: HomeKind; now?: () => Date; memoryTimeoutMs?: number; guides?: SiteGuide[] } = {}): SafariServer {
   const resolved = opts.home ? undefined : resolveHome();
   const home = opts.home ?? new MemoryHome(resolved!.dir);
   // status 에 보일 위치 종류. 시험이 폴더를 직접 끼우면 환경 변수로 정한 것과 같은 취급.
@@ -192,7 +206,8 @@ export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHo
   const activity = new ActivityLog(home, now);
   const index = new MemoryIndex(home, { now });
   const memoryTimeoutMs = opts.memoryTimeoutMs ?? MEMORY_TIMEOUT_MS;
-  const session = createReplSession(driver);
+  const guides = opts.guides ?? GUIDES;
+  const session = createReplSession(driver, { guides });
   const server = new McpServer({ name: "safari-attraction", version: VERSION });
 
   server.registerTool(
@@ -212,7 +227,7 @@ export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHo
       const images = (r.images ?? []).map((data) => ({ type: "image" as const, data, mimeType: "image/png" }));
       const err = r.error === undefined ? undefined : toKorean(r.error, r.errorCode);
       const base = err === undefined ? r.output : r.output ? `${r.output}\n\n오류: ${err}` : `오류: ${err}`;
-      const extras = await boundedExtras(activity, { title, touched: r.touched ?? [], ok: err === undefined, error: err }, memoryTimeoutMs);
+      const extras = await boundedExtras(activity, { title, touched: r.touched ?? [], ok: err === undefined, error: err }, memoryTimeoutMs, guides);
       const text = attachWithinCap(base, extras);
       if (err === undefined) return { content: [{ type: "text" as const, text }, ...images] };
       return { isError: true, content: [{ type: "text" as const, text }, ...images] };
@@ -275,7 +290,7 @@ export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHo
           now,
           openTabs: (urls) => session.openTabs(urls),
           // open_sites 도 repl 처럼 하루 기록 · 사이트 메모 · 정리 안내를 같은 길(2초 상한)로 처리한다.
-          recordOpened: (entry) => boundedExtras(activity, entry, memoryTimeoutMs),
+          recordOpened: (entry) => boundedExtras(activity, entry, memoryTimeoutMs, guides),
         },
         input,
       );

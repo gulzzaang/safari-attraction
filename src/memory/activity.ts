@@ -12,6 +12,8 @@ export type SessionState = {
   paused: boolean;
   /** 이번 대화에서 사이트 메모를 이미 보여 준(또는 메모가 없던) 도메인. */
   seenDomains: Set<string>;
+  /** 이번 대화에서 요약을 보여 준 사이트 안내서 id. */
+  seenGuides: Set<string>;
   tidyHinted: boolean;
   pendingTidy: { files: string[]; at: number } | null;
   lastUse: number;
@@ -37,6 +39,7 @@ const initialState = (now: number): SessionState => ({
   openProject: null,
   paused: false,
   seenDomains: new Set(),
+  seenGuides: new Set(),
   tidyHinted: false,
   pendingTidy: null,
   lastUse: now,
