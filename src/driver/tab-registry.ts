@@ -55,6 +55,18 @@ export interface MarkerRead {
   index: number;
   url: string;
   marker: string;
+  /** 페이지 안 JS 를 돌리다 오류가 난 탭(PDF · 특수 페이지 등) — 표시를 읽지 못했다. 표시가 없다는 뜻이 아니라 「모른다」이지만, 오류가 나는 문서는 우리 표시를 가질 수 없다. */
+  unreadable?: boolean;
+}
+
+/**
+ * 마지막으로 기록한 창 모습에서 우리 탭 자리의 이웃: 탭 수와 바로 앞 · 뒤 탭의 주소(없으면 null). 호스트가 자리의 「표시 없는 탭」에 표시를 적기 전에 지금과 견준다 —
+ * 사용자가 우리 탭 앞에 탭을 끼워 그 자리로 사용자 탭이 밀려 왔다면 모습이 달라 표시를 적지 않는다.
+ */
+export interface Around {
+  count: number;
+  prev: string | null;
+  next: string | null;
 }
 
 /** 레지스트리가 사파리에 바라는 것(호스트 op 와 1:1). */
@@ -63,9 +75,9 @@ export interface TabBackend {
   probe(windowId: number, index: number, timeoutMs?: number): Promise<Probe>;
   stamp(windowId: number, index: number, key: string): Promise<boolean>;
   /** 제자리에서 이동한 탭에 표시를 다시 적는다(불러오기가 끝나길 기다린다). */
-  rebind(args: { windowId: number; index: number; key: string; url: string }): Promise<RebindResult>;
+  rebind(args: { windowId: number; index: number; key: string; url: string; altUrl?: string; shape?: Around }): Promise<RebindResult>;
   /** 이동이 일어났는지 보고, 새 문서면 표시를 다시 적는다. 표시가 없다는 이유로 아무것도 지우지 않는다. */
-  settle(args: { windowId: number; index: number; key: string; url: string; waitUntil?: "commit"; loadBudgetMs?: number }): Promise<SettleResult>;
+  settle(args: { windowId: number; index: number; key: string; url: string; altUrl?: string; shape?: Around; waitUntil?: "commit"; loadBudgetMs?: number }): Promise<SettleResult>;
   /** 자리의 탭이 spot.key 의 탭일 때만 닫는다. urlOnly 는 표시를 못 읽는 탭(경고창)용 — 주소만 본다. */
   close(spot: Spot, urlOnly: boolean, timeoutMs?: number): Promise<Guarded<null>>;
   /**
@@ -102,8 +114,10 @@ interface Entry {
 const PROBE_TIMEOUT_MS = 3000;
 /** 표시를 찾으러 한 번에 들여다보는 탭의 상한. */
 export const SCAN_MAX_TABS = 60;
-/** 스스로 옮겨 간 우리 탭을 되찾는 시간 한도: 우리가 그 탭에 마지막으로 한 일로부터. */
-export const RECLAIM_WINDOW_MS = 120_000;
+/** 스스로 옮겨 간 우리 탭을 되찾는 시간 한도: 우리가 그 탭에 마지막으로 한 일로부터(로그인을 사람이 하는 동안 같은 긴 기다림도 덮는다). */
+export const RECLAIM_WINDOW_MS = 600_000;
+/** 끝낼 때(closeOwned) 표시 훑기에 쓰는 시간의 상한. 서버가 끝나길 기다리는 시간(SHUTDOWN_MS 8초)보다 짧아야 한다. */
+export const SHUTDOWN_SCAN_MS = 5_000;
 /** 표시를 읽을 때 탭 하나에 기다리는 시간. 넘으면 그 탭은 건너뛴다. */
 export const SCAN_TAB_TIMEOUT_MS = 500;
 /** 표시 읽기를 이 개수씩 나눠 보낸다(멈춘 탭이 있어도 그 묶음만 잃는다). */
@@ -127,13 +141,21 @@ const isUnscannable = (err: unknown): boolean => isStuck(err) || (err instanceof
 interface Scan {
   reads: Map<string, MarkerRead>;
   failed: Set<string>;
+  /** readMarkers 로 실제로 읽어 온 탭 수 — 한 번의 훑기가 나눠 쓰는 60개 상한(SCAN_MAX_TABS)을 센다. */
+  scanned: number;
 }
-const newScan = (): Scan => ({ reads: new Map(), failed: new Set() });
+const newScan = (): Scan => ({ reads: new Map(), failed: new Set(), scanned: 0 });
 const spotId = (t: { windowId: number; index: number }) => `${t.windowId}:${t.index}`;
 /** 우리 페이지 탭은 항상 http(s) 다(우리 AI 창은 창 id 로 닫는다). 시작 페이지 · 즐겨찾기 · about: · 빈 주소 탭은 우리 탭일 수 없어 표시를 읽지 않는다. */
 const isWebTab = (t: { url: string }) => /^https?:/i.test(t.url);
 
-function tabClosed(key: string): SafariError {
+function tabClosed(key: string, lostOurs = false): SafariError {
+  if (lostOurs) {
+    return new SafariError(
+      "TAB_CLOSED",
+      `탭 ${key} 을(를) 놓쳤어요 — 우리가 연 탭인데 어디로 갔는지 알 수 없어요(다른 사이트로 옮겨 갔거나 닫혔을 수 있어요). openTab 으로 다시 열거나, listBrowserTabs() 로 찾아 attachBrowserTab() 으로 붙이세요`,
+    );
+  }
   return new SafariError("TAB_CLOSED", `탭 ${key} 을(를) 찾을 수 없음(닫혔거나 다른 주소로 옮겨 감)`);
 }
 
@@ -159,6 +181,8 @@ export class TabRegistry {
    * 스스로 새 문서가 돼 표시를 잃은 우리 탭을 되찾을 때 「그 자리의 표시 없는 탭이 사용자 탭이 밀려 온 것이 아님」을 확인하는 데만 쓴다.
    */
   private windowShape = new Map<number, string[]>();
+  /** 끝낼 때(closeOwned) 동안 항목들이 나눠 쓰는 표시 훑기 결과와 마감 시각 — 항목마다 처음부터 다시 훑지 않는다. */
+  private shared: { scan: Scan; deadline: number } | undefined;
 
   /**
    * instanceId 는 이 서버 프로세스를 가리키는 값(기본은 무작위). 페이지 안 표시를 `키.instanceId` 로 적어,
@@ -195,15 +219,38 @@ export class TabRegistry {
     for (const [windowId, tabs] of byWindow) this.windowShape.set(windowId, tabs.sort((a, b) => a.index - b.index).map((t) => t.url));
   }
 
+  /** 우리 탭 자신의 주소가 바뀌었다(이동 · 같은 문서 안 이동). 기록한 창 모습에서 그 칸만 새 주소로 맞춘다 — 이웃 · 탭 수는 건드리지 않는다(낡은 모습을 새것으로 만들지 않는다). */
+  private noteOwnUrl(windowId: number, index: number, oldUrl: string, newUrl: string): void {
+    const shape = this.windowShape.get(windowId);
+    if (shape && sameUrl(shape[index - 1], oldUrl)) shape[index - 1] = newUrl;
+  }
+
+  /** 호스트가 표시 없는 탭에 표시를 적어도 되는지 견줄 창 모습(이 항목 자리의 탭 수 · 이웃 주소). 기록이 없거나 자리가 모습 밖이면 undefined — 호스트는 탭 주소로만 본다. */
+  private shapeFor(e: Entry): Around | undefined {
+    const shape = this.windowShape.get(e.windowId);
+    const i = e.index - 1;
+    if (!shape || i < 0 || i >= shape.length) return undefined;
+    return { count: shape.length, prev: i > 0 ? shape[i - 1]! : null, next: i + 1 < shape.length ? shape[i + 1]! : null };
+  }
+
+  /**
+   * 우리 탭이 표시로 확인돼 새 자리를 찾았다 — 그 창에 다른 우리 탭(잃어버림 아닌)이 없으면 창 모습을 지금 것으로 새로 기록한다(앞에 끼어든 사용자 탭을 따라잡는다).
+   * 다른 우리 탭이 있으면 하지 않는다: 그 탭이 정리되기 전에 낡은 모습을 새것으로 만들면 안 된다.
+   */
+  private refreshAlone(e: Entry, raw: RawTab[]): void {
+    const others = [...this.entries.values()].some((x) => x !== e && x.owned && !x.lost && x.windowId === e.windowId);
+    if (!others) this.recordWindows(raw.filter((t) => t.windowId === e.windowId));
+  }
+
   /**
    * 우리 탭이 스스로 새 문서가 돼(늦은 리디렉트) 표시를 잃었을 때 기록한 자리의 표시 없는 탭을 우리 탭으로 봐도 되는가.
-   * 마지막으로 기록한 창 모습과 견줘 (1) 탭 수가 같고 (2) 바로 앞 · 뒤 이웃의 주소가 같고 (3) 그 탭의 주소가 창의 다른 탭들의 기록된 주소가 아닐 때만, 그리고 http(s) · 같은 등록 도메인 · 마지막 일로부터 120초 안일 때만.
+   * 마지막으로 기록한 창 모습과 견줘 (1) 탭 수가 같고 (2) 바로 앞 · 뒤 이웃의 주소가 같고 (3) 그 탭의 주소가 창의 다른 탭들의 기록된 주소가 아닐 때만, 그리고 http(s) · 같은 등록 도메인 · 마지막 일로부터 10분 안일 때만.
    * 아니면 사용자 탭이 우리 자리로 밀려 온 것일 수 있어 건드리지 않는다. 알려진 한계: 우리 탭이 닫히고 탭 수 · 이웃이 똑같게 새 주소의 사용자 탭이 그 자리에 오면 구별하지 못한다.
    */
   private stayedPut(e: Entry, raw: RawTab[], here: RawTab): boolean {
     const shape = this.windowShape.get(e.windowId);
     if (!shape) return false;
-    // R5: http(s) 탭이고, 등록 도메인이 우리가 마지막으로 기록한 주소(또는 가는 중이던 주소)와 같고, 우리가 마지막으로 한 일로부터 120초 안일 때만.
+    // R5: http(s) 탭이고, 등록 도메인이 우리가 마지막으로 기록한 주소(또는 가는 중이던 주소)와 같고, 우리가 마지막으로 한 일로부터 10분 안일 때만.
     if (!isWebTab(here)) return false;
     const domain = registrableDomain(here.url);
     if (domain === null || (domain !== registrableDomain(e.url) && domain !== registrableDomain(e.pendingUrl))) return false;
@@ -257,6 +304,12 @@ export class TabRegistry {
     return this.entries.get(key)?.url;
   }
 
+  /** 못 찾은 키의 오류 — 우리가 연 탭을 잃어버린 것이면 어떻게 이어 갈지 알린다. 항목을 drop 한 뒤에 부른다. */
+  private gone(key: string): SafariError {
+    const e = this.entries.get(key);
+    return tabClosed(key, e?.owned === true && e.lost === true);
+  }
+
   isOwned(key: string): boolean {
     return this.entries.get(key)?.owned ?? false;
   }
@@ -271,11 +324,12 @@ export class TabRegistry {
     const e = this.entries.get(key);
     if (!e) throw tabClosed(key);
     const raw = await this.backend.list();
-    const found = await this.locate(e, raw, new Set(), newScan()); // 창 모습은 여기서 새로 기록하지 않는다 — 같은 창의 다른 우리 탭이 아직 정리 전이라 낡은 모습을 새것으로 바꿔 버리기 때문(sync 가 다 맞춘 뒤에 기록한다)
+    const found = await this.locate(e, raw, new Set(), this.shared?.scan ?? newScan()); // 창 모습은 여기서 새로 기록하지 않는다 — 같은 창의 다른 우리 탭이 아직 정리 전이라 낡은 모습을 새것으로 바꿔 버리기 때문(sync 가 다 맞춘 뒤에 기록한다)
     if (!found) {
       this.drop(key);
-      throw tabClosed(key);
+      throw this.gone(key);
     }
+    this.refreshAlone(e, raw);
     return { windowId: found.windowId, index: found.index };
   }
 
@@ -320,13 +374,16 @@ export class TabRegistry {
         r = await run(spot);
         if ("stale" in r) {
           this.drop(key);
-          throw tabClosed(key);
+          throw this.gone(key);
         }
       }
       this.confirm(key);
       if (r.url !== undefined) {
         const e = this.entries.get(key);
-        if (e) e.url = r.url; // 같은 문서 안 이동(SPA)으로 바뀐 주소
+        if (e) {
+          this.noteOwnUrl(e.windowId, e.index, e.url, r.url);
+          e.url = r.url; // 같은 문서 안 이동(SPA)으로 바뀐 주소
+        }
       }
       return { value: r.value, url: r.url, leaving: r.leaving, urlBefore: spot.url, owned: this.isOwned(key) };
     } catch (err) {
@@ -379,19 +436,21 @@ export class TabRegistry {
     const e = this.entries.get(key);
     if (!e) throw tabClosed(key);
     if (e.lost) await this.resolve(key); // settle 과 같다 — 잃어버린 탭은 표시로만 돌아온다
-    let r = await this.backend.rebind({ windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url });
+    let r = await this.backend.rebind({ windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, altUrl: e.pendingUrl, shape: this.shapeFor(e) });
     if (r.status !== "ok") {
-      // 기록한 자리가 아니다 — 표시가 남은 채 옮겨 갔다면 표시로 찾는다(못 찾으면 TAB_CLOSED 로 키를 지운다).
+      // 기록한 자리가 아니다(표시가 남은 채 옮겨 갔거나, 표시 없는 탭이 우리 탭이라는 증거가 없다) — 표시로 찾는다(못 찾으면 TAB_CLOSED 로 키를 지운다).
       const at = await this.resolve(key);
-      r = await this.backend.rebind({ ...at, key: this.markerOf(key), url: e.url });
+      r = await this.backend.rebind({ ...at, key: this.markerOf(key), url: e.url, altUrl: e.pendingUrl, shape: this.shapeFor(e) });
       if (r.status !== "ok") {
         this.drop(key);
-        throw tabClosed(key);
+        throw this.gone(key);
       }
     }
+    const oldUrl = e.url;
     e.windowId = r.tab.windowId;
     e.index = r.tab.index;
     e.url = r.tab.url;
+    this.noteOwnUrl(e.windowId, e.index, oldUrl, e.url);
     e.pendingUrl = undefined;
     e.lost = false;
     e.stamped = r.stamped ?? true; // 표시를 못 적었으면 「표시 안 한 탭」으로 둬 다음에 자리 · 주소로 다시 알아본다
@@ -419,19 +478,21 @@ export class TabRegistry {
       }
     }
     const { waitUntil, loadBudgetMs } = opts;
-    let r = await this.backend.settle({ windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, waitUntil, loadBudgetMs });
+    let r = await this.backend.settle({ windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, altUrl: e.pendingUrl, shape: this.shapeFor(e), waitUntil, loadBudgetMs });
     if (r.status === "gone" || r.status === "other") {
-      // 기록한 자리가 아니다 — 표시로 찾는다(못 찾으면 resolve 가 키를 지우고 TAB_CLOSED).
+      // 기록한 자리가 아니다(표시가 남은 채 옮겨 갔거나, 표시 없는 탭이 우리 탭이라는 증거가 없다) — 표시로 찾는다(못 찾으면 resolve 가 키를 지우고 TAB_CLOSED).
       const at = await this.resolve(key);
-      r = await this.backend.settle({ ...at, key: this.markerOf(key), url: e.url, waitUntil, loadBudgetMs });
+      r = await this.backend.settle({ ...at, key: this.markerOf(key), url: e.url, altUrl: e.pendingUrl, shape: this.shapeFor(e), waitUntil, loadBudgetMs });
       if (r.status === "gone" || r.status === "other") {
         this.drop(key);
-        throw tabClosed(key);
+        throw this.gone(key);
       }
     }
+    const oldUrl = e.url;
     e.windowId = r.tab.windowId;
     e.index = r.tab.index;
     e.url = r.tab.url;
+    this.noteOwnUrl(e.windowId, e.index, oldUrl, e.url);
     e.pendingUrl = undefined;
     e.lost = false;
     e.stamped = r.status === "navigated" ? (r.stamped ?? true) : true; // commit 에서 표시를 못 적었으면 「표시 안 한 탭」으로 둔다
@@ -466,6 +527,15 @@ export class TabRegistry {
    * missing 은 「다 훑지 못해(60개 상한 · 시간 초과로 못 본 탭이 남음) 못 찾은 우리 항목」 수다. 모든 탭을 다 보고도 표시가 없으면 그 탭은 진짜로 닫힌 것이라 세지 않는다.
    */
   async closeOwned(): Promise<{ closed: number; missing: number }> {
+    this.shared = { scan: newScan(), deadline: this.now() + SHUTDOWN_SCAN_MS }; // 항목마다 훑지 않고 한 번의 훑기를 나눠 쓴다 — 서버가 끝나길 기다리는 시간 안에 끝나게 마감도 둔다
+    try {
+      return await this.closeAllOwned();
+    } finally {
+      this.shared = undefined;
+    }
+  }
+
+  private async closeAllOwned(): Promise<{ closed: number; missing: number }> {
     let closed = 0;
     let missing = 0;
     let firstError: unknown;
@@ -481,6 +551,7 @@ export class TabRegistry {
     const left = [...this.entries.values()].filter((e) => e.owned);
     if (left.length > 0) {
       try {
+        this.shared?.scan.failed.clear(); // 앞에서 멈춘 묶음은 마지막 훑기에서 마감 안에 한 번 더 시도한다
         const r = await this.sweepOwned(left);
         closed += r.closed;
         missing = r.missing;
@@ -495,8 +566,8 @@ export class TabRegistry {
   /** 남은 우리 항목들을 모든 창의 탭 표시로 찾아 닫는다. 우리 항목의 표시와 정확히 같은 탭만 닫는다(붙잡은 사용자 탭 · 다른 표시 · 표시 없는 탭은 읽기만 한다). */
   private async sweepOwned(left: Entry[]): Promise<{ closed: number; missing: number }> {
     const raw = await this.backend.list();
-    const scan = newScan();
-    const complete = await this.readMarkersOf(this.priorityOrder(raw, left), scan);
+    const scan = this.shared?.scan ?? newScan();
+    const { complete } = await this.readMarkersOf(this.priorityOrder(raw, left), scan);
     const byMarker = new Map(left.map((e) => [this.markerOf(e.key), e]));
     const hits: Entry[] = [];
     for (const read of scan.reads.values()) {
@@ -535,17 +606,17 @@ export class TabRegistry {
   }
 
   /**
-   * 탭들의 표시를 읽어 scan 에 둔다(이미 읽은 것 · 이미 실패한 것은 다시 시도하지 않는다). http(s) 주소의 탭만 앞에서부터 SCAN_MAX_TABS 개까지 들여다보고,
-   * 읽기만 한다. 멈췄거나 못 읽은 탭은 failed 에 적고 계속한다(예산 SCAN_BUDGET_MS 는 묶음마다 확인한다).
-   * 다 읽었으면 true(상한 · 시간 · 못 읽음으로 빠진 탭이 없다).
+   * 탭들의 표시를 읽어 scan 에 둔다(이미 읽은 것 · 이미 실패한 것은 다시 시도하지 않는다). http(s) 주소의 탭만 앞에서부터, 한 scan 에서 모두 SCAN_MAX_TABS 개까지 들여다보고,
+   * 읽기만 한다. 멈췄거나 못 읽은 탭은 failed 에 적고 계속한다(마감은 묶음마다 확인한다 — 끝낼 때는 shared.deadline, 아니면 SCAN_BUDGET_MS).
+   * answered: 상한 · 시간 · 못 읽음으로 빠진 탭 없이 모든 탭이 답했다(페이지 JS 가 오류인 탭도 답한 것이다 — 그런 문서는 우리 표시를 가질 수 없다).
+   * complete: 거기에 더해 JS 오류 탭도 없다(끝낼 때 「못 찾았어요」를 가를 때는 이쪽을 쓴다).
    */
-  private async readMarkersOf(tabs: RawTab[], scan: Scan): Promise<boolean> {
+  private async readMarkersOf(tabs: RawTab[], scan: Scan): Promise<{ complete: boolean; answered: boolean }> {
     const web = tabs.filter(isWebTab); // 웹 주소가 아닌 탭은 읽지 않고, 훑은 것으로 센다
-    const look = web.slice(0, SCAN_MAX_TABS);
-    const todo = look.filter((t) => !scan.reads.has(spotId(t)) && !scan.failed.has(spotId(t)));
-    const t0 = Date.now();
+    const todo = web.filter((t) => !scan.reads.has(spotId(t)) && !scan.failed.has(spotId(t))).slice(0, Math.max(0, SCAN_MAX_TABS - scan.scanned));
+    const deadline = this.shared?.deadline ?? this.now() + SCAN_BUDGET_MS;
     for (let i = 0; i < todo.length; i += SCAN_CHUNK) {
-      if (Date.now() - t0 > SCAN_BUDGET_MS) break; // 남은 묶음은 못 본 것으로 둔다
+      if (this.now() > deadline) break; // 남은 묶음은 못 본 것으로 둔다
       const chunk = todo.slice(i, i + SCAN_CHUNK);
       let reads: MarkerRead[] = [];
       try {
@@ -553,10 +624,12 @@ export class TabRegistry {
       } catch (err) {
         if (!isUnscannable(err)) throw err; // 멈춘 탭 · 허용 꺼짐은 이 묶음을 못 본 것으로 두고 계속한다
       }
+      scan.scanned += reads.length;
       for (const r of reads) scan.reads.set(spotId(r), r);
       for (const t of chunk) if (!scan.reads.has(spotId(t))) scan.failed.add(spotId(t)); // 돌려받지 못한 탭 = 못 읽음
     }
-    return web.length <= SCAN_MAX_TABS && look.every((t) => scan.reads.has(spotId(t)));
+    const answered = web.every((t) => scan.reads.has(spotId(t)));
+    return { answered, complete: answered && web.every((t) => !scan.reads.get(spotId(t))!.unreadable) };
   }
 
   /** 호스트가 자리의 탭이 맞다고 확인해 일을 마쳤다 — 표시도 이제 적혀 있다. */
@@ -609,6 +682,27 @@ export class TabRegistry {
     for (const e of this.entries.values()) {
       if (e.windowId === windowId && e.index > index) e.index -= 1;
     }
+    this.shiftScan(windowId, index);
+  }
+
+  /** 끝낼 때 나눠 쓰는 훑기 결과에서 닫은 자리를 빼고 뒤 순번을 당긴다(읽어 둔 자리가 어긋나지 않게). */
+  private shiftScan(windowId: number, index: number): void {
+    const scan = this.shared?.scan;
+    if (!scan) return;
+    const reads = new Map<string, MarkerRead>();
+    for (const r of scan.reads.values()) {
+      if (r.windowId === windowId && r.index === index) continue;
+      const moved = r.windowId === windowId && r.index > index ? { ...r, index: r.index - 1 } : r;
+      reads.set(spotId(moved), moved);
+    }
+    const failed = new Set<string>();
+    for (const id of scan.failed) {
+      const [w, i] = id.split(":").map(Number) as [number, number];
+      if (w === windowId && i === index) continue;
+      failed.add(w === windowId && i > index ? `${w}:${i - 1}` : id);
+    }
+    scan.reads = reads;
+    scan.failed = failed;
   }
 
   /**
@@ -701,6 +795,7 @@ export class TabRegistry {
         throw err;
       }
       tried.add(spotId(t));
+      if (p.exists) scan.reads.set(spotId(t), { windowId: t.windowId, index: t.index, url: p.url, marker: p.marker }); // 이미 읽은 표시는 다른 항목의 훑기가 다시 읽지 않는다
       if (p.exists && p.marker === this.markerOf(e.key)) return take({ ...t, url: p.url });
       if (p.exists && p.marker === "" && here && sameSpot(t, here)) hereMarkerless = true;
     }
@@ -711,17 +806,18 @@ export class TabRegistry {
     const sig = raw.map((t) => `${t.windowId}:${t.index}:${t.url}`).join("|");
     if (fromSync && e.lost && e.scanSig === sig) return null; // 지난번 훑은 때와 탭 목록이 같다 — 되풀이해 들여다보지 않는다
     const candidates = this.priorityOrder(raw.filter((t) => free(t) && !tried.has(spotId(t)) && isWebTab(t)), [e]);
-    const complete = await this.readMarkersOf(candidates, scan);
+    const { complete, answered } = await this.readMarkersOf(candidates, scan);
     const mark = this.markerOf(e.key);
     for (const t of candidates.slice(0, SCAN_MAX_TABS)) {
       const r = scan.reads.get(spotId(t));
       if (r && r.marker === mark) return take({ ...t, url: r.url });
     }
     e.scanSig = sig;
-    e.scanComplete = complete && !unprobed; // 읽지 못한 탭이 없었다면 true
+    e.scanComplete = complete && !unprobed; // 읽지 못한 탭이 없었다면 true(페이지 JS 오류 탭도 없었다면)
     // 우리 표시가 어디에도 없다(모든 탭을 읽었다). 기록한 자리의 탭에 표시가 없으면 우리 탭이 스스로 새 문서가 된 것일 수 있다 —
     // 창 모습(탭 수 · 이웃)이 그대로일 때만 「표시 안 한 우리 탭」으로 되찾아, 다음 일 때 호스트가 주소를 확인하고 표시를 다시 적게 한다.
-    if (e.scanComplete && !e.lost && !e.blocked && hereMarkerless && here && free(here) && this.stayedPut(e, raw, here)) {
+    // 페이지 JS 가 오류인 탭(PDF 등)은 우리 표시를 가질 수 없으니 되찾기에서는 읽은 것으로 본다(answered). 멈춘 탭 · 상한 · 시간으로 못 본 탭이 있으면 안 된다.
+    if (answered && !unprobed && !e.lost && !e.blocked && hereMarkerless && here && free(here) && this.stayedPut(e, raw, here)) {
       take(here);
       e.stamped = false;
       return here;

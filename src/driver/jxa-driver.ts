@@ -2,9 +2,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { captureWindowPng } from "./capture.js";
 import { buildGuardedSource, expressionError } from "./guarded-source.js";
-import { registrableDomain, urlForms } from "./url.js";
+import { urlForms } from "./url.js";
 import { HostError, HostTimeoutError, JxaHost } from "./jxa-host.js";
-import { TabRegistry, type Guarded, type MarkerRead, type Probe, type RawTab, type RebindResult, type SettleResult, type Spot } from "./tab-registry.js";
+import { TabRegistry, type Around, type Guarded, type MarkerRead, type Probe, type RawTab, type RebindResult, type SettleResult, type Spot } from "./tab-registry.js";
 import { SafariError, type RunJsDetail, type SafariDriver, type TabInfo, type WindowBounds, type WindowInfo } from "./types.js";
 
 export { SafariError } from "./types.js";
@@ -116,6 +116,12 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     urls: urlForms([s.url, s.altUrl]),
     urlForms: urlForms([s.url]),
   });
+  // rebind · settle 가 표시 없는 탭에 표시를 적기 전에 호스트가 확인하는 것: 탭 주소가 기록한 주소(urls: 같은 주소의 여러 꼴)와 같은지, 창 모습(탭 수 · 이웃 주소의 여러 꼴)이 그대로인지.
+  const stampArgs = <T extends { url: string; altUrl?: string; shape?: Around }>(a: T) => ({
+    ...a,
+    urls: urlForms([a.url, a.altUrl]),
+    shape: a.shape && { count: a.shape.count, prev: a.shape.prev === null ? null : urlForms([a.shape.prev]), next: a.shape.next === null ? null : urlForms([a.shape.next]) },
+  });
   const guardSpec = (s: Spot) => ({ key: s.key, unstamped: s.unstamped, url: s.url, altUrl: s.altUrl });
 
   // 탭 키(t1, t2 …)와 사파리 안 자리를 이어 주는 기록. 사용자가 탭을 옮겨도 같은 키가 같은 탭을 가리킨다.
@@ -123,8 +129,8 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     list: () => call<RawTab[]>("listTabs"),
     probe: (windowId, index, timeoutMs) => call<Probe>("probe", { windowId, index }, timeoutMs),
     stamp: (windowId, index, key) => call<boolean>("stamp", { windowId, index, key }),
-    rebind: (a) => call<RebindResult>("rebind", a),
-    settle: (a) => call<SettleResult>("settle", { ...a, loadBudgetMs: clampBudget(a.loadBudgetMs) }, withBudget(a.loadBudgetMs)),
+    rebind: (a) => call<RebindResult>("rebind", stampArgs(a)),
+    settle: (a) => call<SettleResult>("settle", { ...stampArgs(a), loadBudgetMs: clampBudget(a.loadBudgetMs) }, withBudget(a.loadBudgetMs)),
     close: (spot, urlOnly, timeoutMs) => call<Guarded<null>>("closeTab", { ...guardArgs(spot), urlOnly }, timeoutMs),
     // 표시 읽기는 읽기 전용. 호스트가 탭 하나에 쓸 시간(timeoutMs)을 지키고, 한 탭이 멈추면 요청 시간 제한이 끊는다.
     readMarkers: (spots, timeoutMs) => call<MarkerRead[]>("readMarkers", { spots, timeoutMs }, spots.length * timeoutMs + READ_MARKERS_SLACK_MS),
@@ -255,7 +261,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     async openTab(url, o = {}) {
       const before = await frontBundleId();
       const key = registry.nextKey();
-      const args = { url, windowId: o.windowId, key: registry.markerOf(key), loadBudgetMs: clampBudget(o.loadBudgetMs), domain: registrableDomain(url) }; // 페이지에는 서버마다 다른 표시를 적는다 · domain 은 호스트가 리디렉트된 탭을 알아보는 데 쓴다
+      const args = { url, windowId: o.windowId, key: registry.markerOf(key), loadBudgetMs: clampBudget(o.loadBudgetMs) }; // 페이지에는 서버마다 다른 표시를 적는다
       let raw: RawTab & { stamped: boolean; windowUrls?: string[] };
       try {
         raw = await call("openTab", args, withBudget(o.loadBudgetMs));

@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { createHarness } from "../helpers/host-harness.js";
 
 const KEY = "t1.abcd1234";
-const open = (h: ReturnType<typeof createHarness>, url = "http://www.a.example/x", domain: string | null = "a.example") => h.ops.openTab!({ windowId: 7, url, key: KEY, loadBudgetMs: 20, domain });
+const open = (h: ReturnType<typeof createHarness>, url = "http://www.a.example/x") => h.ops.openTab!({ windowId: 7, url, key: KEY, loadBudgetMs: 20 });
 const markers = (h: ReturnType<typeof createHarness>) => h.windows.get(7)!.tabs.map((t) => t.page.dataset.saTab ?? "");
 
 // 탭을 연 직후 표시를 적기 전에 그 자리의 탭이 정말 우리가 연 탭인지 확인한다 — 기다리는 사이 사용자가 탭을 열고 닫아 순번이 밀리면
@@ -25,11 +25,11 @@ describe("openTab: 표시를 적기 전에 탭 확인", () => {
     expect(markers(h)).toEqual(["", "", KEY]);
   });
 
-  test("[m1] 같은 주소의 사용자 탭이 새로 끼어들어 같은 주소 탭이 둘 늘면 어느 쪽이 연 탭인지 몰라 아무 탭에도 적지 않고 오류로 알린다", () => {
+  test("[m1] 같은 주소의 사용자 탭이 새로 끼어들어 같은 주소 탭이 둘 늘면 어느 쪽이 연 탭인지 몰라 아무 탭에도 적지 않고 표시 안 한 탭으로 돌려준다", () => {
     const h = createHarness();
     h.addWindow(7, { url: "http://user/0" });
     h.beforeFirstJs = () => h.windows.get(7)!.tabs.unshift(h.newTab("http://www.a.example/x")); // [사용자 a/x, user/0, 연 탭] — 같은 주소 탭이 0 → 2
-    expect(() => open(h)).toThrow(/확인/);
+    expect(open(h)).toMatchObject({ windowId: 7, stamped: false, url: "http://www.a.example/x" }); // 던지지 않는다 — 표시 안 한 우리 탭으로 돌려줘 드라이버가 등록한다
     expect(markers(h)).toEqual(["", "", ""]);
   });
 
@@ -51,7 +51,7 @@ describe("openTab: 표시를 적기 전에 탭 확인", () => {
     expect(markers(h)).toEqual(["", KEY]);
   });
 
-  test("순번도 밀리고 주소도 바뀌어 어느 탭인지 확신할 수 없으면 아무 탭에도 표시를 적지 않고 오류로 알린다", () => {
+  test("순번도 밀리고 주소도 바뀌어 어느 탭인지 확신할 수 없으면 아무 탭에도 표시를 적지 않고 표시 안 한 탭으로 돌려준다", () => {
     const h = createHarness();
     h.addWindow(7, { url: "http://user/0" });
     h.beforeFirstJs = () => {
@@ -59,7 +59,7 @@ describe("openTab: 표시를 적기 전에 탭 확인", () => {
       tabs[1]!.page.href = "http://consent.a.example/landing";
       tabs.unshift(h.newTab("http://user/new"));
     };
-    expect(() => open(h)).toThrow(/확인/);
+    expect(open(h)).toMatchObject({ windowId: 7, stamped: false, url: "http://www.a.example/x" }); // 던지지 않는다 — 표시 안 한 우리 탭으로 돌려줘 드라이버가 등록한다
     expect(markers(h)).toEqual(["", "", ""]);
     expect(h.events.some((e) => e.kind === "doJavaScript" && e.script.includes("saTab ="))).toBe(false);
   });
@@ -112,7 +112,7 @@ describe("openTab: 표시를 적기 전에 탭 확인", () => {
     expect(h.windows.get(7)!.tabs.map((t) => t.page.href)).toEqual(["http://user/new", "http://user/0", "http://www.a.example/x"]); // 못 닫고 남았다(알림)
   });
 
-  test("다른 사이트로 리디렉트되고 사용자가 같은 때 탭을 닫고 열어 탭 수가 그대로여도 사용자 탭에는 표시를 안 적고 오류로 알린다", () => {
+  test("다른 사이트로 리디렉트되고 사용자가 같은 때 탭을 닫고 열어 탭 수가 그대로여도 사용자 탭에는 표시를 안 적고 표시 안 한 탭으로 돌려준다", () => {
     const h = createHarness();
     h.addWindow(7, { url: "http://user/0" }, { url: "http://user/1" });
     h.beforeFirstJs = () => {
@@ -121,7 +121,7 @@ describe("openTab: 표시를 적기 전에 탭 확인", () => {
       tabs.shift(); // 사용자가 앞 탭을 닫고
       tabs.push(h.newTab("http://user/new")); // 새 탭을 끝에 연다 — 탭 수는 그대로, 열 때 정한 자리(3)는 사용자의 새 탭
     };
-    expect(() => open(h)).toThrow(/확인/);
+    expect(open(h)).toMatchObject({ windowId: 7, stamped: false, url: "http://www.a.example/x" }); // 던지지 않는다 — 표시 안 한 우리 탭으로 돌려줘 드라이버가 등록한다
     expect(markers(h)).toEqual(["", "", ""]);
   });
 
@@ -137,7 +137,7 @@ describe("openTab: 표시를 적기 전에 탭 확인", () => {
     expect(markers(h)).toEqual(["", "", "", KEY]);
   });
 
-  test("[m2] 같은 사이트로 리디렉트돼도 연 탭 앞의 탭들이 열기 전과 다르면(그 사이 사용자 탭이 바뀜) 적지 않고 오류로 알린다", () => {
+  test("[m2] 같은 사이트로 리디렉트돼도 연 탭 앞의 탭들이 열기 전과 다르면(그 사이 사용자 탭이 바뀜) 적지 않고 표시 안 한 탭으로 돌려준다", () => {
     const h = createHarness();
     h.addWindow(7, { url: "http://user/0" });
     h.beforeFirstJs = () => {
@@ -145,7 +145,7 @@ describe("openTab: 표시를 적기 전에 탭 확인", () => {
       tabs[1]!.page.href = "http://login.a.example/x"; // 연 탭이 같은 사이트의 다른 주소로 감
       tabs[0]!.page.href = "http://user/changed"; // 앞의 사용자 탭 주소가 바뀜
     };
-    expect(() => open(h)).toThrow(/확인/);
+    expect(open(h)).toMatchObject({ windowId: 7, stamped: false, url: "http://www.a.example/x" }); // 던지지 않는다 — 표시 안 한 우리 탭으로 돌려줘 드라이버가 등록한다
     expect(markers(h)).toEqual(["", ""]);
   });
 
@@ -171,7 +171,7 @@ describe("openTab: 표시를 적기 전에 탭 확인", () => {
     expect(markers(h)).toEqual(["", "", KEY]);
   });
 
-  test("[R7 ii] 사용자가 연 탭 앞의 탭을 닫고 끝에 같은 사이트 탭을 열면(탭 수는 +1) 바로 앞 탭이 달라 적지 않고 오류로 알린다", () => {
+  test("[R7 ii] 사용자가 연 탭 앞의 탭을 닫고 끝에 같은 사이트 탭을 열면(탭 수는 +1) 바로 앞 탭이 달라 적지 않고 표시 안 한 탭으로 돌려준다", () => {
     const h = createHarness();
     h.addWindow(7, { url: "http://user/0" }, { url: "http://user/1" });
     h.beforeFirstJs = () => {
@@ -180,11 +180,11 @@ describe("openTab: 표시를 적기 전에 탭 확인", () => {
       tabs.shift(); // 사용자가 앞 탭을 닫고
       tabs.push(h.newTab("http://www.a.example/new")); // 같은 사이트의 새 탭을 끝에 연다 — 열 때 정한 자리(3)는 사용자의 새 탭
     };
-    expect(() => open(h)).toThrow(/확인/);
+    expect(open(h)).toMatchObject({ windowId: 7, stamped: false, url: "http://www.a.example/x" }); // 던지지 않는다 — 표시 안 한 우리 탭으로 돌려줘 드라이버가 등록한다
     expect(markers(h)).toEqual(["", "", ""]);
   });
 
-  test("[R7 iii] 바로 앞 탭의 주소가 바뀌면 같은 사이트 리디렉트여도 오류로 알린다", () => {
+  test("[R7 iii] 바로 앞 탭의 주소가 바뀌면 같은 사이트 리디렉트여도 표시 안 한 탭으로 돌려준다", () => {
     const h = createHarness();
     h.addWindow(7, { url: "http://user/0" }, { url: "http://user/1" });
     h.beforeFirstJs = () => {
@@ -192,7 +192,38 @@ describe("openTab: 표시를 적기 전에 탭 확인", () => {
       tabs[1]!.page.href = "http://user/changed"; // 바로 앞 탭
       tabs[2]!.page.href = "http://login.a.example/x";
     };
-    expect(() => open(h)).toThrow(/확인/);
+    expect(open(h)).toMatchObject({ windowId: 7, stamped: false, url: "http://www.a.example/x" }); // 던지지 않는다 — 표시 안 한 우리 탭으로 돌려줘 드라이버가 등록한다
+    expect(markers(h)).toEqual(["", "", ""]);
+  });
+
+  // R8: 조용한 창에서 다른 사이트로 리디렉트돼도(짧은 링크 · 로그인 우회) 증거가 강하면 연 탭이다 — 0.3.0 도 그랬다.
+  test("[C1] 조용한 창에서 다른 사이트로 리디렉트돼도(탭 수 +1 · 우리가 맨 끝 · 바로 앞 탭 그대로) 연 탭에 표시를 적는다", () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/0" });
+    h.beforeFirstJs = () => {
+      h.windows.get(7)!.tabs[1]!.page.href = "http://www.youtube.example/watch"; // 짧은 링크가 다른 등록 도메인으로 보냄
+    };
+    const r = h.ops.openTab!({ windowId: 7, url: "http://youtu.example/abc", key: KEY, loadBudgetMs: 20 });
+    expect(r).toMatchObject({ windowId: 7, index: 2, stamped: true });
+    expect(markers(h)).toEqual(["", KEY]);
+  });
+
+  test("[C1] 증거가 약하면(같은 주소 탭이 둘 늘어 어느 쪽인지 모름) 던지지 않고, 표시를 안 적은 채 자리 · 연 주소로 돌려준다", () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/0" });
+    h.beforeFirstJs = () => h.windows.get(7)!.tabs.push(h.newTab("http://www.a.example/x")); // 사용자가 끝에 같은 주소 탭을 열었다: [user/0, 연 탭, 사용자 a/x]
+    const r = open(h);
+    expect(r).toMatchObject({ windowId: 7, index: 2, url: "http://www.a.example/x", stamped: false });
+    expect(markers(h)).toEqual(["", "", ""]);
+    expect((r as { windowUrls?: unknown }).windowUrls).toBeUndefined(); // 창 모습도 기록하지 않는다
+  });
+
+  test("[C1] 사용자 탭이 밀려 온 자리여도 표시 안 한 탭의 주소는 연 주소로 돌려준다(그 자리의 사용자 탭 주소가 아님)", () => {
+    const h = createHarness();
+    h.addWindow(7, { url: "http://user/0" });
+    h.beforeFirstJs = () => h.windows.get(7)!.tabs.unshift(h.newTab("http://www.a.example/x")); // [사용자 a/x, user/0, 연 탭]
+    const r = open(h);
+    expect(r).toMatchObject({ index: 2, url: "http://www.a.example/x", stamped: false }); // 자리 2 의 탭은 user/0 — 주소가 달라 나중에 주소로도 안 닫힌다
     expect(markers(h)).toEqual(["", "", ""]);
   });
 });

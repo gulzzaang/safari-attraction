@@ -98,6 +98,20 @@ function urlIs(u, args) {
   return forms.indexOf(u) >= 0;
 }
 
+// settle · rebind 가 자리의 「표시 없는 탭」에 표시를 적어도 되는가. 표시 없음은 우리 탭이 새 문서가 된 것일 수도, 사용자가 우리 탭 앞에 탭을 끼워 그 자리로 밀려 온 사용자 탭일 수도 있다.
+// Node 쪽이 기록해 둔 창 모습(args.shape: 탭 수 · 바로 앞 · 뒤 탭 주소의 여러 꼴)이 지금과 같을 때만 우리 탭으로 본다. 모습을 모르면(shape 없음) 그 탭의 주소가
+// 기록한 주소(또는 가는 중이던 주소 args.altUrl)와 정확히 같을 때만 본다. 아니면 적지 않는다 — 호출한 쪽이 표시로 우리 탭을 다시 찾는다.
+function mayStamp(args, url) {
+  const g = args.shape;
+  if (!g) return urlIs(url, args);
+  try {
+    const urls = Safari.windows.byId(args.windowId).tabs.url().map(str);
+    return urls.length === g.count && (!g.prev || g.prev.indexOf(urls[args.index - 2]) >= 0) && (!g.next || g.next.indexOf(urls[args.index]) >= 0);
+  } catch (e) {
+    return false;
+  }
+}
+
 function guardTab(args) {
   if (args.urlOnly) {
     let tab;
@@ -222,6 +236,7 @@ function finishRebind(args, tab) {
     const again = probeTab(args.windowId, args.index);
     if (!again) return { status: "gone" };
     if (again.marker !== "" && again.marker !== args.key) return { status: "other" };
+    if (again.marker === "" && !mayStamp(args, again.url)) return { status: "gone" }; // 기다리는 사이 사용자 탭이 그 자리로 밀려 왔을 수 있다
     stampTab(tab, args.key);
     if (readMarker(tab) === args.key) {
       stamped = true;
@@ -398,21 +413,10 @@ function windowBefore(win, url) {
   }
 }
 
-// 주소의 호스트 · 그 호스트가 등록 도메인(Node 쪽이 args.domain 으로 보낸다) 아래인가.
-function hostOf(u) {
-  const m = /^https?:\/\/(?:[^\/?#@]*@)?([^\/?#:]+)/i.exec(str(u));
-  return m ? m[1].toLowerCase() : "";
-}
-function inDomain(u, domain) {
-  if (!domain) return false;
-  const h = hostOf(u);
-  return h !== "" && (h === domain || h.endsWith("." + domain));
-}
-
 // 열린 탭 {tab, index} 를 돌려준다. 못 찾으면 null — 그때는 아무 탭에도 표시를 적지 않고 닫지도 않는다(사용자 탭이 먼저).
 // 열 때 정한 자리(index)의 탭이 우리 탭이라는 증거는 「창의 탭 수가 열기 전보다 정확히 하나 늘었다」다(사용자가 사이에 탭을 열거나 닫으면 깨진다).
-// 1) 탭 수가 하나 늘었고, 우리 탭이 맨 끝이고, 바로 앞 탭(열기 전의 맨 끝 탭)이 그대로 바로 앞에 같은 주소로 있고(멀리 있는 다른 탭의 주소 변화는 따지지 않는다), 그 자리의 탭에 표시가 없으면: 주소가 연 주소와 같거나, 같은 주소 탭이 열기 전보다 늘지 않았고(리디렉트로 주소가 바뀜)
-//    그 주소가 연 주소와 같은 등록 도메인(opts.domain)일 때 그 탭이다. 도메인이 다른 리디렉트는 사용자 탭과 구별할 수 없어 못 찾은 것으로 둔다(닫히지 않고 남을 수 있다).
+// 1) 탭 수가 하나 늘었고, 우리 탭이 맨 끝이고, 바로 앞 탭(열기 전의 맨 끝 탭)이 그대로 바로 앞에 같은 주소로 있고(멀리 있는 다른 탭의 주소 변화는 따지지 않는다), 그 자리의 탭에 표시가 없으면: 주소가 연 주소와 같거나, 같은 주소 탭이
+//    열기 전보다 우리 하나 넘게는 늘지 않았을 때(리디렉트로 주소가 바뀜) 그 탭이다. 다른 사이트(등록 도메인이 다른)로 리디렉트돼도 받아들인다 — 짧은 링크 · 로그인 우회는 흔하고 0.3.0 도 그랬다.
 // 2) 아니면(순번이 밀렸을 수 있다) 창 끝에서부터 주소가 연 주소와 같고 표시가 없는 탭을 찾는다 — 같은 주소의 탭이 열기 전보다 정확히 하나 늘었을 때만(둘 이상이면 어느 쪽인지 몰라 못 찾은 것).
 // 표시는 항상 읽는다. 「Apple 이벤트에서 JavaScript 허용」이 꺼져 읽을 수 없으면(opts.jsOffOk 일 때만 — 연 탭을 치울 때) 탭 수가 +1 이고
 // 열 때 정한 자리의 탭 주소가 연 주소와 정확히 같을 때만 그 탭으로 본다. 아니면 오류를 올린다.
@@ -439,7 +443,7 @@ function findOpened(win, index, url, before, opts) {
   // 1) 은 우리 탭이 맨 끝이고 바로 앞 탭이 그대로일 때만(먼 탭의 주소 변화는 따지지 않는다 — 유튜브 · 지메일 같은 페이지는 저절로 주소가 바뀐다).
   if (urls.length === before.count + 1 && index === urls.length && (before.count === 0 || urls[index - 2] === before.urls[before.count - 1])) {
     const u = urls[index - 1];
-    if (openedKey(u) === want || (sameNow <= before.same && inDomain(u, opts.domain))) {
+    if (openedKey(u) === want || sameNow <= before.same + 1) {
       const tab = markerless(index);
       if (tab) return { tab, index };
     }
@@ -485,7 +489,7 @@ const ops = {
   },
 
   // 여러 자리의 탭 {windowId, index, url, marker} 를 읽기만 한다(표시는 페이지 안 dataset 을 읽을 뿐 아무것도 바꾸지 않는다. 사파리를 앞으로 가져오지 않는다).
-  // 없는 탭 · 읽지 못한 탭(읽다 오류가 났거나 args.timeoutMs 를 넘긴 탭)은 결과에서 뺀다 — 부르는 쪽은 빠진 탭을 「못 본 것」으로 센다.
+  // 없는 탭 · 시간(args.timeoutMs)을 넘긴 탭은 결과에서 뺀다 — 부르는 쪽은 빠진 탭을 「못 본 것」으로 센다. 탭은 있는데 페이지 JS 가 오류인 탭(PDF 등)은 unreadable: true 로 돌려준다.
   // 「Apple 이벤트에서 JavaScript 허용」이 꺼진 오류만 올린다. args.timeoutMs 는 탭 하나에 쓰는 시간이다: 한 탭이 넘기면 그 탭은 버리고,
   // 전체가 spots 수 × timeoutMs 를 넘기면 남은 탭은 건너뛴다. 사파리 이벤트 하나를 중간에 끊을 수는 없어서, 아예 멈춘 탭(경고창)은
   // 부르는 쪽의 요청 시간 제한이 호스트를 다시 띄워 끊는다.
@@ -498,28 +502,36 @@ const ops = {
       const s0 = Date.now();
       if (s0 - t0 > per * spots.length) break;
       let url;
-      let marker;
+      let marker = "";
+      let unreadable = false;
       try {
         const tab = Safari.windows.byId(spots[i].windowId).tabs[spots[i].index - 1];
         url = str(tab.url());
-        marker = str(Safari.doJavaScript("document.documentElement.dataset.saTab || ''", { in: tab }));
+        try {
+          marker = str(Safari.doJavaScript("document.documentElement.dataset.saTab || ''", { in: tab }));
+        } catch (e) {
+          if (isJsOffError(e)) throw e;
+          unreadable = true; // 탭은 있는데 페이지 안 JS 가 오류 — 표시를 읽지 못했다(그런 문서는 우리 표시를 가질 수 없다)
+        }
       } catch (e) {
         if (isJsOffError(e)) throw e;
-        continue; // 없는 탭이거나 표시를 읽지 못한 탭 — 못 본 것
+        continue; // 없는 탭 — 못 본 것
       }
       if (Date.now() - s0 > per) continue; // 탭 하나가 시간을 넘겼다 — 못 본 것
-      out.push({ windowId: spots[i].windowId, index: spots[i].index, url, marker });
+      out.push(unreadable ? { windowId: spots[i].windowId, index: spots[i].index, url, marker: "", unreadable: true } : { windowId: spots[i].windowId, index: spots[i].index, url, marker });
     }
     return out;
   },
 
   // 우리가 연 탭이 제자리에서 이동했다(주소 이동 · 링크 · 폼 전송). 새 문서에는 표시가 없다 — 불러오기가 끝나길 기다려
   // 표시를 다시 적고 탭 정보를 돌려준다. 자리에 다른 키의 표시가 있으면 {status:"other"}, 탭이 없으면 {status:"gone"}.
+  // 표시 없는 탭이 우리 탭이라는 증거가 없으면(mayStamp) 아무것도 적지 않고 {status:"gone"} — 사용자 탭이 그 자리로 밀려 왔을 수 있다.
   // 아직 옛 문서(표시가 그대로)면 이동이 시작되길 잠깐(최대 1.5초) 기다리고, 그래도 안 바뀌면 같은 문서로 본다.
   rebind(args) {
     const p0 = probeTab(args.windowId, args.index);
     if (!p0) return { status: "gone" };
     if (p0.marker !== "" && p0.marker !== args.key) return { status: "other" };
+    if (p0.marker === "" && !mayStamp(args, p0.url)) return { status: "gone" };
     const tab = p0.tab;
     const t0 = Date.now();
     if (p0.marker === args.key) {
@@ -545,6 +557,7 @@ const ops = {
 
   // 이동은 일어났는지 본다 — 표시가 남은 키의 탭이 그대로면 {status:"same"}, 자리의 탭에 표시가 없으면(새 문서)
   // 쓸 수 있을 때까지(args.waitUntil 이 "commit" 이면 기다리지 않고) 기다려 표시를 다시 적고 {status:"navigated"}. 다른 키의 표시 → "other", 탭 없음 → "gone".
+  // 표시 없는 탭이 우리 탭이라는 증거가 없으면(mayStamp) 표시를 적지 않고 "gone".
   // 읽기만 하고 아무것도 지우지 않는다(표시가 없다는 이유로 탭을 잃지 않게 하려는 확인용).
   settle(args) {
     const quick = settleFast(args);
@@ -571,6 +584,7 @@ const ops = {
         tab: { windowId: args.windowId, index: args.index, title: str(p0.tab.name()), url, isActive: args.index === win.currentTab().index() },
       };
     }
+    if (!mayStamp(args, p0.url)) return { status: "gone" }; // 표시 없는 탭이 우리 탭이라는 증거가 없다 — 사용자 탭이 밀려 왔을 수 있어 아무것도 적지 않는다
     const r = finishRebind(args, p0.tab);
     return r.status === "ok" ? { status: "navigated", tab: r.tab, stamped: r.stamped } : r;
   },
@@ -616,7 +630,7 @@ const ops = {
 
     // 자리(index0)의 탭을 곧이곧대로 믿지 않는다 — 기다리는 사이 사용자가 탭을 열고 닫으면 순번이 밀려 사용자 탭을 가리킬 수 있다.
     // 치울 때(JS 허용이 꺼진 경우)도 표시를 읽는다 — 읽을 수 없으면 탭 수 · 주소가 정확히 맞을 때만 다시 찾은 우리 탭을 닫는다.
-    const check = (jsOffOk) => findOpened(win, index0, args.url, before, { domain: args.domain, jsOffOk });
+    const check = (jsOffOk) => findOpened(win, index0, args.url, before, { jsOffOk });
     const closeOurs = () => {
       const f = check(true);
       if (f) f.tab.close();
@@ -635,14 +649,16 @@ const ops = {
         throw e;
       }
     };
-    const notFound = () => new Error("방금 연 탭을 확인하지 못함 — 표시를 적지 않았고, 열린 탭이 남아 있을 수 있음");
+    // 어느 탭이 우리 탭인지 확신할 수 없으면 던지지 않는다(던지면 이미 열린 우리 탭이 등록되지 않아 끝낼 때도 못 닫는다). 아무 탭에도 표시를 적지 않고,
+    // 우리가 만든 자리(index0) · 연 주소로 「표시 안 한 우리 탭」을 돌려준다 — Node 쪽이 등록해 두면 그 자리에 정확히 그 주소의 표시 없는 탭이 그대로 있을 때만 끝낼 때 닫는다.
+    const unconfirmed = () => ({ windowId, index: index0, title: "", url: str(args.url), isActive: false, stamped: false });
     let found = locate();
-    if (!found) throw notFound();
+    if (!found) return unconfirmed();
     // 밀린 탭이면 기다림이 엉뚱한 탭을 본 것이다 — 우리 탭에 대해 다시 기다린다(요청 시간 안에 둘 다 들어가게 남은 만큼만). 지시자는 쓸 때마다 자리로 다시 찾으므로 기다린 뒤 다시 확인해 그 결과에만 적는다.
     if (found.index !== index0) {
       waitForLoad(found.tab, Object.assign({}, args, { loadBudgetMs: Math.max(500, budget - (Date.now() - t0)) }), closeOurs);
       found = locate();
-      if (!found) throw notFound();
+      if (!found) return unconfirmed();
     }
     const index = found.index;
     const tab = found.tab;

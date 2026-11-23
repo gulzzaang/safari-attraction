@@ -4,7 +4,7 @@ import { TabRegistry, type Guarded, type MarkerRead, type Probe, type RawTab, ty
 
 /** 사파리 흉내: 창 하나에 탭들이 있고, 탭마다 페이지 안 표시(marker)를 가진다. */
 class FakeSafari implements TabBackend {
-  tabs: { url: string; marker: string; /** 표시를 읽을 수 없는 탭(JS 를 못 도는 특수 페이지 등) — readMarkers 결과에서 빠진다. */ unreadable?: boolean; /** 경고창이 떠 JS 에 답하지 않는 탭 — probe 가 시간 초과를 낸다(readMarkers 는 표시를 못 읽어 빼지 않고 빈 표시로 돌려준다). */ probeStuck?: boolean }[] = [];
+  tabs: { url: string; marker: string; /** 표시를 읽을 수 없는 탭(JS 를 못 도는 특수 페이지 등) — readMarkers 결과에서 빠진다. */ unreadable?: boolean; /** 페이지 안 JS 를 돌리다 오류가 나는 탭(PDF 등) — readMarkers 가 unreadable 로 표시해 돌려준다(우리 표시를 가질 수 없는 탭). */ jsThrows?: boolean; /** 경고창이 떠 JS 에 답하지 않는 탭 — probe 가 시간 초과를 낸다(readMarkers 는 표시를 못 읽어 빼지 않고 빈 표시로 돌려준다). */ probeStuck?: boolean }[] = [];
   /** 켜 두면 close 가 한 번 시간 초과를 내고(탭은 실제로 닫힘) 이후는 정상. */
   closeTimesOutOnce = false;
   probeError: SafariError | null = null;
@@ -52,6 +52,8 @@ class FakeSafari implements TabBackend {
   readStuckOnce = false;
   /** 켜 두면 readMarkers 가 이 오류를 낸다(예: JS_FROM_APPLE_EVENTS_OFF). */
   readError: SafariError | null = null;
+  /** 표시 읽기가 한 번 끝날 때마다(읽은 탭 수) — 시험이 가짜 시계를 흘려보낸다. */
+  onRead?: (n: number) => void;
   readMarkers = async (spots: Array<{ windowId: number; index: number }>, _timeoutMs: number): Promise<MarkerRead[]> => {
     this.readCalls.push(spots.length);
     for (const sp of spots) this.readSpotLog.push(`${sp.windowId}:${sp.index}`);
@@ -63,8 +65,9 @@ class FakeSafari implements TabBackend {
     const out: MarkerRead[] = [];
     for (const sp of spots) {
       const t = this.tabs[sp.index - 1];
-      if (t && !t.unreadable && sp.windowId === 1) out.push({ windowId: 1, index: sp.index, url: t.url, marker: t.marker });
+      if (t && !t.unreadable && sp.windowId === 1) out.push({ windowId: 1, index: sp.index, url: t.url, marker: t.jsThrows ? '' : t.marker, ...(t.jsThrows ? { unreadable: true } : {}) });
     }
+    this.onRead?.(spots.length);
     return out;
   };
   close = async (s: Spot, urlOnly = false): Promise<Guarded<null>> => {
@@ -695,7 +698,7 @@ describe('TabRegistry', () => {
       expect(sf.tabs).toHaveLength(150);
       const before = JSON.stringify(sf.tabs);
       expect(await reg.closeOwned()).toEqual({ closed: 0, missing: 1 });
-      expect(sum(sf.readCalls)).toBeLessThanOrEqual(120); // 닫기 중 다시 찾기 60 + 마지막 훑기 60
+      expect(sum(sf.readCalls)).toBeLessThanOrEqual(60); // 끝낼 때 훑기는 한 번만 나눠 쓴다(항목마다 다시 훑지 않는다)
       expect(Math.max(...sf.readCalls)).toBeLessThanOrEqual(10);
       expect(JSON.stringify(sf.tabs)).toBe(before); // 사용자 탭 · 우리 탭 모두 그대로, 표시도 안 적었다
     });
@@ -915,7 +918,7 @@ describe('TabRegistry', () => {
         expect(sf.tabs.map((t) => t.url)).toEqual(['http://user/1']);
       });
 
-      // 알려진 드문 한계: 우리 탭이 닫히고, 탭 수 · 이웃이 똑같게 같은 사이트의 새 탭이 120초 안에 그 자리에 오면 구별할 수 없다.
+      // 알려진 드문 한계: 우리 탭이 닫히고, 탭 수 · 이웃이 똑같게 같은 사이트의 새 탭이 10분 안에 그 자리에 오면 구별할 수 없다.
       test('(d) 알려진 한계: 우리 탭을 닫고 탭 수 · 이웃이 똑같게 같은 사이트의 사용자 탭이 곧바로 그 자리에 오면 우리 탭으로 본다', async () => {
         const { sf, reg } = await threeTabs();
         sf.tabs[1] = { url: 'http://a/brand-new', marker: '' };
@@ -923,7 +926,7 @@ describe('TabRegistry', () => {
         expect(sf.tabs.map((t) => t.url)).toEqual(['http://user/1', 'http://user/2']);
       });
 
-      // R5: 같은 사이트 · 120초 안 · http(s) 가 아니면 되찾지 않는다.
+      // R5: 같은 사이트 · 10분 안 · http(s) 가 아니면 되찾지 않는다.
       /** [u1, 우리 탭(a.example, 창 끝)] 을 열고 기록해 둔다. 시계는 손으로 돌린다. */
       async function lastTab() {
         const sf = new FakeSafari();
@@ -943,28 +946,28 @@ describe('TabRegistry', () => {
         expect(JSON.stringify(sf.tabs)).toBe(before);
       });
 
-      test('(f) 우리가 마지막으로 한 일로부터 120초가 지났으면 같은 사이트여도 되찾지 않는다', async () => {
+      test('(f) 우리가 마지막으로 한 일로부터 10분이 지났으면 같은 사이트여도 되찾지 않는다', async () => {
         const { sf, reg, advance } = await lastTab();
-        advance(121_000);
+        advance(601_000);
         sf.tabs[1] = { url: 'http://login.a.example/z', marker: '' };
         const before = JSON.stringify(sf.tabs);
         expect(await reg.closeOwned()).toEqual({ closed: 0, missing: 0 });
         expect(JSON.stringify(sf.tabs)).toBe(before);
       });
 
-      test('(g) 120초 안의 같은 사이트 늦은 리디렉트는 되찾아 끝낼 때 닫는다(서브도메인이 바뀌어도)', async () => {
+      test('(g) 10분 안의 같은 사이트 늦은 리디렉트는 되찾아 끝낼 때 닫는다(서브도메인이 바뀌어도) — 로그인 사람 손 넘기기 같은 긴 기다림도', async () => {
         const { sf, reg, advance } = await lastTab();
-        advance(100_000);
+        advance(500_000);
         sf.tabs[1] = { url: 'http://login.a.example/z', marker: '' };
         expect(await reg.closeOwned()).toEqual({ closed: 1, missing: 0 });
         expect(sf.tabs.map((t) => t.url)).toEqual(['http://user.example/1']);
       });
 
-      test('우리가 그 탭에 일을 시킬 때마다 120초는 새로 센다', async () => {
+      test('우리가 그 탭에 일을 시킬 때마다 10분은 새로 센다', async () => {
         const { sf, reg, k, advance } = await lastTab();
-        advance(100_000);
+        advance(400_000);
         await reg.withTab(k, async (s) => (sf.tabs[s.index - 1]?.marker === s.key ? { value: 'ok' } : { stale: true }));
-        advance(100_000);
+        advance(400_000);
         sf.tabs[1]!.marker = '';
         sf.tabs[1]!.url = 'http://www.a.example/next';
         expect(await reg.closeOwned()).toEqual({ closed: 1, missing: 0 });
@@ -1051,6 +1054,120 @@ describe('TabRegistry', () => {
       for (const t of sf.tabs) if (t.marker !== '') t.url += '?x=1';
       expect(await reg.closeOwned()).toEqual({ closed: 3, missing: 0 });
       expect(sf.tabs.map((t) => t.url)).toEqual(['http://user/0', 'http://user/00', 'http://user/mid']);
+    });
+  });
+
+  describe('최종 검토 고침: 되찾기 · 끝낼 때 훑기(I2 · I3)', () => {
+    const run = (sf: FakeSafari) => async (s: Spot): Promise<Guarded<string>> => {
+      const t = sf.tabs[s.index - 1];
+      if (!t) return { stale: true };
+      if (t.marker === s.key) return { value: 'ok' };
+      if (s.unstamped && t.marker === '' && t.url === s.url) {
+        t.marker = s.key;
+        return { value: 'ok' };
+      }
+      return { stale: true };
+    };
+    async function loginTab(user: { url: string; marker: string; jsThrows?: boolean }) {
+      const sf = new FakeSafari();
+      let t = 1_000_000;
+      const reg = new TabRegistry(sf, 'inst', () => t);
+      sf.tabs.push(user);
+      const k = openOwned(sf, reg, 'http://a.example/login');
+      reg.noteWindow(1, sf.tabs.map((x) => x.url), k);
+      return { sf, reg, k, advance: (ms: number) => (t += ms) };
+    }
+
+    test('[I2a] 페이지 JS 를 못 도는 웹 탭(PDF 등)이 창에 있어도, 우리 탭이 같은 사이트의 새 문서로 바뀌면 되찾는다(F2b)', async () => {
+      const { sf, reg, k, advance } = await loginTab({ url: 'http://u.example/doc.pdf', marker: '', jsThrows: true });
+      advance(30_000);
+      sf.tabs[1]!.marker = '';
+      sf.tabs[1]!.url = 'http://a.example/home';
+      expect(await reg.withTab(k, run(sf))).toBe('ok');
+      expect(sf.tabs[0]!.marker).toBe(''); // PDF 탭에 안 적었다
+    });
+
+    test('[I2a] 끝낼 때(closeOwned)는 JS 를 못 도는 탭이 있으면 우리 탭이 없어졌다고 단정하지 않는다(못 찾음으로 센다)', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf);
+      sf.tabs.push({ url: 'http://u.example/doc.pdf', marker: '', jsThrows: true });
+      openOwned(sf, reg, 'http://a.example/x');
+      sf.tabs.pop(); // 사용자가 우리 탭을 닫았다 — 하지만 못 읽은 탭이 있다
+      expect(await reg.closeOwned()).toEqual({ closed: 0, missing: 1 });
+    });
+
+    test('[I2b] 로그인 사람 손 넘기기처럼 8분 뒤의 같은 사이트 늦은 이동도 되찾는다(10분 안)', async () => {
+      const { sf, reg, k, advance } = await loginTab({ url: 'http://user.example/1', marker: '' });
+      advance(480_000);
+      sf.tabs[1]!.marker = '';
+      sf.tabs[1]!.url = 'http://a.example/home';
+      expect(await reg.withTab(k, run(sf))).toBe('ok');
+    });
+
+    test('[I2c] 우리가 연 탭을 잃어버린 채 부르면 TAB_CLOSED 안내가 「놓쳤다 · 다시 열기 또는 listBrowserTabs() + attachBrowserTab()」이다', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf);
+      const k = openOwned(sf, reg, 'http://a/x');
+      sf.tabs[0] = { url: 'http://elsewhere.example/z', marker: '' }; // 다른 사이트로 가 표시를 잃었다(되찾을 수 없다)
+      sf.tabs.push({ url: 'http://c.example/unread', marker: '', unreadable: true }); // 못 읽은 탭이 있어 「진짜로 없다」고 단정하지 못한다(잃어버림)
+      const err = await reg.withTab(k, run(sf)).catch((e) => e);
+      expect(err).toMatchObject({ code: 'TAB_CLOSED' });
+      expect(err.message).toMatch(/놓쳤어요/);
+      expect(err.message).toContain('listBrowserTabs()');
+      expect(err.message).toContain('attachBrowserTab()');
+      const again = await reg.withTab(k, run(sf)).catch((e) => e); // 다시 불러도 같은 안내
+      expect(again.message).toContain('attachBrowserTab()');
+    });
+
+    test('[I2c] 모르는 키 · 사용자 탭 · 진짜로 닫힌 탭의 TAB_CLOSED 는 지금 문구 그대로다', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf);
+      await expect(reg.withTab('t99', async () => ({ stale: true }))).rejects.toThrow(/모르는 탭 키/);
+      const k = openOwned(sf, reg, 'http://a/x');
+      sf.tabs.splice(0, 1); // 사용자가 우리 탭을 닫았다
+      const err = await reg.withTab(k, run(sf)).catch((e) => e);
+      expect(err.code).toBe('TAB_CLOSED');
+      expect(err.message).not.toMatch(/놓쳤어요/);
+    });
+
+    /** [사용자 탭 60개, 우리 탭 12개] 에서 사용자가 우리 탭 11개를 닫은 사파리. */
+    async function manyGone() {
+      const sf = new FakeSafari();
+      let t = 1_000_000;
+      const reg = new TabRegistry(sf, 'inst', () => t);
+      for (let i = 0; i < 60; i++) sf.tabs.push({ url: `http://u/${i}`, marker: '' });
+      for (let i = 0; i < 12; i++) openOwned(sf, reg, `http://a.example/${i}`);
+      sf.tabs.splice(60, 11); // 우리 탭 11개가 없어졌다 — 하나만 남는다(60번째 뒤)
+      return { sf, reg, advance: (ms: number) => (t += ms) };
+    }
+
+    test('[I3] 우리 탭 12개(11개 없어짐) + 탭 60개: 끝낼 때 표시 읽기는 한 번의 훑기(60개 이하)로 끝난다(G3 · G4)', async () => {
+      const { sf, reg } = await manyGone();
+      const r = await reg.closeOwned();
+      expect(sf.readSpotLog.length).toBeLessThanOrEqual(60);
+      expect(r.closed).toBe(1);
+      expect(sf.tabs).toHaveLength(60); // 사용자 탭 60개는 그대로
+    });
+
+    test('[I3] 훑기 시간 상한(5초)을 넘기면 남은 탭은 읽지 않고, 못 읽은 만큼 missing 으로 센다', async () => {
+      const { sf, reg, advance } = await manyGone();
+      sf.onRead = () => advance(3_000); // 묶음 하나(10탭)가 3초 걸린다
+      const r = await reg.closeOwned();
+      expect(sf.readCalls.length).toBeLessThanOrEqual(3); // 5초 안에 두 묶음, 상한을 넘기면 멈춘다
+      expect(sf.readSpotLog.length).toBeLessThanOrEqual(30);
+      expect(r.missing).toBeGreaterThan(0);
+      expect(sf.tabs.filter((t) => t.marker === '')).toHaveLength(60); // 사용자 탭에는 아무것도 안 적었다
+    });
+
+    test('[I3] 훑는 도중 우리 탭을 닫아 순번이 당겨져도 읽어 둔 결과가 어긋나지 않는다(앞쪽 사용자 탭 사이에 우리 탭 여럿)', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf);
+      const keys: string[] = [];
+      for (let i = 0; i < 4; i++) keys.push(openOwned(sf, reg, `http://a.example/${i}`));
+      sf.tabs.unshift({ url: 'http://user/front', marker: '' }); // 모두 한 칸씩 밀림
+      for (const t of sf.tabs) if (t.marker !== '') t.url += '?r=1'; // 주소도 바뀜(같은 문서 안 이동)
+      expect(await reg.closeOwned()).toEqual({ closed: 4, missing: 0 });
+      expect(sf.tabs.map((t) => t.url)).toEqual(['http://user/front']);
     });
   });
 });

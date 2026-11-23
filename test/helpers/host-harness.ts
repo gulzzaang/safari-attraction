@@ -79,48 +79,50 @@ export function createHarness(): Harness {
     };
   };
   const resolveTab = (t: any): FakeTab | undefined => (t && typeof t.__resolve === "function" ? t.__resolve() : t);
-  const Safari: any = {
-    running: () => true,
-    windows: {
-      byId(id: number) {
-        const w = windows.get(id);
-        return {
-          id: () => id,
-          get tabs() {
-            return new Proxy([] as unknown[], {
-              get(_t, p) {
-                if (typeof p === "string" && /^\d+$/.test(p)) return mkTab(w, Number(p));
-                if (p === "length") return w?.tabs.length ?? 0;
-                if (p === "url") {
-                  return () => {
-                    harnessRef.onBulkUrl?.(++bulkUrlCount);
-                    return (w?.tabs ?? []).map((t) => t.url());
-                  };
-                }
-                if (p === "name") return () => (w?.tabs ?? []).map((t) => t.page.title ?? "");
-                if (p === "push") {
-                  return (spec: { __url: string }) => {
-                    w?.tabs.push(newTab(spec.__url));
-                  };
-                }
-                return undefined;
-              },
-            });
+  const windowRef = (id: number) => {
+    const w = windows.get(id);
+    return {
+      id: () => id,
+      visible: () => true,
+      miniaturized: () => false,
+      get tabs() {
+        return new Proxy([] as unknown[], {
+          get(_t, p) {
+            if (typeof p === "string" && /^\d+$/.test(p)) return mkTab(w, Number(p));
+            if (p === "length") return w?.tabs.length ?? 0;
+            if (p === "url") {
+              return () => {
+                harnessRef.onBulkUrl?.(++bulkUrlCount);
+                return (w?.tabs ?? []).map((t) => t.url());
+              };
+            }
+            if (p === "name") return () => (w?.tabs ?? []).map((t) => t.page.title ?? "");
+            if (p === "push") {
+              return (spec: { __url: string }) => {
+                w?.tabs.push(newTab(spec.__url));
+              };
+            }
+            return undefined;
           },
-          set currentTab(t: FakeTab) {
-            events.push({ kind: "setCurrentTab", windowId: id });
-            if (w) w.current = resolveTab(t);
-          },
-          // win.currentTab() — 호출하면 현재 탭(없으면 첫 탭)의 {index()} 를 돌려준다. Apple Event 한 번으로 센다.
-          get currentTab() {
-            return () => {
-              events.push({ kind: "currentTab" });
-              return { index: () => (w ? Math.max(0, w.tabs.indexOf(w.current ?? w.tabs[0]!)) + 1 : 0) };
-            };
-          },
+        });
+      },
+      set currentTab(t: FakeTab) {
+        events.push({ kind: "setCurrentTab", windowId: id });
+        if (w) w.current = resolveTab(t);
+      },
+      // win.currentTab() — 호출하면 현재 탭(없으면 첫 탭)의 {index()} 를 돌려준다. Apple Event 한 번으로 센다.
+      get currentTab() {
+        return () => {
+          events.push({ kind: "currentTab" });
+          return { index: () => (w ? Math.max(0, w.tabs.indexOf(w.current ?? w.tabs[0]!)) + 1 : 0) };
         };
       },
-    },
+    };
+  };
+  const Safari: any = {
+    running: () => true,
+    // Safari.windows() 는 창 목록, Safari.windows.byId(id) 는 한 창(사파리의 지시자처럼 둘 다 된다).
+    windows: Object.assign(() => [...windows.keys()].map(windowRef), { byId: windowRef }),
     Tab: (props: { url: string }) => ({ __url: props.url }),
     doJavaScript(script: string, opts: { in?: FakeTab }) {
       events.push({ kind: "doJavaScript", script });
