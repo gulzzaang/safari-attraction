@@ -120,7 +120,8 @@ struct ChatView: View {
                         if vm.input.isEmpty {
                             Text("질문을 입력하세요 (Return 보내기 · Option+Return 줄바꿈)")
                                 .font(.system(size: 13)).foregroundStyle(.tertiary)
-                                .padding(.horizontal, 8).padding(.vertical, 6)
+                                .padding(.horizontal, InputTextView.insetX + InputTextView.linePadding)
+                                .padding(.vertical, InputTextView.insetY)
                                 .allowsHitTesting(false)
                         }
                     }

@@ -13,6 +13,10 @@ struct InputTextView: NSViewRepresentable {
 
     static let minHeight: CGFloat = 30
     static let maxHeight: CGFloat = 130
+    /// 글 상자 안쪽 여백(가로 · 세로)과 줄 앞 여백 — 안내 글자(placeholder)가 같은 자리에 오도록 ChatView 가 같은 값을 쓴다.
+    static let insetX: CGFloat = 4
+    static let insetY: CGFloat = 6
+    static let linePadding: CGFloat = 5
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -26,9 +30,13 @@ struct InputTextView: NSViewRepresentable {
         tv.drawsBackground = false
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticDashSubstitutionEnabled = false
-        tv.textContainerInset = NSSize(width: 4, height: 6)
+        tv.textContainerInset = NSSize(width: Self.insetX, height: Self.insetY)
         tv.isVerticallyResizable = true
         tv.isHorizontallyResizable = false
+        // 글이 길어져도 상자가 자라고(위아래) 스크롤되게 — 끝없이 큰 최대 크기가 있어야 한다.
+        tv.minSize = NSSize(width: 0, height: Self.minHeight)
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.textContainer?.lineFragmentPadding = Self.linePadding
         tv.autoresizingMask = [.width]
         tv.textContainer?.widthTracksTextView = true
         tv.string = text

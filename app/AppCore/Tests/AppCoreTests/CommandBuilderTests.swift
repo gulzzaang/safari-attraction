@@ -14,11 +14,11 @@ final class CommandBuilderTests: XCTestCase {
     func testClaudeNoToolsNoPage() {
         let c = CommandBuilder.build(req(.claude), workDir: work)
         XCTAssertEqual(c.executable, "claude")
-        XCTAssertEqual(c.arguments, ["-p", "질문", "--output-format", "stream-json", "--verbose", "--model", "sonnet", "--tools", "", "--allowedTools", "", "--strict-mcp-config"])
+        XCTAssertEqual(c.arguments, ["-p", "질문", "--output-format", "stream-json", "--verbose", "--model", "sonnet", "--tools", "", "--allowedTools", "", "--strict-mcp-config", "--safe-mode"])
     }
     func testClaudeWebSearchOn() {
         let c = CommandBuilder.build(req(.claude, web: true), workDir: work)
-        XCTAssertEqual(c.arguments, ["-p", "질문", "--output-format", "stream-json", "--verbose", "--model", "sonnet", "--tools", "WebSearch,WebFetch", "--allowedTools", "WebSearch,WebFetch", "--strict-mcp-config"])
+        XCTAssertEqual(c.arguments, ["-p", "질문", "--output-format", "stream-json", "--verbose", "--model", "sonnet", "--tools", "WebSearch,WebFetch", "--allowedTools", "WebSearch,WebFetch", "--strict-mcp-config", "--safe-mode"])
     }
     func testClaudeWithPage() {
         let c = CommandBuilder.build(req(.claude, page: page), workDir: work)
@@ -39,7 +39,7 @@ final class CommandBuilderTests: XCTestCase {
         let c = CommandBuilder.build(req(.claude, web: true, session: "abc-123"), workDir: work)
         XCTAssertEqual(c.arguments, ["-p", "질문", "--output-format", "stream-json", "--verbose", "--model", "sonnet",
                                      "--tools", "WebSearch,WebFetch", "--allowedTools", "WebSearch,WebFetch",
-                                     "--strict-mcp-config", "--resume", "abc-123"])
+                                     "--strict-mcp-config", "--safe-mode", "--resume", "abc-123"])
     }
     func testClaudeIgnoresHistoryWhenResuming() {
         let h = [Turn(role: .user, text: "앞 질문"), Turn(role: .assistant, text: "앞 답")]
@@ -138,6 +138,8 @@ final class CommandBuilderTests: XCTestCase {
             let a = CommandBuilder.build(req(.claude, web: web), workDir: work).arguments
             XCTAssertTrue(a.contains("--strict-mcp-config"))
             XCTAssertFalse(a.contains("--mcp-config"))
+            // 사용자 훅 · 플러그인을 불러오지 않아야 맥 허락 창(문서 폴더)이 앱 이름으로 뜨지 않는다.
+            XCTAssertTrue(a.contains("--safe-mode"))
         }
     }
     func testModelKindBasics() {

@@ -20,11 +20,14 @@ public enum CommandBuilder {
         case .claude:
             // --tools 로 쓸 수 있는 도구 자체를 줄이고(끔이면 "" = 없음), --allowedTools 로 -p 에서 허락 없이 돌게 한다.
             // --strict-mcp-config 만 주고 --mcp-config 는 안 줘서 사용자의 MCP 서버는 불러오지 않는다(대화만).
+            // --safe-mode: 사용자 훅 · 플러그인 · CLAUDE.md 를 불러오지 않는다. 앱이 띄운 자식이 사용자 설정을 따라
+            // 문서 폴더에 손대면 맥이 「앱이 문서 폴더에 접근」 허락 창을 앱 이름으로 띄우고, 아무도 안 누르면
+            // 그 자리에서 멈춘다(2026-11-23 시험에서 겪음). 로그인(구독)은 그대로 된다.
             let tools = r.webSearch ? claudeWebTools : ""
             var args = ["-p", prompt, "--output-format", "stream-json", "--verbose",
                         "--model", claudeModel,
                         "--tools", tools, "--allowedTools", tools,
-                        "--strict-mcp-config"]
+                        "--strict-mcp-config", "--safe-mode"]
             if let id = r.claudeSessionID, !id.isEmpty { args += ["--resume", id] }
             return ("claude", args)
         case .gemini:
