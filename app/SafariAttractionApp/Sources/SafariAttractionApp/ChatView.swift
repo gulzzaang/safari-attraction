@@ -63,7 +63,7 @@ struct ChatView: View {
                     .disabled(vm.messages.isEmpty && !vm.isRunning)
                 Button(action: onClose) { Image(systemName: "xmark") }
                     .buttonStyle(.borderless)
-                    .help("닫기 (⌥⌘Space)")
+                    .help("닫기 (\(HotKey.toggleLabel))")
             }
             Picker("모델", selection: $vm.model) {
                 ForEach(ModelKind.allCases, id: \.self) { Text($0.pickerLabel).tag($0) }

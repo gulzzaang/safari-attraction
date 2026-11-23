@@ -195,7 +195,7 @@ final class PanelFollowerTests: XCTestCase {
         follower.start(); scheduler.tick()
         XCTAssertEqual(commands, [], "닫힌 뒤엔 보이는 명령이 나가지 않는다")
     }
-    // 사파리가 앞인 채 ⌥⌘Space 로 열면, 우리 앱이 앞으로 와서(activate) 첫 틱에는 사파리가 더는 앞이 아니다.
+    // 사파리가 앞인 채 ⌥⇧S 로 열면, 우리 앱이 앞으로 와서(activate) 첫 틱에는 사파리가 더는 앞이 아니다.
     // 그래도 열 때 한 번은 사파리 창 옆 자리를 읽어 붙어야 한다(기본 자리에 멈춰 있으면 안 된다).
     func testOpeningWithSafariFrontPlacesBesideSafariEvenAfterOwnAppActivates() {
         let g = geometry, r = rec!

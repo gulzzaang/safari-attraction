@@ -8,11 +8,16 @@ final class SidePanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
+    /// 고정이 아니면 떠 있는 층, 고정이면 일반 층(`PanelLayer`).
+    static func windowLevel(pinned: Bool) -> NSWindow.Level {
+        PanelLayer.level(pinned: pinned) == .floating ? .floating : .normal
+    }
+
     init(content: NSView) {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 380, height: 700),
                    styleMask: [.borderless, .resizable], backing: .buffered, defer: false)
         isFloatingPanel = false
-        level = .normal
+        level = Self.windowLevel(pinned: false)
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
         isOpaque = false
@@ -47,7 +52,10 @@ final class SidePanelController {
         }
         box.value = self
         hosting.rootView = AnyView(ChatView(vm: viewModel, onClose: { [weak self] in self?.close() }))
-        viewModel.onPinnedChange = { [follower] pinned in follower.setPinned(pinned) }
+        viewModel.onPinnedChange = { [follower, panel] pinned in
+            follower.setPinned(pinned)
+            panel.level = SidePanel.windowLevel(pinned: pinned)
+        }
 
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [follower] _ in
@@ -86,11 +94,12 @@ final class SidePanelController {
         case .show(let frame):
             guard isOpen else { return } // 닫은 뒤에 늦게 온 명령
             panel.setFrame(frame, display: true)
-            if activateOnNextShow {
+            if activateOnNextShow && PanelLayer.activatesOurApp(for: .userOpened) {
                 activateOnNextShow = false
                 NSApp.activate()
                 panel.makeKeyAndOrderFront(nil)
             } else {
+                // 보이거나 자리만 옮길 때는 활성화 없이 앞으로(사파리 포커스를 뺏지 않는다).
                 panel.orderFrontRegardless()
             }
         case .hide:

@@ -42,9 +42,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        let open = controller?.isOpen ?? false
-        var title = open ? "옆 창 닫기" : "옆 창 열기"
-        title += (hotKey?.registrationError == nil) ? "   ⌥⌘Space" : "   (단축키를 못 써요)"
+        var title = "옆 창 열기 · 닫기"
+        title += (hotKey?.registrationError == nil) ? " (\(HotKey.toggleLabel))" : " (단축키를 못 써요)"
         toggleItem?.title = title
     }
 
