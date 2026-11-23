@@ -22,7 +22,10 @@ final class FakeInteractiveRunner: InteractiveRunning, @unchecked Sendable {
     private var onEvent: (@Sendable (RunEvent) -> Void)?
     private var continuation: CheckedContinuation<RunOutcome, Never>?
     private var pendingOutcome: RunOutcome?
+    private var _mainThreadCalls = 0
     var exitsWhenInputCloses = true
+    /// `write` · `closeInput` 이 메인 스레드에서 불린 횟수 — 0 이어야 한다(막힐 수 있는 일은 메인 밖에서).
+    var mainThreadCalls: Int { lock.withLock { _mainThreadCalls } }
 
     var call: Call? { lock.withLock { _call } }
     var writes: [String] { lock.withLock { _writes } }
@@ -41,10 +44,12 @@ final class FakeInteractiveRunner: InteractiveRunning, @unchecked Sendable {
         }
     }
 
-    func write(_ line: String) throws { lock.withLock { _writes.append(line) } }
+    func write(_ line: String) throws {
+        lock.withLock { _writes.append(line); if Thread.isMainThread { _mainThreadCalls += 1 } }
+    }
 
     func closeInput() {
-        lock.withLock { _closeCount += 1 }
+        lock.withLock { _closeCount += 1; if Thread.isMainThread { _mainThreadCalls += 1 } }
         if exitsWhenInputCloses { finish(.finished(code: 0)) }
     }
 
@@ -99,6 +104,8 @@ final class ManualSleeper: @unchecked Sendable {
     private var cancelled: Set<Int> = []
     private var _requested: [TimeInterval] = []
     var requested: [TimeInterval] { lock.withLock { _requested } }
+    /// 지금 자고 있는(시계가 등록된) 것의 수.
+    var sleepingCount: Int { lock.withLock { waiters.count } }
 
     func sleep(_ seconds: TimeInterval) async throws {
         let id = lock.withLock { () -> Int in nextID += 1; _requested.append(seconds); return nextID }
@@ -159,6 +166,7 @@ final class AgentSessionTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        for r in runners.made { XCTAssertEqual(r.mainThreadCalls, 0, "write · closeInput 은 메인 스레드에서 부르지 않는다") }
         session.shutdown()
         try? FileManager.default.removeItem(at: tmp)
     }
@@ -407,6 +415,7 @@ final class AgentSessionTests: XCTestCase {
         let (r, _, t) = try await start("일")
         r.emit(canUseTool("plan1", "ExitPlanMode", ["plan": "계획"]))
         try await waitUntil { self.lastCard != nil }
+        try await waitUntil("시계 둘(일 · 카드)") { self.sleeper.sleepingCount == 2 }
         sleeper.advance(299)
         try await Task.sleep(nanoseconds: 30_000_000)
         XCTAssertTrue(session.hasPendingCard)
@@ -636,9 +645,11 @@ final class AgentSessionTests: XCTestCase {
     func testActionCardExpiresAfter300Seconds() async throws {
         let (r, g, t) = try await start("일")
         try await approvePlan(r)
+        try await waitUntil("일 시계") { self.sleeper.sleepingCount == 1 }
         sleeper.advance(250)                         // 계획 카드를 띄운 뒤 흐른 시간 — 동작 카드의 300초와 상관없다
         let decision = g.request(gateRequest())
         try await waitUntil { self.cards.count == 2 }
+        try await waitUntil("시계 둘(일 · 카드)") { self.sleeper.sleepingCount == 2 }
         XCTAssertEqual(sleeper.requested.filter { $0 == AgentSession.cardTimeout }.count, 2)
         XCTAssertEqual(AgentSession.cardTimeout, 300)
         sleeper.advance(299)
@@ -715,11 +726,13 @@ final class AgentSessionTests: XCTestCase {
         try await approvePlan(r)
         XCTAssertTrue(sleeper.requested.contains(900))
         XCTAssertEqual(AgentSession.jobTimeout, 900)
+        try await waitUntil("일 시계") { self.sleeper.sleepingCount == 1 }
         sleeper.advance(850)                         // 카드가 없는 동안 시간이 흐른다 — 그 뒤 뜬 카드의 300초는 아직 멀다
         try await Task.sleep(nanoseconds: 30_000_000)
         XCTAssertTrue(session.isRunning)
         let decision = g.request(gateRequest())
         try await waitUntil { self.cards.count == 2 }
+        try await waitUntil("시계 둘(일 · 카드)") { self.sleeper.sleepingCount == 2 }
         sleeper.advance(49)
         try await Task.sleep(nanoseconds: 30_000_000)
         XCTAssertTrue(session.isRunning)
