@@ -45,6 +45,8 @@ export interface Harness {
   addWindow(id: number, ...pages: Array<{ url: string; marker?: string; globals?: Record<string, unknown> }>): FakeTab[];
   /** 호스트가 처음 페이지 안 스크립트를 돌리기 직전에 한 번 부른다 — 사용자가 그 사이에 탭을 열고 닫는 일을 흉내 낸다. */
   beforeFirstJs?: () => void;
+  /** 창의 탭 주소를 한꺼번에 읽을 때(`tabs.url()`)마다 읽기 직전에 부른다(1 부터 센 번호). */
+  onBulkUrl?: (n: number) => void;
   /** 가짜 탭을 만든다(창에 넣지는 않는다). */
   newTab(url: string, marker?: string): FakeTab;
 }
@@ -56,7 +58,8 @@ export function createHarness(): Harness {
 
   // 사파리의 `win.tabs[i]` 는 「i 번째 탭」을 가리키는 지시자라 쓸 때마다 그 자리의 탭을 새로 찾는다 — 사이에 탭이 끼면 다른 탭을 가리킨다. 그걸 흉내 낸다.
   let newTab: Harness["newTab"];
-  const harnessRef: { beforeFirstJs?: () => void } = {};
+  const harnessRef: { beforeFirstJs?: () => void; onBulkUrl?: (n: number) => void } = {};
+  let bulkUrlCount = 0;
   const mkTab = (w: { tabs: FakeTab[] } | undefined, i: number) => {
     const at = () => w?.tabs[i];
     const need = () => {
@@ -88,7 +91,12 @@ export function createHarness(): Harness {
               get(_t, p) {
                 if (typeof p === "string" && /^\d+$/.test(p)) return mkTab(w, Number(p));
                 if (p === "length") return w?.tabs.length ?? 0;
-                if (p === "url") return () => (w?.tabs ?? []).map((t) => t.url());
+                if (p === "url") {
+                  return () => {
+                    harnessRef.onBulkUrl?.(++bulkUrlCount);
+                    return (w?.tabs ?? []).map((t) => t.url());
+                  };
+                }
                 if (p === "name") return () => (w?.tabs ?? []).map((t) => t.page.title ?? "");
                 if (p === "push") {
                   return (spec: { __url: string }) => {
@@ -204,6 +212,12 @@ export function createHarness(): Harness {
     },
     set beforeFirstJs(fn) {
       harnessRef.beforeFirstJs = fn;
+    },
+    get onBulkUrl() {
+      return harnessRef.onBulkUrl;
+    },
+    set onBulkUrl(fn) {
+      harnessRef.onBulkUrl = fn;
     },
   };
   return h;

@@ -398,13 +398,25 @@ function windowBefore(win, url) {
   }
 }
 
+// 주소의 호스트 · 그 호스트가 등록 도메인(Node 쪽이 args.domain 으로 보낸다) 아래인가.
+function hostOf(u) {
+  const m = /^https?:\/\/(?:[^\/?#@]*@)?([^\/?#:]+)/i.exec(str(u));
+  return m ? m[1].toLowerCase() : "";
+}
+function inDomain(u, domain) {
+  if (!domain) return false;
+  const h = hostOf(u);
+  return h !== "" && (h === domain || h.endsWith("." + domain));
+}
+
 // 열린 탭 {tab, index} 를 돌려준다. 못 찾으면 null — 그때는 아무 탭에도 표시를 적지 않고 닫지도 않는다(사용자 탭이 먼저).
 // 열 때 정한 자리(index)의 탭이 우리 탭이라는 증거는 「창의 탭 수가 열기 전보다 정확히 하나 늘었다」다(사용자가 사이에 탭을 열거나 닫으면 깨진다).
-// 1) 탭 수가 그대로 하나 늘었고 그 자리의 탭에 표시가 없으면: 주소가 연 주소와 같거나(이동 · 리디렉트로 주소가 바뀌었어도) 같은 주소의 탭이 열기 전보다 늘지 않았으면 그 탭이다
-//    (같은 주소의 사용자 탭이 따로 있어도 우리 탭을 그 탭으로 착각하지 않는다).
+// 1) 탭 수가 그대로 하나 늘었고 그 자리의 탭에 표시가 없으면: 주소가 연 주소와 같거나, 같은 주소 탭이 열기 전보다 늘지 않았고(리디렉트로 주소가 바뀜)
+//    그 주소가 연 주소와 같은 등록 도메인(opts.domain)일 때 그 탭이다. 도메인이 다른 리디렉트는 사용자 탭과 구별할 수 없어 못 찾은 것으로 둔다(닫히지 않고 남을 수 있다).
 // 2) 아니면(순번이 밀렸을 수 있다) 창 끝에서부터 주소가 연 주소와 같고 표시가 없는 탭을 찾는다 — 같은 주소의 탭이 열기 전보다 하나 이상 늘었을 때만.
-// readMarkers 가 false 면 표시를 읽지 않는다(「Apple 이벤트에서 JavaScript 허용」이 꺼져 읽을 수 없을 때 — 누구의 표시도 없다).
-function findOpened(win, index, url, before, readMarkers) {
+// 표시는 항상 읽는다. 「Apple 이벤트에서 JavaScript 허용」이 꺼져 읽을 수 없으면(opts.jsOffOk 일 때만 — 연 탭을 치울 때) 탭 수가 +1 이고
+// 열 때 정한 자리의 탭 주소가 연 주소와 정확히 같을 때만 그 탭으로 본다. 아니면 오류를 올린다.
+function findOpened(win, index, url, before, opts) {
   let urls;
   try {
     urls = win.tabs.url().map(str);
@@ -414,17 +426,22 @@ function findOpened(win, index, url, before, readMarkers) {
   const want = openedKey(url);
   const sameNow = urls.filter((u) => openedKey(u) === want).length;
   const markerless = (i) => {
+    let tab;
     try {
-      const tab = win.tabs[i - 1];
-      return !readMarkers || readMarker(tab) === "" ? tab : null;
+      tab = win.tabs[i - 1];
+      return readMarker(tab) === "" ? tab : null;
     } catch (e) {
-      if (isJsOffError(e)) throw e;
-      return null;
+      if (!isJsOffError(e)) return null;
+      if (opts.jsOffOk && i === index && urls.length === before.count + 1 && openedKey(urls[i - 1]) === want) return tab;
+      throw e;
     }
   };
-  if (urls.length === before.count + 1 && index <= urls.length && (openedKey(urls[index - 1]) === want || sameNow <= before.same)) {
-    const tab = markerless(index);
-    if (tab) return { tab, index };
+  if (urls.length === before.count + 1 && index <= urls.length) {
+    const u = urls[index - 1];
+    if (openedKey(u) === want || (sameNow <= before.same && inDomain(u, opts.domain))) {
+      const tab = markerless(index);
+      if (tab) return { tab, index };
+    }
   }
   if (sameNow >= before.same + 1) {
     for (let i = urls.length; i >= 1; i--) {
@@ -593,31 +610,41 @@ const ops = {
     const windowId = win.id();
     const index0 = win.tabs.length;
     const tab0 = win.tabs[index0 - 1];
+    const t0 = Date.now();
+    const budget = args.loadBudgetMs || 15000;
 
     // 자리(index0)의 탭을 곧이곧대로 믿지 않는다 — 기다리는 사이 사용자가 탭을 열고 닫으면 순번이 밀려 사용자 탭을 가리킬 수 있다.
-    // JS 허용이 꺼져 닫을 때도 다시 찾은 우리 탭만 닫는다. 이때는 표시를 읽을 수 없다 — 읽지 않고 같은 확인(탭 수 · 주소)으로 찾는다. 못 찾으면 닫지 않는다.
+    // 치울 때(JS 허용이 꺼진 경우)도 표시를 읽는다 — 읽을 수 없으면 탭 수 · 주소가 정확히 맞을 때만 다시 찾은 우리 탭을 닫는다.
+    const check = (jsOffOk) => findOpened(win, index0, args.url, before, { domain: args.domain, jsOffOk });
     const closeOurs = () => {
-      const f = findOpened(win, index0, args.url, before, false);
+      const f = check(true);
       if (f) f.tab.close();
     };
     waitForLoad(tab0, args, closeOurs);
 
-    let found;
-    try {
-      found = findOpened(win, index0, args.url, before, true);
-    } catch (e) {
-      if (isJsOffError(e)) {
-        try {
-          closeOurs();
-        } catch (e2) {}
+    const locate = () => {
+      try {
+        return check(false);
+      } catch (e) {
+        if (isJsOffError(e)) {
+          try {
+            closeOurs();
+          } catch (e2) {}
+        }
+        throw e;
       }
-      throw e;
+    };
+    const notFound = () => new Error("방금 연 탭을 확인하지 못함 — 표시를 적지 않았고, 열린 탭이 남아 있을 수 있음");
+    let found = locate();
+    if (!found) throw notFound();
+    // 밀린 탭이면 기다림이 엉뚱한 탭을 본 것이다 — 우리 탭에 대해 다시 기다린다(요청 시간 안에 둘 다 들어가게 남은 만큼만). 지시자는 쓸 때마다 자리로 다시 찾으므로 기다린 뒤 다시 확인해 그 결과에만 적는다.
+    if (found.index !== index0) {
+      waitForLoad(found.tab, Object.assign({}, args, { loadBudgetMs: Math.max(500, budget - (Date.now() - t0)) }), closeOurs);
+      found = locate();
+      if (!found) throw notFound();
     }
-    if (!found) throw new Error("방금 연 탭을 확인하지 못함 — 표시를 적지 않았고, 열린 탭이 남아 있을 수 있음");
     const index = found.index;
     const tab = found.tab;
-    // 밀린 탭이면 기다림이 엉뚱한 탭을 본 것이다 — 우리 탭에 대해 다시 기다린다.
-    if (index !== index0) waitForLoad(tab, args, closeOurs);
 
     const stamped = args.key ? stampTab(tab, args.key) : false;
     const current = win.currentTab().index();

@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { captureWindowPng } from "./capture.js";
 import { buildGuardedSource, expressionError } from "./guarded-source.js";
-import { urlForms } from "./url.js";
+import { registrableDomain, urlForms } from "./url.js";
 import { HostError, HostTimeoutError, JxaHost } from "./jxa-host.js";
 import { TabRegistry, type Guarded, type MarkerRead, type Probe, type RawTab, type RebindResult, type SettleResult, type Spot } from "./tab-registry.js";
 import { SafariError, type RunJsDetail, type SafariDriver, type TabInfo, type WindowBounds, type WindowInfo } from "./types.js";
@@ -255,7 +255,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     async openTab(url, o = {}) {
       const before = await frontBundleId();
       const key = registry.nextKey();
-      const args = { url, windowId: o.windowId, key: registry.markerOf(key), loadBudgetMs: clampBudget(o.loadBudgetMs) }; // 페이지에는 서버마다 다른 표시를 적는다
+      const args = { url, windowId: o.windowId, key: registry.markerOf(key), loadBudgetMs: clampBudget(o.loadBudgetMs), domain: registrableDomain(url) }; // 페이지에는 서버마다 다른 표시를 적는다 · domain 은 호스트가 리디렉트된 탭을 알아보는 데 쓴다
       let raw: RawTab & { stamped: boolean; windowUrls?: string[] };
       try {
         raw = await call("openTab", args, withBudget(o.loadBudgetMs));

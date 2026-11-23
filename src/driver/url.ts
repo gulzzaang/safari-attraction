@@ -1,3 +1,5 @@
+import { siteLookupChain } from "../memory/site.js";
+
 /**
  * 주소 비교용 정규화. 기록한 주소는 출처에 따라 꼴이 조금 다를 수 있다 — 사파리 목록의 tab.url() · 문서 자신의 location.href ·
  * 우리가 적어 둔 값. `https://a.com` 과 `https://a.com/`, 한글 그대로와 %EA… 로 인코딩한 꼴, %ea 와 %EA 를 같은 주소로 본다.
@@ -11,6 +13,22 @@ export function normalizeUrl(u: string): string {
     // 해석 못 하면 그대로
   }
   return out.replace(/%[0-9a-f]{2}/gi, (m) => m.toUpperCase());
+}
+
+/** http(s) 주소의 등록 도메인(사이트 메모와 같은 규칙: 두 단계 끝말 아래로는 안 내려간다 · IP 는 그대로 · 앞의 www. m. 는 뗀다). http(s) 가 아니거나 해석 못 하면 null. */
+export function registrableDomain(u: string | undefined): string | null {
+  if (!u) return null;
+  let host: string;
+  try {
+    const url = new URL(u);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    host = url.hostname;
+  } catch {
+    return null;
+  }
+  if (host === "") return null;
+  const chain = siteLookupChain(host);
+  return chain[chain.length - 1]!.replace(/\.md$/, "");
 }
 
 /** 두 주소가 같은 주소인가(정규화해서). */

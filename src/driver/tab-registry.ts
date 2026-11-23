@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { SafariError } from "./types.js";
-import { sameUrl } from "./url.js";
+import { registrableDomain, sameUrl } from "./url.js";
 
 /** 사파리가 알려 주는 탭 한 칸(키는 아직 없다). */
 export interface RawTab {
@@ -90,6 +90,8 @@ interface Entry {
   blocked?: boolean;
   /** 우리가 연 탭인데 지금 어디 있는지 못 찾았다. 잊지 않고 두었다가 closeOwned 가 표시로 다시 찾아 닫는다. 보이는 목록에서는 뺀다. */
   lost?: boolean;
+  /** 이 항목에 마지막으로 우리가 한 일(열기 · 일 시키기 · settle · rebind)의 시각. 스스로 옮겨 간 탭을 되찾는 데 쓴다. */
+  actedAt: number;
   /** 마지막으로 못 찾았을 때의 탭 목록 모양(sync 가 같은 목록을 되풀이해 훑지 않게 한다). */
   scanSig?: string;
   /** 방금 한 표시 훑기가 모든 탭을 읽고도 못 찾았는가(true 면 탭이 진짜로 없다 — 잃어버림으로 남기지 않는다). */
@@ -100,6 +102,8 @@ interface Entry {
 const PROBE_TIMEOUT_MS = 3000;
 /** 표시를 찾으러 한 번에 들여다보는 탭의 상한. */
 export const SCAN_MAX_TABS = 60;
+/** 스스로 옮겨 간 우리 탭을 되찾는 시간 한도: 우리가 그 탭에 마지막으로 한 일로부터. */
+export const RECLAIM_WINDOW_MS = 120_000;
 /** 표시를 읽을 때 탭 하나에 기다리는 시간. 넘으면 그 탭은 건너뛴다. */
 export const SCAN_TAB_TIMEOUT_MS = 500;
 /** 표시 읽기를 이 개수씩 나눠 보낸다(멈춘 탭이 있어도 그 묶음만 잃는다). */
@@ -160,7 +164,7 @@ export class TabRegistry {
    * instanceId 는 이 서버 프로세스를 가리키는 값(기본은 무작위). 페이지 안 표시를 `키.instanceId` 로 적어,
    * 같은 사파리에서 도는 다른 서버(다른 Claude 세션)나 끝난 세션이 남긴 표시와 겹치지 않게 한다.
    */
-  constructor(private backend: TabBackend, private instanceId: string = randomBytes(4).toString("hex")) {}
+  constructor(private backend: TabBackend, private instanceId: string = randomBytes(4).toString("hex"), private now: () => number = Date.now) {}
 
   /** 키(t1)에 대응하는 페이지 안 표시 — 호스트와 사파리 쪽에는 이 값을 키로 넘긴다. 서버 프로세스마다 다르다. */
   markerOf(key: string): string {
@@ -181,12 +185,17 @@ export class TabRegistry {
 
   /**
    * 우리 탭이 스스로 새 문서가 돼(늦은 리디렉트) 표시를 잃었을 때 기록한 자리의 표시 없는 탭을 우리 탭으로 봐도 되는가.
-   * 마지막으로 기록한 창 모습과 견줘 (1) 탭 수가 같고 (2) 바로 앞 · 뒤 이웃의 주소가 같고 (3) 그 탭의 주소가 창의 다른 탭들의 기록된 주소가 아닐 때만.
+   * 마지막으로 기록한 창 모습과 견줘 (1) 탭 수가 같고 (2) 바로 앞 · 뒤 이웃의 주소가 같고 (3) 그 탭의 주소가 창의 다른 탭들의 기록된 주소가 아닐 때만, 그리고 http(s) · 같은 등록 도메인 · 마지막 일로부터 120초 안일 때만.
    * 아니면 사용자 탭이 우리 자리로 밀려 온 것일 수 있어 건드리지 않는다. 알려진 한계: 우리 탭이 닫히고 탭 수 · 이웃이 똑같게 새 주소의 사용자 탭이 그 자리에 오면 구별하지 못한다.
    */
   private stayedPut(e: Entry, raw: RawTab[], here: RawTab): boolean {
     const shape = this.windowShape.get(e.windowId);
     if (!shape) return false;
+    // R5: http(s) 탭이고, 등록 도메인이 우리가 마지막으로 기록한 주소(또는 가는 중이던 주소)와 같고, 우리가 마지막으로 한 일로부터 120초 안일 때만.
+    if (!isWebTab(here)) return false;
+    const domain = registrableDomain(here.url);
+    if (domain === null || (domain !== registrableDomain(e.url) && domain !== registrableDomain(e.pendingUrl))) return false;
+    if (this.now() - e.actedAt > RECLAIM_WINDOW_MS) return false;
     const now = raw.filter((t) => t.windowId === e.windowId).sort((a, b) => a.index - b.index).map((t) => t.url);
     const i = e.index - 1;
     if (now.length !== shape.length || i < 0 || i >= now.length) return false;
@@ -202,7 +211,7 @@ export class TabRegistry {
 
   /** 열어 둔 탭을 기록한다. stamped 는 호스트가 표시를 적는 데 성공했는지. */
   register(key: string, windowId: number, index: number, url: string, o: { owned: boolean; stamped: boolean }): string {
-    this.entries.set(key, { key, windowId, index, url, owned: o.owned, stamped: o.stamped });
+    this.entries.set(key, { key, windowId, index, url, owned: o.owned, stamped: o.stamped, actedAt: this.now() });
     return key;
   }
 
@@ -250,8 +259,7 @@ export class TabRegistry {
     const e = this.entries.get(key);
     if (!e) throw tabClosed(key);
     const raw = await this.backend.list();
-    const found = await this.locate(e, raw, new Set(), newScan());
-    this.recordWindows(raw);
+    const found = await this.locate(e, raw, new Set(), newScan()); // 창 모습은 여기서 새로 기록하지 않는다 — 같은 창의 다른 우리 탭이 아직 정리 전이라 낡은 모습을 새것으로 바꿔 버리기 때문(sync 가 다 맞춘 뒤에 기록한다)
     if (!found) {
       this.drop(key);
       throw tabClosed(key);
@@ -347,7 +355,7 @@ export class TabRegistry {
       throw err;
     }
     this.forget(key);
-    this.shiftAfterClose(e.windowId, e.index);
+    this.shiftAfterClose(e.windowId, e.index, e.url);
   }
 
   /**
@@ -376,6 +384,7 @@ export class TabRegistry {
     e.lost = false;
     e.stamped = r.stamped ?? true; // 표시를 못 적었으면 「표시 안 한 탭」으로 둬 다음에 자리 · 주소로 다시 알아본다
     e.blocked = false;
+    e.actedAt = this.now();
     return r.tab;
   }
 
@@ -415,6 +424,7 @@ export class TabRegistry {
     e.lost = false;
     e.stamped = r.status === "navigated" ? (r.stamped ?? true) : true; // commit 에서 표시를 못 적었으면 「표시 안 한 탭」으로 둔다
     e.blocked = false;
+    e.actedAt = this.now();
     return { navigated: r.status === "navigated", leaving: r.status === "same" && r.leaving, tab: r.tab };
   }
 
@@ -544,6 +554,7 @@ export class TabRegistry {
       e.pendingUrl = undefined;
       e.stamped = true;
       e.blocked = false;
+      e.actedAt = this.now();
     }
   }
 
@@ -576,8 +587,13 @@ export class TabRegistry {
   }
 
   /** 우리가 (windowId, index) 탭을 닫았다 — 같은 창에서 뒤에 있던 탭들은 순서가 하나 당겨진다. */
-  shiftAfterClose(windowId: number, index: number): void {
-    this.windowShape.get(windowId)?.splice(index - 1, 1);
+  shiftAfterClose(windowId: number, index: number, url?: string): void {
+    // 기록한 창 모습에서 닫은 탭을 뺀다. 기록한 그 자리의 주소가 닫은 탭의 주소와 다르면 기록이 낡은 것이니 버린다(낡은 모습을 새것처럼 만들지 않는다).
+    const shape = this.windowShape.get(windowId);
+    if (shape) {
+      if (url !== undefined && sameUrl(shape[index - 1], url)) shape.splice(index - 1, 1);
+      else this.windowShape.delete(windowId);
+    }
     for (const e of this.entries.values()) {
       if (e.windowId === windowId && e.index > index) e.index -= 1;
     }
