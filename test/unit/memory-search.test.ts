@@ -277,6 +277,64 @@ describe("MemoryIndex.refresh", () => {
   });
 });
 
+describe("기록 파일은 줄마다 찾기(R10)", () => {
+  test("30줄 일지에서 「LG 그램 노트북」 한 줄만 맞고, 흔한 낱말 가득한 다른 날 일지보다 먼저 나온다", async () => {
+    const plain = (i: number) => `- 10:${String(i).padStart(2, "0")} 「주말 영화 ${i}」 — naver.com · 성공`;
+    // 흔한 낱말: 대부분의 줄에 「지난주에 본」이 들어 있고, 두 줄에는 「노트」 · 「스트북」(→ 트북)이 따로 있다(한 줄에 다 있진 않다).
+    const generic = (i: number) =>
+      i === 3
+        ? "- 10:03 「노트 정리」 — a.com · 성공"
+        : i === 9
+          ? "- 10:09 「스트북」 — b.com · 성공"
+          : `- 10:${String(i).padStart(2, "0")} 「지난주에 본 소식 ${i}」 — ko.wikipedia.org/wiki/성공 · 성공`;
+    const day = (f: (i: number) => string, special?: [number, string]) =>
+      Array.from({ length: 30 }, (_, i) => (special && special[0] === i ? special[1] : f(i))).join("\n") + "\n";
+    const lg = "- 14:05 「LG 그램 노트북 비교」 — danawa.com · 성공";
+    await put("기억/일지/2026-11-16-맥.md", day(plain, [17, lg]));
+    await put("기억/일지/2026-11-20-맥.md", day(generic));
+    const idx = new MemoryIndex(home, { now: () => NOW });
+    const hits = await idx.search("지난주에 본 노트북");
+    expect(hits[0].file).toBe("기억/일지/2026-11-16-맥.md");
+    expect(hits[0].date).toBe("2026-11-16");
+    expect(hits[0].snippet).toBe([plain(16), lg, plain(18)].join("\n"));
+  });
+
+  test("같은 날 일지의 맞는 두 줄은 따로 두 건", async () => {
+    await put(
+      "기억/일지/2026-11-20-맥.md",
+      "- 09:00 「노트북 후기」 — a.com · 성공\n- 09:30 「커피」 — b.com · 성공\n- 10:00 「노트북 가격」 — c.com · 성공\n",
+    );
+    const idx = new MemoryIndex(home, { now: () => NOW });
+    const hits = await idx.search("노트북");
+    expect(hits).toHaveLength(2);
+    expect(hits.map((h) => h.file)).toEqual(["기억/일지/2026-11-20-맥.md", "기억/일지/2026-11-20-맥.md"]);
+    expect(hits.map((h) => h.date)).toEqual(["2026-11-20", "2026-11-20"]);
+    const joined = hits.map((h) => h.snippet).join("|");
+    expect(joined).toContain("노트북 후기");
+    expect(joined).toContain("노트북 가격");
+  });
+
+  test("프로젝트 기록(기록-맥.md, 보관 아래 포함)도 줄마다 찾고 날짜는 줄 앞 날짜 규칙 → 수정 시각", async () => {
+    await put("프로젝트/여행/기록-맥.md", "- 2026-11-10 항공권 확인\n- 2026-11-12 노트북 챙김\n", new Date(2026, 10, 15));
+    await put("프로젝트/보관/옛일/기록-맥.md", "- 2026-11-01 노트북 수리\n- 2026-11-02 커피\n", new Date(2026, 10, 15));
+    const idx = new MemoryIndex(home, { now: () => NOW });
+    const hits = await idx.search("노트북");
+    expect(hits.map((h) => h.file).sort()).toEqual(["프로젝트/보관/옛일/기록-맥.md", "프로젝트/여행/기록-맥.md"]);
+    // 줄마다 따로: 두 줄 파일이 한 문단이 아니라 줄 하나씩이라 스니펫은 맞은 줄 + 이웃 줄
+    expect(hits.find((h) => h.file === "프로젝트/여행/기록-맥.md")!.snippet).toBe("- 2026-11-10 항공권 확인\n- 2026-11-12 노트북 챙김");
+    expect(hits.find((h) => h.file === "프로젝트/여행/기록-맥.md")!.date).toBe("2026-11-12");
+  });
+
+  test("일지가 아닌 파일(나.md · 프로젝트 문서 · 프로젝트.md)은 그대로 문단 단위", async () => {
+    await put("기억/나.md", "- 2026-11-20 노트북 이야기\n- 2026-11-21 커피\n");
+    await put("프로젝트/여행/프로젝트.md", "노트북\n커피\n");
+    const idx = new MemoryIndex(home, { now: () => NOW });
+    const hits = await idx.search("노트북");
+    expect(hits).toHaveLength(2); // 파일마다 문단 하나 → 한 건씩
+    expect(hits.find((h) => h.file === "기억/나.md")!.date).toBe("2026-11-20");
+  });
+});
+
 describe("formatHits", () => {
   test("파일 · 날짜 · 스니펫을 번호 붙여 보여 준다", () => {
     const out = formatHits([

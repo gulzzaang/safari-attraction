@@ -59,15 +59,23 @@ function daysBetween(from: string, to: string): number {
 // ───────────────────────── 색인 ─────────────────────────
 
 type Para = { start: number; end: number; tokens: Set<string>; date: string };
-type Entry = { mtimeMs: number; size: number; lines: string[]; paras: Para[] };
+type Entry = { mtimeMs: number; size: number; lines: string[]; paras: Para[]; isLog: boolean };
 
 /** 색인에 넣을 파일인가: `.md` 로 끝나고, 점으로 시작하는 폴더 · 파일(임시 · iCloud 자리표시)이 길에 없다. */
 function indexable(rel: string): boolean {
   return rel.endsWith(".md") && !rel.split("/").some((seg) => seg.startsWith("."));
 }
 
-/** 줄을 빈 줄로 나눠 문단으로 묶고 문단마다 낱말 집합 · 날짜를 단다(날짜: 파일 이름 → 첫 `- YYYY-MM-DD` 줄 → 수정 시각). */
-function buildParas(rel: string, lines: string[], mtimeMs: number): Para[] {
+/**
+ * 기록 파일인가: `기억/일지/` 아래(보관 포함) 모든 .md, `프로젝트/<이름>/기록-*.md`(`프로젝트/보관/` 아래 포함).
+ * 기록은 줄 하나가 사건 하나라서 줄마다 따로 점수를 매긴다.
+ */
+function isLogFile(rel: string): boolean {
+  return rel.startsWith("기억/일지/") || /^프로젝트\/(?:보관\/)?[^/]+\/기록-[^/]*\.md$/.test(rel);
+}
+
+/** 줄을 빈 줄로 나눠 문단으로 묶고(기록 파일은 빈 줄이 아닌 줄 하나가 한 단위) 문단마다 낱말 집합 · 날짜를 단다(날짜: 파일 이름 → 첫 `- YYYY-MM-DD` 줄 → 수정 시각). */
+function buildParas(rel: string, lines: string[], mtimeMs: number, perLine: boolean): Para[] {
   const fileDate = validDate(DATE_IN_NAME.exec(rel.slice(rel.lastIndexOf("/") + 1)));
   const mtimeDate = localDate(new Date(mtimeMs));
   const paras: Para[] = [];
@@ -82,6 +90,7 @@ function buildParas(rel: string, lines: string[], mtimeMs: number): Para[] {
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].trim() === "") close(i);
     else if (start < 0) start = i;
+    if (perLine) close(i + 1); // 기록 파일: 이 줄 하나로 닫는다(빈 줄이면 이미 닫혀 있어 아무 일 없다).
   }
   close(lines.length);
   return paras;
@@ -95,7 +104,7 @@ function clip(s: string, max: number): string {
 
 /**
  * 기억 폴더(`기억/` · `프로젝트/` 아래 모든 .md, `일지/보관/` · `프로젝트/보관/` 포함)의 글 색인.
- * 파일 수정 시각이 바뀐 것만 다시 읽는다. 찾기는 문단 단위로 점수를 매긴다.
+ * 파일 수정 시각이 바뀐 것만 다시 읽는다. 찾기는 문단 단위(기록 파일은 줄 단위)로 점수를 매긴다.
  */
 export class MemoryIndex {
   private readonly files = new Map<string, Entry>();
@@ -138,7 +147,8 @@ export class MemoryIndex {
         const text = texts[j];
         if (text === null) return; // 읽는 사이 지워졌거나 읽을 수 없는 파일(다음 refresh 에서 다시 시도).
         const lines = nfc(text).split(/\r?\n/);
-        this.add(f.rel, { mtimeMs: f.mtimeMs, size: f.size, lines, paras: buildParas(f.rel, lines, f.mtimeMs) });
+        const isLog = isLogFile(f.rel);
+        this.add(f.rel, { mtimeMs: f.mtimeMs, size: f.size, lines, paras: buildParas(f.rel, lines, f.mtimeMs, isLog), isLog });
       });
     }
   }
@@ -228,7 +238,12 @@ export class MemoryIndex {
       }
     }
     const line = (i: number) => entry.lines[i].trim();
-    const around = [best - 1, best, best + 1].filter((i) => i >= para.start && i < para.end).map(line).join("\n");
+    // 문단 파일은 문단 안에서만, 기록 파일은 한 줄이 한 단위라 파일 안의 앞뒤 줄(빈 줄 제외)을 쓴다.
+    const [lo, hi] = entry.isLog ? [0, entry.lines.length] : [para.start, para.end];
+    const around = [best - 1, best, best + 1]
+      .filter((i) => i >= lo && i < hi && (i === best || entry.lines[i].trim() !== ""))
+      .map(line)
+      .join("\n");
     return Array.from(around).length <= SNIPPET_MAX ? around : clip(line(best), SNIPPET_MAX);
   }
 }
