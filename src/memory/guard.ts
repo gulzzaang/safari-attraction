@@ -4,6 +4,9 @@ import { sanitizeUrl } from "./site.js";
 const CARD_MIN = 13;
 const CARD_MAX = 19;
 
+/** 주요 카드사(Amex · Visa · Mastercard · 디스커버리 · 유니온페이 등) 앞자리. 에폭 밀리초 · 주문번호 같은 1 · 2 · 7~9 로 시작하는 긴 숫자의 오탐을 줄인다. */
+const CARD_FIRST_DIGIT = /^[3-6]/;
+
 /** 룬(Luhn) 검사. */
 function luhn(digits: string): boolean {
   let sum = 0;
@@ -21,7 +24,7 @@ function luhn(digits: string): boolean {
 }
 
 /**
- * 숫자 덩어리(공백 · 하이픈 하나로 이어진 숫자 묶음들) 안에서, 묶음 단위로 이은 13~19자리가 룬을 통과하면 카드 번호.
+ * 숫자 덩어리(공백 · 하이픈 하나로 이어진 숫자 묶음들) 안에서, 묶음 단위로 이은 13~19자리가 3 · 4 · 5 · 6 으로 시작하고 룬을 통과하면 카드 번호.
  * 한 묶음 안을 쪼개 보지는 않는다(긴 숫자 하나는 카드 번호가 아니다).
  */
 function hasCardNumber(text: string): boolean {
@@ -32,7 +35,7 @@ function hasCardNumber(text: string): boolean {
       for (let j = i; j < groups.length; j++) {
         digits += groups[j];
         if (digits.length > CARD_MAX) break;
-        if (digits.length >= CARD_MIN && luhn(digits)) return true;
+        if (digits.length >= CARD_MIN && CARD_FIRST_DIGIT.test(digits) && luhn(digits)) return true;
       }
     }
   }
@@ -71,7 +74,7 @@ export function findSecret(text: string): string | null {
 export function scrubText(text: string, max: number): string {
   const oneLine = text
     .replace(/[\r\n]+/g, " ")
-    .replace(/https?:\/\/\S+/g, (u) => sanitizeUrl(u, { domainOnly: false }));
+    .replace(/https?:\/\/\S+/gi, (u) => sanitizeUrl(u, { domainOnly: false }));
   if (findSecret(oneLine) !== null) return "(가림)";
   const chars = [...oneLine];
   if (chars.length <= max) return oneLine;

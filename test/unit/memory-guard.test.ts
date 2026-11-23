@@ -18,6 +18,14 @@ describe("findSecret", () => {
     expect(findSecret("4".repeat(20))).toBeNull(); // 20자리 한 덩어리
   });
 
+  test("주요 카드사 앞자리(3 · 4 · 5 · 6)가 아니면 룬을 통과해도 카드 번호가 아니다", () => {
+    expect(findSecret("1700000000004")).toBeNull(); // 룬 통과하는 13자리 에폭 밀리초 꼴
+    expect(findSecret("4111 1111 1111 1111")).toBe("카드 번호");
+    expect(findSecret("378282246310005")).toBe("카드 번호"); // 3 으로 시작하는 15자리
+    expect(findSecret("5555555555554444")).toBe("카드 번호");
+    expect(findSecret("6011111111111117")).toBe("카드 번호");
+  });
+
   test("긴 숫자 줄 사이에 낀 진짜 카드 번호도 찾는다", () => {
     expect(findSecret("1 2 4111 1111 1111 1111 9")).toBe("카드 번호");
   });
@@ -70,6 +78,10 @@ describe("scrubText", () => {
 
   test("긴 영숫자 경로 조각은 …", () => {
     expect(scrubText("가 https://a.com/reset/AbCdEf1234567890AbCdEf12#y 나", 100)).toBe("가 https://a.com/reset/… 나");
+  });
+
+  test("주소 앞부분은 대소문자를 가리지 않는다", () => {
+    expect(scrubText("가 HTTPS://A.com/p?token=x 나", 100)).toBe("가 https://a.com/p 나");
   });
 
   test("민감 값이 걸리면 통째로 (가림)", () => {
