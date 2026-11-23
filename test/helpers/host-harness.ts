@@ -43,6 +43,10 @@ export interface Harness {
   events: Event[];
   windows: Map<number, { tabs: FakeTab[]; current?: FakeTab }>;
   addWindow(id: number, ...pages: Array<{ url: string; marker?: string; globals?: Record<string, unknown> }>): FakeTab[];
+  /** 호스트가 처음 페이지 안 스크립트를 돌리기 직전에 한 번 부른다 — 사용자가 그 사이에 탭을 열고 닫는 일을 흉내 낸다. */
+  beforeFirstJs?: () => void;
+  /** 가짜 탭을 만든다(창에 넣지는 않는다). */
+  newTab(url: string, marker?: string): FakeTab;
 }
 
 export function createHarness(): Harness {
@@ -50,7 +54,28 @@ export function createHarness(): Harness {
   const windows = new Map<number, { tabs: FakeTab[]; current?: FakeTab }>();
   const goneError = () => Object.assign(new Error("대상체를 가져올 수 없습니다."), { errorNumber: -1728 });
 
-  const mkTab = (t: FakeTab | undefined) => t;
+  // 사파리의 `win.tabs[i]` 는 「i 번째 탭」을 가리키는 지시자라 쓸 때마다 그 자리의 탭을 새로 찾는다 — 사이에 탭이 끼면 다른 탭을 가리킨다. 그걸 흉내 낸다.
+  let newTab: Harness["newTab"];
+  const harnessRef: { beforeFirstJs?: () => void } = {};
+  const mkTab = (w: { tabs: FakeTab[] } | undefined, i: number) => {
+    const at = () => w?.tabs[i];
+    const need = () => {
+      const t = at();
+      if (!t) throw goneError();
+      return t;
+    };
+    return {
+      __resolve: at,
+      url: () => need().url(),
+      name: () => need().page.title ?? "",
+      close: () => {
+        const t = need();
+        t.closed = true;
+        w!.tabs.splice(i, 1);
+      },
+    };
+  };
+  const resolveTab = (t: any): FakeTab | undefined => (t && typeof t.__resolve === "function" ? t.__resolve() : t);
   const Safari: any = {
     running: () => true,
     windows: {
@@ -61,15 +86,22 @@ export function createHarness(): Harness {
           get tabs() {
             return new Proxy([] as unknown[], {
               get(_t, p) {
-                if (typeof p === "string" && /^\d+$/.test(p)) return mkTab(w?.tabs[Number(p)]);
+                if (typeof p === "string" && /^\d+$/.test(p)) return mkTab(w, Number(p));
                 if (p === "length") return w?.tabs.length ?? 0;
+                if (p === "url") return () => (w?.tabs ?? []).map((t) => t.url());
+                if (p === "name") return () => (w?.tabs ?? []).map((t) => t.page.title ?? "");
+                if (p === "push") {
+                  return (spec: { __url: string }) => {
+                    w?.tabs.push(newTab(spec.__url));
+                  };
+                }
                 return undefined;
               },
             });
           },
           set currentTab(t: FakeTab) {
             events.push({ kind: "setCurrentTab", windowId: id });
-            if (w) w.current = t;
+            if (w) w.current = resolveTab(t);
           },
           // win.currentTab() — 호출하면 현재 탭(없으면 첫 탭)의 {index()} 를 돌려준다. Apple Event 한 번으로 센다.
           get currentTab() {
@@ -81,9 +113,15 @@ export function createHarness(): Harness {
         };
       },
     },
+    Tab: (props: { url: string }) => ({ __url: props.url }),
     doJavaScript(script: string, opts: { in?: FakeTab }) {
       events.push({ kind: "doJavaScript", script });
-      const tab = opts?.in;
+      if (harnessRef.beforeFirstJs) {
+        const fn = harnessRef.beforeFirstJs;
+        harnessRef.beforeFirstJs = undefined;
+        fn();
+      }
+      const tab = resolveTab(opts?.in);
       if (!tab || tab.closed) throw goneError();
       const p = tab.page;
       if (p.jsOff) throw new Error("Safari에서 Apple 이벤트의 JavaScript를 허용하지 않습니다.");
@@ -119,19 +157,21 @@ export function createHarness(): Harness {
       }
     },
   };
+  const makeTab = (url: string, marker?: string, globals?: Record<string, unknown>): FakeTab => {
+    const page: FakePage = { dataset: marker ? { saTab: marker } : {}, href: url, globals: globals ?? {} };
+    const tab: FakeTab = {
+      page,
+      url() {
+        events.push({ kind: "tabUrl" }); // tab.url() 도 Apple Event 한 번이다
+        if (tab.closed) throw Object.assign(new Error("유효하지 않은 인덱스입니다."), { errorNumber: -1719 });
+        return tab.dest ?? page.href;
+      },
+    };
+    return tab;
+  };
+  newTab = (url, marker) => makeTab(url, marker);
   const addWindow: Harness["addWindow"] = (id, ...pages) => {
-    const tabs = pages.map((pg): FakeTab => {
-      const page: FakePage = { dataset: pg.marker ? { saTab: pg.marker } : {}, href: pg.url, globals: pg.globals ?? {} };
-      const tab: FakeTab = {
-        page,
-        url() {
-          events.push({ kind: "tabUrl" }); // tab.url() 도 Apple Event 한 번이다
-          if (tab.closed) throw Object.assign(new Error("유효하지 않은 인덱스입니다."), { errorNumber: -1719 });
-          return tab.dest ?? page.href;
-        },
-      };
-      return tab;
-    });
+    const tabs = pages.map((pg) => makeTab(pg.url, pg.marker, pg.globals));
     windows.set(id, { tabs });
     return tabs;
   };
@@ -153,5 +193,18 @@ export function createHarness(): Harness {
   };
   const ctx = vm.createContext(sandbox);
   vm.runInContext(HOST_SRC + "\n;globalThis.__ops = ops;", ctx);
-  return { ops: (ctx as any).__ops, events, windows, addWindow };
+  const h: Harness = {
+    ops: (ctx as any).__ops,
+    events,
+    windows,
+    addWindow,
+    newTab: (url, marker) => newTab(url, marker),
+    get beforeFirstJs() {
+      return harnessRef.beforeFirstJs;
+    },
+    set beforeFirstJs(fn) {
+      harnessRef.beforeFirstJs = fn;
+    },
+  };
+  return h;
 }

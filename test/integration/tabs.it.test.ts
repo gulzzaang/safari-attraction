@@ -31,6 +31,25 @@ function closeDirectly(url: string): void {
        String(n)`);
 }
 
+/** 이 파일의 꼬리표가 든 주소의 탭 안에서 사파리가 직접 스크립트를 돌린다(서버를 거치지 않으므로 서버는 그 일을 모른다). */
+function runDirectly(url: string, js: string): void {
+  if (!url.includes(RUN)) throw new Error('꼬리표 없는 주소는 만지지 않는다');
+  const n = jxa(`const S = Application("Safari"); let n = 0;
+       S.windows().forEach((w) => { let urls; try { urls = w.tabs.url(); } catch (e) { return; }
+         for (let i = 0; i < urls.length; i++) if (String(urls[i]) === ${JSON.stringify(url)}) { S.doJavaScript(${JSON.stringify(js)}, { in: w.tabs[i] }); n++; } });
+       String(n)`);
+  if (n !== '1') throw new Error(`시험 탭을 하나 찾아야 하는데 ${n}개`);
+}
+
+/** 사파리 모든 창에서 이 파일의 꼬리표가 든 탭 주소(보기만 한다). */
+function leftoverUrls(): string[] {
+  const out = jxa(`const S = Application("Safari"); const found = [];
+       S.windows().forEach((w) => { let urls; try { urls = w.tabs.url(); } catch (e) { return; }
+         urls.forEach((u) => { if (String(u).includes(${JSON.stringify(RUN)})) found.push(String(u)); }); });
+       JSON.stringify(found)`);
+  return JSON.parse(out) as string[];
+}
+
 // 「창이 없을 때」 시험은 사파리에 창이 하나도 없을 때만 돈다(시험하려고 사용자 창을 닫지 않는다).
 const safariWindowCount = process.env.SAFARI_IT
   ? Number(
@@ -62,6 +81,7 @@ describeIt('탭 키 · 우리 탭 정리', () => {
   afterAll(async () => {
     try {
       await closeMine();
+      expect(leftoverUrls()).toEqual([]); // 이 파일이 연 탭이 사파리에 하나도 남지 않았다
     } finally {
       await d.close();
       await stopFixtures();
@@ -87,6 +107,21 @@ describeIt('탭 키 · 우리 탭 정리', () => {
     const filler = (await d.listTabs()).filter(isMine).find((t) => t.key !== tab.key)!;
     expect(filler.owned).toBe(false);
   });
+
+  // 탭 남김 버그(0.3.1): 사용자가 우리 탭 앞에 탭을 열어 순번이 밀리고, 우리 탭은 서버가 모르는 사이 주소가 바뀌었다 — 끝낼 때(closeOwned = 서버 종료) 그 탭을 닫아야 한다.
+  test('[탭 남김] 순번이 밀리고 주소도 바뀐 우리 탭을 끝낼 때 닫고, 끼어든 탭은 안 건드린다', async () => {
+    const { tab: a } = await d.openTab(mine('basic.html'));
+    const moved = `${a.url}&moved=${Math.random().toString(36).slice(2)}`;
+    runDirectly(a.url, `history.replaceState(null, '', ${JSON.stringify(moved)}); 1`); // 우리 탭이 같은 문서 안에서 다른 주소로(표시는 남는다) — 서버는 모른다
+    const bUrl = mine('basic.html');
+    insertAtFront(a.windowId, bUrl); // 시험이 연 탭 B 가 우리 탭 앞에 끼어 순번이 밀린다(우리 레지스트리 밖)
+    expect(leftoverUrls().sort()).toEqual([bUrl, moved].sort());
+
+    expect(await d.closeOwned()).toBe(1); // 서버가 끝날 때 하는 일
+    expect(leftoverUrls()).toEqual([bUrl]); // 우리 탭은 닫혔고, B 는 그대로
+    closeDirectly(bUrl); // B 는 시험이 직접 닫는다
+    expect(leftoverUrls()).toEqual([]); // 이 시험의 꼬리표가 든 탭이 하나도 남지 않았다
+  }, 30_000);
 
   test('닫힌 탭은 TAB_CLOSED, 다른 탭은 안 건드림', async () => {
     const { tab: a } = await d.openTab(mine('basic.html'));

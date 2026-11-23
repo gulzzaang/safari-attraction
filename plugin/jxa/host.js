@@ -367,6 +367,67 @@ function waitForLoad(tab, args, onJsOff) {
   }
 }
 
+// 방금 연 우리 탭을 창 안에서 다시 찾는다. 열 때 정한 자리(`index`)는 기다리는 사이 사용자가 탭을 열고 닫으면 다른 탭을 가리키므로,
+// 표시를 적거나 닫기 전에 꼭 이것으로 확인한다. 주소는 꼴(http/https · www · 끝 슬래시 · # 뒤)이 달라도 같은 주소로 본다.
+function openedKey(u) {
+  let s = str(u).replace(/#.*$/, "").replace(/%[0-9a-f]{2}/gi, (m) => m.toUpperCase());
+  s = s.replace(/^https?:\/\//i, "").replace(/^www\./i, "");
+  const cut = s.search(/[\/?]/);
+  const host = (cut < 0 ? s : s.slice(0, cut)).toLowerCase();
+  let rest = cut < 0 ? "" : s.slice(cut);
+  if (rest === "/") rest = "";
+  return host + rest;
+}
+
+// 열기 전 창의 모습: 탭 수와 연 주소와 같은 주소의 탭 수. 열고 난 뒤 「이 주소 탭이 하나 늘었는지」를 보는 기준이다.
+function windowBefore(win, url) {
+  const want = openedKey(url);
+  try {
+    const urls = win.tabs.url().map(str);
+    return { count: urls.length, same: urls.filter((u) => openedKey(u) === want).length };
+  } catch (e) {
+    return { count: -1, same: Infinity }; // 모르면 아래 확인이 가장 조심스럽게(아무것도 믿지 않게) 돈다
+  }
+}
+
+// 열린 탭 {tab, index} 를 돌려준다. 못 찾으면 null — 그때는 아무 탭에도 표시를 적지 않고 닫지도 않는다(사용자 탭이 먼저).
+// 열 때 정한 자리(index)의 탭이 우리 탭이라는 증거는 「창의 탭 수가 열기 전보다 정확히 하나 늘었다」다(사용자가 사이에 탭을 열거나 닫으면 깨진다).
+// 1) 탭 수가 그대로 하나 늘었고 그 자리의 탭에 표시가 없으면: 주소가 연 주소와 같거나(이동 · 리디렉트로 주소가 바뀌었어도) 같은 주소의 탭이 열기 전보다 늘지 않았으면 그 탭이다
+//    (같은 주소의 사용자 탭이 따로 있어도 우리 탭을 그 탭으로 착각하지 않는다).
+// 2) 아니면(순번이 밀렸을 수 있다) 창 끝에서부터 주소가 연 주소와 같고 표시가 없는 탭을 찾는다 — 같은 주소의 탭이 열기 전보다 하나 이상 늘었을 때만.
+// readMarkers 가 false 면 표시를 읽지 않는다(「Apple 이벤트에서 JavaScript 허용」이 꺼져 읽을 수 없을 때 — 누구의 표시도 없다).
+function findOpened(win, index, url, before, readMarkers) {
+  let urls;
+  try {
+    urls = win.tabs.url().map(str);
+  } catch (e) {
+    return null;
+  }
+  const want = openedKey(url);
+  const sameNow = urls.filter((u) => openedKey(u) === want).length;
+  const markerless = (i) => {
+    try {
+      const tab = win.tabs[i - 1];
+      return !readMarkers || readMarker(tab) === "" ? tab : null;
+    } catch (e) {
+      if (isJsOffError(e)) throw e;
+      return null;
+    }
+  };
+  if (urls.length === before.count + 1 && index <= urls.length && (openedKey(urls[index - 1]) === want || sameNow <= before.same)) {
+    const tab = markerless(index);
+    if (tab) return { tab, index };
+  }
+  if (sameNow >= before.same + 1) {
+    for (let i = urls.length; i >= 1; i--) {
+      if (openedKey(urls[i - 1]) !== want) continue;
+      const tab = markerless(i);
+      if (tab) return { tab, index: i };
+    }
+  }
+  return null;
+}
+
 let screenFnBound = false;
 
 const ops = {
@@ -500,9 +561,11 @@ const ops = {
   // 개인정보 보호 창을 가려낼 수 없다 — 맨 앞 창이 개인정보 보호 창이면 거기에 열린다(알려진 한계).
   openTab(args) {
     let win;
+    let before = { count: 0, same: 0 }; // 열기 전 창의 모습(탭이 하나 늘었는지 보는 기준)
     if (args.windowId !== undefined && args.windowId !== null) {
       win = Safari.windows.byId(args.windowId);
       win.id(); // 없는 창이면 여기서 오류
+      before = windowBefore(win, args.url);
       win.tabs.push(Safari.Tab({ url: args.url }));
     } else {
       const wins = normalWindows();
@@ -515,14 +578,38 @@ const ops = {
       } else {
         // 맨 앞의 최소화하지 않은 창, 모두 최소화했으면 맨 앞의 최소화한 창(새 창을 만들지 않는다).
         win = wins.filter((w) => !isMinimized(w))[0] || wins[0];
+        before = windowBefore(win, args.url);
         win.tabs.push(Safari.Tab({ url: args.url }));
       }
     }
     const windowId = win.id();
-    const index = win.tabs.length;
-    const tab = win.tabs[index - 1];
+    const index0 = win.tabs.length;
+    const tab0 = win.tabs[index0 - 1];
 
-    waitForLoad(tab, args, () => tab.close());
+    // 자리(index0)의 탭을 곧이곧대로 믿지 않는다 — 기다리는 사이 사용자가 탭을 열고 닫으면 순번이 밀려 사용자 탭을 가리킬 수 있다.
+    // JS 허용이 꺼져 닫을 때도 다시 찾은 우리 탭만 닫는다. 이때는 표시를 읽을 수 없다 — 읽지 않고 같은 확인(탭 수 · 주소)으로 찾는다. 못 찾으면 닫지 않는다.
+    const closeOurs = () => {
+      const f = findOpened(win, index0, args.url, before, false);
+      if (f) f.tab.close();
+    };
+    waitForLoad(tab0, args, closeOurs);
+
+    let found;
+    try {
+      found = findOpened(win, index0, args.url, before, true);
+    } catch (e) {
+      if (isJsOffError(e)) {
+        try {
+          closeOurs();
+        } catch (e2) {}
+      }
+      throw e;
+    }
+    if (!found) throw new Error("방금 연 탭을 확인하지 못함 — 표시를 적지 않았고, 열린 탭이 남아 있을 수 있음");
+    const index = found.index;
+    const tab = found.tab;
+    // 밀린 탭이면 기다림이 엉뚱한 탭을 본 것이다 — 우리 탭에 대해 다시 기다린다.
+    if (index !== index0) waitForLoad(tab, args, closeOurs);
 
     const stamped = args.key ? stampTab(tab, args.key) : false;
     const current = win.currentTab().index();
