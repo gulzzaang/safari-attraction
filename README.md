@@ -14,7 +14,7 @@ macOS 와 사파리가 필요하다. Node 는 플러그인 · 홈브루(자동�
 | 터미널은 쓸 줄 안다(Claude Code · Claude 앱 둘 다 연결하고 싶다) | 홈브루(세 줄) |
 | 터미널이 낯설다(Claude 앱만 쓴다) | `.mcpb` 파일(더블클릭) |
 
-저장소는 지금 비공개다. 플러그인과 홈브루 길은 그 맥의 git · GitHub 로그인이 `gulzzaang` 저장소에 접근할 수 있어야 한다. `.mcpb` 는 파일 하나라 그냥 전달하면 된다.
+저장소는 공개라 세 길 모두 GitHub 로그인 없이 설치된다. `.mcpb` 는 [릴리스](https://github.com/gulzzaang/safari-attraction/releases/latest)에서 받는다.
 
 ### 길 1. Claude Code 플러그인
 
