@@ -35,7 +35,7 @@ describe('isReadOnlyExpression(evaluate 식이 읽기만 하나)', () => {
     expect(ro('(function(){var d=document.doctype;return (d?d.name:"")+document.documentElement.outerHTML})()')).toBe(true);
     expect(ro('(() => { const out = []; let n = 0; n = n + 1; let acc = out; for (const x of document.links) acc = acc.concat([x.href]); return acc; })()')).toBe(true); // 식 안의 지역 변수 대입
     expect(ro('document.querySelector("details").open')).toBe(true);
-    for (const t of ['location.search', 'window.location.hostname', "document.location['pathname']", 'self.location.origin', 'location?.href', 'window?.location.hash', 'new URL(location.href).searchParams.get("q")']) expect(ro(t), t).toBe(true);
+    for (const t of ['window.innerWidth', "window['innerHeight']", 'window.getComputedStyle(document.body).color', 'new URL(location.href).pathname', 'window.top.location.href', 'top.location.hostname', 'document.location.search', 'frames.length', 'this.x', 'location.search', 'window.location.hostname', "document.location['pathname']", 'self.location.origin', 'location?.href', 'window?.location.hash', 'new URL(location.href).searchParams.get("q")']) expect(ro(t), t).toBe(true);
     for (const t of [
       '[...document.links].map(a => a.href).sort()',
       "Array.from(document.links).reverse().map(String)",
@@ -136,6 +136,16 @@ describe('isReadOnlyExpression(evaluate 식이 읽기만 하나)', () => {
       "(() => { const { replace } = window.location; return replace; })()",
       "[1].map(() => 1).concat([self.location])",
       "String(globalThis.location)",
+      // 전역 객체를 먼저 별칭으로 받아 location 막기를 돌아가기 · 어떤 x.location 이든 주소 객체
+      "(() => { const w = window; const l = w.location; l.replace('/x'); return 1; })()",
+      "(() => { const { location: l } = window; l.replace('/x'); return 1; })()",
+      "(() => { const l = window.top.location; l.replace('/x'); return 1; })()",
+      "(() => { const l = this.location; l.replace('/x'); return 1; })()",
+      "(() => { const l = window['top']['location']; l.replace('/x'); return 1; })()",
+      "(() => { const l = parent.location; return l; })()",
+      "(() => { const w = self; return w.history; })()",
+      '[window].length',
+      'Object.keys(globalThis).concat(frames)',
       // 페이지 함수를 호출 없이 콜백 자리에 넘기기
       "document.querySelectorAll('button').forEach(window.placeOrder)",
       '[1].map(Cart.checkout)',

@@ -148,16 +148,19 @@ const propName = (m: Node): string | null => {
 /** location · window.location · document.location 처럼 보이는 대상인가. */
 const isLocationObject = (o: Node): boolean => (o.type === "Identifier" && o.name === "location") || (o.type === "MemberExpression" && propName(o) === "location");
 
-/** window · self 처럼 전역 객체를 가리키는 이름(그 `.location` 도 주소 객체다). */
-const GLOBAL_OBJECTS = new Set(["window", "self", "globalThis", "document", "top", "parent"]);
+/** 전역 객체를 가리키는 이름(`this` 도 같다). 속성 읽기의 대상(`window.x`)으로만 쓸 수 있고, 변수에 담거나 넘기면 그 뒤를 따라갈 수 없어 알 수 없음이다. */
+const GLOBAL_OBJECTS = new Set(["window", "self", "globalThis", "top", "parent", "frames"]);
 /** location 에서 읽어도 되는 속성. location 을 이 속성 읽기 말고 다른 데(변수 · 배열 · 인자 · 메서드 호출 · 괄호 · 옵셔널 체인 감싸기)에 쓰면 알 수 없음이다. */
 const LOCATION_READ_PROPS = new Set(["href", "search", "pathname", "hostname", "host", "origin", "protocol", "hash", "port"]);
 
-/** 이 노드가 주소 객체(location · window.location …)를 가리키나. 식 안에서 선언한 location 이름은 아니다. */
+/** 이 노드가 주소 객체를 가리키나 — `location` 이름, 그리고 대상이 무엇이든(`x.location` · `x['location']`) 모든 location 속성. 식 안에서 선언한 location 이름은 아니다. */
 function isLocationRef(n: Node, sc: Scope): boolean {
   if (n.type === "Identifier") return n.name === "location" && !sc.locals.has(n.name);
-  return n.type === "MemberExpression" && propName(n) === "location" && n.object.type === "Identifier" && GLOBAL_OBJECTS.has(n.object.name) && !sc.locals.has(n.object.name);
+  return n.type === "MemberExpression" && propName(n) === "location";
 }
+
+/** 전역 객체(window · self · globalThis · top · parent · frames · this)를 직접 가리키는 노드인가. */
+const isGlobalObjectRef = (n: Node, sc: Scope): boolean => n.type === "ThisExpression" || (n.type === "Identifier" && GLOBAL_OBJECTS.has(n.name) && !sc.locals.has(n.name));
 
 /** 콜백을 받는 자리(첫 인자 / 둘째 인자): 이 자리에는 인라인 함수 · 식 안 함수 이름 · Boolean · Number · String 만 허락한다(페이지 함수를 그대로 넘기면 알 수 없음). */
 const CALLBACK_FIRST = new Set(["map", "filter", "reduce", "reduceRight", "forEach", "find", "findIndex", "findLast", "findLastIndex", "some", "every", "flatMap", "sort"]);
@@ -204,6 +207,7 @@ function calleeAllowed(callee: Node, sc: Scope): boolean {
       const name = propName(c);
       if (name === null) return false; // el[name]() — 무슨 메서드인지 모른다
       const obj: Node = c.object;
+      if (obj.type === "Identifier" && GLOBAL_OBJECTS.has(obj.name) && !sc.locals.has(obj.name) && READ_GLOBAL_FUNCS.has(name)) return true; // window.getComputedStyle(...)
       if (obj.type === "Identifier" && !sc.locals.has(obj.name) && Object.prototype.hasOwnProperty.call(READ_STATIC_FUNCS, obj.name)) {
         const allowed = READ_STATIC_FUNCS[obj.name]!;
         if (allowed === "*" || allowed.has(name)) return true;
@@ -222,6 +226,7 @@ const isLocalName = (n: Node, sc: Scope): boolean => n.type === "Identifier" && 
 
 /** 노드 하나(와 그 아래)가 읽기만 하나. */
 function readOnlyNode(n: Node, sc: Scope, parent: Node | null): boolean {
+  if (isGlobalObjectRef(n, sc) && !(parent && parent.type === "MemberExpression" && parent.object === n)) return false;
   if (isLocationRef(n, sc) && !(parent && parent.type === "MemberExpression" && parent.object === n && (propName(parent) === null ? false : LOCATION_READ_PROPS.has(propName(parent)!)))) return false;
   switch (n.type) {
     case "AssignmentExpression": {
