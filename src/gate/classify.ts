@@ -23,6 +23,7 @@ export function fetchIsIrreversible(method: string | undefined | null): boolean 
 /**
  * 읽기용으로 알려진 메서드 이름 — 허락 목록이다. 이 밖의 메서드 호출은 무슨 일을 할지 모르므로 읽기 전용이 아니다
  * (페이지가 정의한 함수 · click · submit · .call/.apply/.bind · setTimeout · history.* · Object.assign 등).
+ * 한계: get · has · getAll · exec · test · find 처럼 흔한 이름은 페이지가 정의한 메서드일 수도 있는데 이름만 보고 읽기용으로 친다(일부러 속이는 코드까지는 막지 않는다).
  */
 const READ_METHODS = new Set([
   "querySelector", "querySelectorAll", "getElementById", "getElementsByClassName", "getElementsByTagName", "getElementsByName", "getAttribute", "getAttributeNames",
@@ -147,6 +148,48 @@ const propName = (m: Node): string | null => {
 /** location · window.location · document.location 처럼 보이는 대상인가. */
 const isLocationObject = (o: Node): boolean => (o.type === "Identifier" && o.name === "location") || (o.type === "MemberExpression" && propName(o) === "location");
 
+/** window · self 처럼 전역 객체를 가리키는 이름(그 `.location` 도 주소 객체다). */
+const GLOBAL_OBJECTS = new Set(["window", "self", "globalThis", "document", "top", "parent"]);
+/** location 에서 읽어도 되는 속성. location 을 이 속성 읽기 말고 다른 데(변수 · 배열 · 인자 · 메서드 호출 · 괄호 · 옵셔널 체인 감싸기)에 쓰면 알 수 없음이다. */
+const LOCATION_READ_PROPS = new Set(["href", "search", "pathname", "hostname", "host", "origin", "protocol", "hash", "port"]);
+
+/** 이 노드가 주소 객체(location · window.location …)를 가리키나. 식 안에서 선언한 location 이름은 아니다. */
+function isLocationRef(n: Node, sc: Scope): boolean {
+  if (n.type === "Identifier") return n.name === "location" && !sc.locals.has(n.name);
+  return n.type === "MemberExpression" && propName(n) === "location" && n.object.type === "Identifier" && GLOBAL_OBJECTS.has(n.object.name) && !sc.locals.has(n.object.name);
+}
+
+/** 콜백을 받는 자리(첫 인자 / 둘째 인자): 이 자리에는 인라인 함수 · 식 안 함수 이름 · Boolean · Number · String 만 허락한다(페이지 함수를 그대로 넘기면 알 수 없음). */
+const CALLBACK_FIRST = new Set(["map", "filter", "reduce", "reduceRight", "forEach", "find", "findIndex", "findLast", "findLastIndex", "some", "every", "flatMap", "sort"]);
+const CALLBACK_SECOND_METHODS = new Set(["replace", "replaceAll"]);
+/** 제자리에서 배열을 바꾸는 메서드 — 지역 이름 · 배열 글자값 · 호출 결과에만 허락한다(페이지 배열은 안 됨). */
+const IN_PLACE_METHODS = new Set(["sort", "reverse"]);
+
+/** 콜백 자리의 인자 하나가 허락되는 것인가. literalOk 면 값(글자값)도 허락(replace 의 바꿀 글 · JSON.stringify 의 null). */
+function callbackArgOk(a: Node | undefined, sc: Scope, literalOk: boolean): boolean {
+  if (!a) return true;
+  if (a.type === "FunctionExpression" || a.type === "ArrowFunctionExpression") return true;
+  if (a.type === "Identifier") return sc.fns.has(a.name) || ((a.name === "Boolean" || a.name === "Number" || a.name === "String") && !sc.locals.has(a.name)) || (literalOk && a.name === "undefined");
+  return literalOk && (a.type === "Literal" || a.type === "TemplateLiteral");
+}
+
+/** 이 호출의 콜백 자리 인자들이 모두 허락되는 것인가. */
+function callbackArgsOk(call: Node, sc: Scope): boolean {
+  let c: Node = call.callee;
+  if (c.type === "ChainExpression") c = c.expression;
+  if (c.type !== "MemberExpression") return true;
+  const name = propName(c);
+  const args: Node[] = call.arguments;
+  if (name !== null && CALLBACK_FIRST.has(name) && args.length > 0 && !callbackArgOk(args[0], sc, false)) return false;
+  if (name !== null && CALLBACK_SECOND_METHODS.has(name) && args.length > 1 && !callbackArgOk(args[1], sc, true)) return false;
+  const obj: Node = c.object;
+  if (obj.type === "Identifier" && !sc.locals.has(obj.name) && args.length > 1) {
+    if ((obj.name === "Array" && name === "from") && !callbackArgOk(args[1], sc, false)) return false;
+    if ((obj.name === "JSON" && (name === "parse" || name === "stringify")) && !callbackArgOk(args[1], sc, true)) return false;
+  }
+  return true;
+}
+
 /** 부르는 것(callee)이 읽기 전용으로 알려진 것인가 — 허락 목록. */
 function calleeAllowed(callee: Node, sc: Scope): boolean {
   let c = callee;
@@ -166,6 +209,7 @@ function calleeAllowed(callee: Node, sc: Scope): boolean {
         if (allowed === "*" || allowed.has(name)) return true;
       }
       if (!READ_METHODS.has(name)) return false;
+      if (IN_PLACE_METHODS.has(name) && !(obj.type === "ArrayExpression" || obj.type === "CallExpression" || (obj.type === "Identifier" && sc.locals.has(obj.name)))) return false;
       if (LOCATION_UNSAFE_METHODS.has(name) && isLocationObject(obj)) return false;
       return true;
     }
@@ -177,7 +221,8 @@ function calleeAllowed(callee: Node, sc: Scope): boolean {
 const isLocalName = (n: Node, sc: Scope): boolean => n.type === "Identifier" && sc.locals.has(n.name);
 
 /** 노드 하나(와 그 아래)가 읽기만 하나. */
-function readOnlyNode(n: Node, sc: Scope): boolean {
+function readOnlyNode(n: Node, sc: Scope, parent: Node | null): boolean {
+  if (isLocationRef(n, sc) && !(parent && parent.type === "MemberExpression" && parent.object === n && (propName(parent) === null ? false : LOCATION_READ_PROPS.has(propName(parent)!)))) return false;
   switch (n.type) {
     case "AssignmentExpression": {
       const names: string[] = [];
@@ -213,7 +258,7 @@ function readOnlyNode(n: Node, sc: Scope): boolean {
       break;
     }
     case "CallExpression":
-      if (!calleeAllowed(n.callee, sc)) return false;
+      if (!calleeAllowed(n.callee, sc) || !callbackArgsOk(n, sc)) return false;
       break;
     case "TaggedTemplateExpression":
       if (!calleeAllowed(n.tag, sc)) return false;
@@ -227,7 +272,7 @@ function readOnlyNode(n: Node, sc: Scope): boolean {
     // 객체 글자값의 키(`{open: 1}`)와 점 뒤 이름(`a.open`)은 이름표일 뿐이라 따로(위의 MemberExpression · CallExpression)만 본다.
     if ((n.type === "MemberExpression" && k === "property" && !n.computed) || (n.type === "Property" && k === "key" && !n.computed) || (n.type === "MethodDefinition" && k === "key" && !n.computed) || (n.type === "PropertyDefinition" && k === "key" && !n.computed)) continue;
     const kids = Array.isArray(v) ? v : [v];
-    for (const c of kids) if (c && typeof c === "object" && typeof (c as Node).type === "string" && !readOnlyNode(c as Node, sc)) return false;
+    for (const c of kids) if (c && typeof c === "object" && typeof (c as Node).type === "string" && !readOnlyNode(c as Node, sc, n)) return false;
   }
   return true;
 }
@@ -252,5 +297,5 @@ export function isReadOnlyExpression(src: string): boolean {
   const fn = call && call.type === "CallExpression" && call.arguments.length === 0 ? (call.callee as Node) : null;
   const body = fn && fn.type === "FunctionExpression" && fn.params.length === 0 ? (fn.body as Node) : null;
   if (!body || body.body.length !== 1 || body.body[0].type !== "ReturnStatement" || !body.body[0].argument) return false;
-  return readOnlyNode(program, scopeOf(program));
+  return readOnlyNode(program, scopeOf(program), null);
 }

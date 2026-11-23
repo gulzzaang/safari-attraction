@@ -35,6 +35,21 @@ describe('isReadOnlyExpression(evaluate 식이 읽기만 하나)', () => {
     expect(ro('(function(){var d=document.doctype;return (d?d.name:"")+document.documentElement.outerHTML})()')).toBe(true);
     expect(ro('(() => { const out = []; let n = 0; n = n + 1; let acc = out; for (const x of document.links) acc = acc.concat([x.href]); return acc; })()')).toBe(true); // 식 안의 지역 변수 대입
     expect(ro('document.querySelector("details").open')).toBe(true);
+    for (const t of ['location.search', 'window.location.hostname', "document.location['pathname']", 'self.location.origin', 'location?.href', 'window?.location.hash', 'new URL(location.href).searchParams.get("q")']) expect(ro(t), t).toBe(true);
+    for (const t of [
+      '[...document.links].map(a => a.href).sort()',
+      "Array.from(document.links).reverse().map(String)",
+      "(() => { const xs = [3, 1]; return xs.sort((a, b) => a - b); })()",
+      "[3, 1].sort()",
+      "document.title.replace(/a/g, (m) => m.toUpperCase())",
+      "document.title.replace(/a/, `b`)",
+      "(() => { const up = (s) => s.toUpperCase(); return [...document.links].map(up).filter(Boolean); })()",
+      "[...document.links].map(String)",
+      "JSON.stringify({ a: 1 }, null, 2)",
+      "JSON.parse('[1]', function (k, v) { return v; })",
+      "Array.from(document.links, (a) => a.href)",
+      "document.querySelector(window.sel)", // 값을 넘기는 자리는 그대로
+    ]) expect(ro(t), t).toBe(true);
     expect(ro('(() => { const out = []; out.push(1); return out; })()')).toBe(false); // push 는 허락 목록 밖(알 수 없음)
     expect(ro('location.href')).toBe(true);
     expect(ro("document.title.replace(/a/g,'b')")).toBe(true);
@@ -114,6 +129,25 @@ describe('isReadOnlyExpression(evaluate 식이 읽기만 하나)', () => {
       '(() => { const f = () => 1; f = window.placeOrder; return f(); })()', // 지역 함수 이름에 다시 대입하면 더는 안 믿는다
       '((cb) => cb())(window.placeOrder)', // 매개변수로 받은 함수 호출
       'document.body.insertAdjacentHTML("beforeend", "x")',
+      // location 을 속성 읽기 말고 다른 데 쓰면 알 수 없음(별칭 · 배열 · 괄호 · 옵셔널 체인 · 구조분해 · 인자)
+      "(() => { const l = location; l.replace('/x'); return 1; })()",
+      "[location][0].replace('/x')",
+      "(window?.location).replace('/x')",
+      "(() => { const { replace } = window.location; return replace; })()",
+      "[1].map(() => 1).concat([self.location])",
+      "String(globalThis.location)",
+      // 페이지 함수를 호출 없이 콜백 자리에 넘기기
+      "document.querySelectorAll('button').forEach(window.placeOrder)",
+      '[1].map(Cart.checkout)',
+      '[1].filter(placeOrder)',
+      '[1].reduce(window.go, 0)',
+      '[1].sort(window.cmp)',
+      "'a'.replace(/a/, window.go)",
+      'Array.from(document.links, window.go)',
+      'JSON.stringify({}, window.replacer)',
+      // 페이지 배열을 제자리에서 바꾸기
+      'window.items.sort()',
+      'window.items.reverse()',
       'document.createElement("a")', // 모르는 메서드는 알 수 없음(안전 쪽)
     ]) {
       expect(ro(s), s).toBe(false);
