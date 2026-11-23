@@ -3,22 +3,20 @@ import { dirname, join } from "node:path";
 import { writeMachineState, type ActivityLog } from "./activity.js";
 import { findSecret } from "./guard.js";
 import { MemoryHome, localDate, nfc } from "./home.js";
+import { composeResult, type ToolResult } from "./result.js";
 import { bytes, cutBytes, formatHits, type MemoryIndex } from "./search.js";
 import { appendToSection } from "./sections.js";
 import { siteFileName, siteLookupChain } from "./site.js";
 
 // ───────────────────────── 값 ─────────────────────────
 
-/** 기억 · 프로젝트 도구 한 번 출력 상한(UTF-8 바이트). */
-export const OUTPUT_MAX_BYTES = 8192;
 const TIDY_LOG_BUDGET = 5000; // tidy: 일지 몫(파일 머리 줄 포함)
 const TIDY_OLD_TAIL = 1500; // tidy: 오래-기억.md 끝에서 담는 바이트
 const ARCHIVE_DIR = "기억/일지/보관";
 const OLD_MEMORY = "기억/오래-기억.md";
 const ME_FILE = "기억/나.md";
 const SITE_DIR = "기억/사이트";
-const CONFLICT_SHOW = 3;
-const CUT_NOTE = "… 8KB 를 넘는 부분은 줄였어요";
+const TEXT_MAX_CHARS = 2000; // remember · tidy_save 의 text 상한(글자)
 const FORGET_LINE_MAX = 200; // 글자
 
 export type MemoryInput = {
@@ -30,7 +28,7 @@ export type MemoryInput = {
   on?: boolean;
 };
 
-export type ToolResult = { text: string; isError?: boolean };
+export type { ToolResult };
 
 export type MemoryCtx = {
   home: MemoryHome;
@@ -48,45 +46,6 @@ const lenChars = (s: string) => [...s].length;
 function clipChars(s: string, max: number): string {
   const chars = [...s];
   return chars.length <= max ? s : chars.slice(0, max - 1).join("") + "…";
-}
-
-// ───────────────────────── 결과 꾸미기(project 도구도 같이 쓴다) ─────────────────────────
-
-/** iCloud 충돌본(「이름 2.md」) 중 이번 호출이 읽거나 쓴 파일에 딸린 것. 알아낼 수 없으면 빈 목록. */
-async function conflictsOf(home: MemoryHome, files: string[]): Promise<string[]> {
-  if (files.length === 0) return [];
-  const touched = new Set(files.map(nfc));
-  try {
-    return (await home.conflicts()).filter((c) => touched.has(c) || touched.has(c.replace(/ \d+\.md$/, ".md")));
-  } catch {
-    return [];
-  }
-}
-
-/**
- * 도구 결과를 마무리한다: 열린 프로젝트가 있으면 첫 줄 「열린 프로젝트: 이름」, 이번 호출이 다룬 파일에 충돌본이 있으면 끝 줄
- * 「충돌본이 있어요: … — 합쳐 주세요」, 전체는 8,192 바이트 이하(넘으면 본문 끝을 줄인다).
- */
-export async function composeResult(
-  ctx: { home: MemoryHome; activity: ActivityLog },
-  body: string,
-  opts: { isError?: boolean; files?: string[] } = {},
-): Promise<ToolResult> {
-  const head = ctx.activity.state.openProject ? `열린 프로젝트: ${ctx.activity.state.openProject}\n` : "";
-  const found = await conflictsOf(ctx.home, opts.files ?? []);
-  let tail = "";
-  if (found.length > 0) {
-    const shown = found.slice(0, CONFLICT_SHOW).join(", ") + (found.length > CONFLICT_SHOW ? ` 외 ${found.length - CONFLICT_SHOW}개` : "");
-    tail = `\n충돌본이 있어요: ${shown} — 합쳐 주세요`;
-  }
-  const room = OUTPUT_MAX_BYTES - bytes(head) - bytes(tail);
-  let text = body;
-  if (bytes(text) > room) {
-    const note = `\n${CUT_NOTE}`;
-    text = cutBytes(text, Math.max(0, room - bytes(note))) + note;
-  }
-  const out = head + text + tail;
-  return opts.isError ? { text: out, isError: true } : { text: out };
 }
 
 // ───────────────────────── 파일 보기 · 쓰기 도우미 ─────────────────────────
@@ -130,6 +89,7 @@ async function remember(ctx: MemoryCtx, input: MemoryInput): Promise<Outcome> {
   const { home, activity } = ctx;
   const text = oneLine(input.text ?? "");
   if (!text) return fail("기억할 내용(text)을 알려 주세요.");
+  if (lenChars(text) > TEXT_MAX_CHARS) return fail(`기억할 내용이 너무 길어요(2,000자까지): ${lenChars(text).toLocaleString("en-US")}자`);
   const secret = findSecret(text);
   if (secret !== null) {
     return fail(`${secret} 같은 민감한 값이 들어 있어서 저장하지 않았어요. 그 값을 빼고 다시 말해 주세요.`);
@@ -160,13 +120,18 @@ async function remember(ctx: MemoryCtx, input: MemoryInput): Promise<Outcome> {
   if (blocked) return blocked;
 
   const line = `- ${localDate(ctx.now())} ${text}`;
-  const old = await home.read(rel);
-  if (project !== null) {
-    if (old === null) return fail(`프로젝트 문서를 찾을 수 없어요: ${rel}`);
-    await home.writeShared(rel, appendToSection(old, "메모", line));
-  } else {
-    await home.writeShared(rel, withAppendedLine(old, line));
-  }
+  // 읽고 → 덧붙여 → 쓰는 사이에 같은 프로세스의 다른 호출이 끼어들지 못하게 한 줄로 세운다.
+  const failed = await home.exclusive(async (): Promise<Outcome | null> => {
+    const old = await home.read(rel);
+    if (project !== null) {
+      if (old === null) return fail(`프로젝트 문서를 찾을 수 없어요: ${rel}`);
+      await home.writeShared(rel, appendToSection(old, "메모", line));
+    } else {
+      await home.writeShared(rel, withAppendedLine(old, line));
+    }
+    return null;
+  });
+  if (failed) return failed;
 
   if (siteKey !== null) {
     // 방금 쓴 메모가 다음 방문 때 붙도록, 이 메모를 찾아 쓸 수 있는 도메인을 「이미 봤음」에서 뺀다.
@@ -248,27 +213,29 @@ async function forget(ctx: MemoryCtx, input: MemoryInput): Promise<Outcome> {
   const blocked = await writeGate(home);
   if (blocked) return blocked;
 
-  const found: { rel: string; no: number; line: string; lines: string[]; raw: string }[] = [];
-  for (const rel of await forgetFiles(home)) {
-    const raw = await home.read(rel);
-    if (raw === null) continue;
-    const lines = raw.split("\n");
-    lines.forEach((line, i) => {
-      if (nfc(line).includes(text)) found.push({ rel, no: i + 1, line, lines, raw });
-    });
-  }
-  if (found.length === 0) return { body: `지울 줄을 찾지 못했어요: "${text}" (기억/나.md · 기억/사이트/ 안에서 찾았어요)` };
-  if (found.length > 1) {
-    const list = found.map((f) => `- ${f.rel}:${f.no}  ${clipChars(f.line.trim(), FORGET_LINE_MAX)}`).join("\n");
-    return {
-      body: `${found.length}줄이 걸려서 아무것도 지우지 않았어요. 지울 줄만 걸리도록 text 를 더 길게 알려 주세요:\n${list}`,
-      files: [...new Set(found.map((f) => f.rel))],
-    };
-  }
-  const hit = found[0]!;
-  const rest = hit.lines.filter((_, i) => i !== hit.no - 1);
-  await home.writeShared(hit.rel, rest.join("\n"));
-  return { body: `지웠어요: ${hit.rel}:${hit.no}\n${hit.line.trim()}`, files: [hit.rel] };
+  return home.exclusive(async (): Promise<Outcome> => {
+    const found: { rel: string; no: number; line: string; lines: string[] }[] = [];
+    for (const rel of await forgetFiles(home)) {
+      const raw = await home.read(rel);
+      if (raw === null) continue;
+      const lines = raw.split("\n");
+      lines.forEach((line, i) => {
+        if (nfc(line).includes(text)) found.push({ rel, no: i + 1, line, lines });
+      });
+    }
+    if (found.length === 0) return { body: `지울 줄을 찾지 못했어요: "${text}" (기억/나.md · 기억/사이트/ 안에서 찾았어요)` };
+    if (found.length > 1) {
+      const list = found.map((f) => `- ${f.rel}:${f.no}  ${clipChars(f.line.trim(), FORGET_LINE_MAX)}`).join("\n");
+      return {
+        body: `${found.length}줄이 걸려서 아무것도 지우지 않았어요. 지울 줄만 걸리도록 text 를 더 길게 알려 주세요:\n${list}`,
+        files: [...new Set(found.map((f) => f.rel))],
+      };
+    }
+    const hit = found[0]!;
+    const rest = hit.lines.filter((_, i) => i !== hit.no - 1);
+    await home.writeShared(hit.rel, rest.join("\n"));
+    return { body: `지웠어요: ${hit.rel}:${hit.no}\n${hit.line.trim()}`, files: [hit.rel] };
+  });
 }
 
 // ───────────────────────── tidy ─────────────────────────
@@ -398,32 +365,35 @@ async function tidySave(ctx: MemoryCtx, input: MemoryInput): Promise<Outcome> {
   if (!pending) return fail("먼저 tidy 를 불러 주세요. (정리할 일지를 받은 지 30분이 지났거나 tidy 를 아직 안 불렀어요.)");
   const summary = (input.text ?? "").replace(/\s+$/, "").replace(/^\n+/, "");
   if (!summary.trim()) return fail("정리한 요약(text)을 알려 주세요.");
+  if (lenChars(summary) > TEXT_MAX_CHARS) return fail(`정리한 요약이 너무 길어요(2,000자까지): ${lenChars(summary).toLocaleString("en-US")}자 — 더 짧게 줄여서 다시 보내 주세요.`);
   const secret = findSecret(summary);
   if (secret !== null) return fail(`${secret} 같은 민감한 값이 들어 있어서 저장하지 않았어요(일지도 그대로 뒀어요). 그 값을 빼고 다시 보내 주세요.`);
   const blocked = await writeGate(home);
   if (blocked) return blocked;
 
   const now = ctx.now();
-  const old = await home.read(OLD_MEMORY);
-  const section = `## ${localDate(now)} 정리\n${summary}\n`;
-  await home.writeShared(OLD_MEMORY, old === null || old.trim() === "" ? section : `${old.replace(/\n*$/, "")}\n\n${section}`);
+  return home.exclusive(async (): Promise<Outcome> => {
+    const old = await home.read(OLD_MEMORY);
+    const section = `## ${localDate(now)} 정리\n${summary}\n`;
+    await home.writeShared(OLD_MEMORY, old === null || old.trim() === "" ? section : `${old.replace(/\n*$/, "")}\n\n${section}`);
 
-  let moved = 0;
-  for (const rel of pending.files) {
-    if ((await kindOf(home, rel)) !== "file") continue; // 그사이 사라진 파일은 건너뛴다
-    const name = rel.slice(rel.lastIndexOf("/") + 1);
-    const to = join(home.path(ARCHIVE_DIR), await freeArchiveName(home, name));
-    try {
-      await mkdir(dirname(to), { recursive: true });
-      await rename(home.path(rel), to);
-      moved++;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    let moved = 0;
+    for (const rel of pending.files) {
+      if ((await kindOf(home, rel)) !== "file") continue; // 그사이 사라진 파일은 건너뛴다
+      const name = rel.slice(rel.lastIndexOf("/") + 1);
+      const to = join(home.path(ARCHIVE_DIR), await freeArchiveName(home, name));
+      try {
+        await mkdir(dirname(to), { recursive: true });
+        await rename(home.path(rel), to);
+        moved++;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
     }
-  }
-  activity.state.pendingTidy = null;
-  await writeMachineState(home, { lastTidy: now.toISOString() });
-  return { body: `정리했어요: ${OLD_MEMORY} 에 요약을 더하고 일지 ${moved}개를 기억/일지/보관/ 으로 옮겼어요.`, files: [OLD_MEMORY] };
+    activity.state.pendingTidy = null;
+    await writeMachineState(home, { lastTidy: now.toISOString() });
+    return { body: `정리했어요: ${OLD_MEMORY} 에 요약을 더하고 일지 ${moved}개를 기억/일지/보관/ 으로 옮겼어요.`, files: [OLD_MEMORY] };
+  });
 }
 
 // ───────────────────────── pause ─────────────────────────
@@ -472,5 +442,6 @@ export async function runMemoryTool(ctx: MemoryCtx, input: MemoryInput): Promise
   } catch (e) {
     out = fail(`기억 도구가 실패했어요: ${e instanceof Error ? e.message : String(e)}`);
   }
-  return composeResult(ctx, out.body, { isError: out.isError, files: out.files });
+  const skipTidyHint = input.action === "tidy" || input.action === "tidy_save"; // 정리하는 중에는 정리 안내를 붙이지 않는다
+  return composeResult(ctx, out.body, { isError: out.isError, files: out.files, skipTidyHint });
 }

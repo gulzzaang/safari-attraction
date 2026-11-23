@@ -258,3 +258,41 @@ describe("MemoryHome", () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe("MemoryHome.exclusive — 같은 프로세스 안 차례 줄", () => {
+  test("들어온 순서대로 하나씩 돈다(앞 것이 끝나야 다음이 시작)", async () => {
+    const home = new MemoryHome(tmpdir());
+    const events: string[] = [];
+    const job = (name: string, ms: number) =>
+      home.exclusive(async () => {
+        events.push(`${name} 시작`);
+        await new Promise((r) => setTimeout(r, ms));
+        events.push(`${name} 끝`);
+        return name;
+      });
+    const got = await Promise.all([job("a", 30), job("b", 1), job("c", 10)]);
+    expect(got).toEqual(["a", "b", "c"]);
+    expect(events).toEqual(["a 시작", "a 끝", "b 시작", "b 끝", "c 시작", "c 끝"]);
+  });
+
+  test("실패한 일은 호출자에게 던지되 다음 일을 막지 않는다", async () => {
+    const home = new MemoryHome(tmpdir());
+    const bad = home.exclusive(async () => {
+      throw new Error("앗");
+    });
+    const next = home.exclusive(async () => "다음");
+    await expect(bad).rejects.toThrow("앗");
+    await expect(next).resolves.toBe("다음");
+    await expect(home.exclusive(async () => "또")).resolves.toBe("또");
+  });
+
+  test("동기로 던지는 함수도 줄을 깨지 않는다", async () => {
+    const home = new MemoryHome(tmpdir());
+    await expect(
+      home.exclusive((() => {
+        throw new Error("동기");
+      }) as () => Promise<never>),
+    ).rejects.toThrow("동기");
+    await expect(home.exclusive(async () => 1)).resolves.toBe(1);
+  });
+});

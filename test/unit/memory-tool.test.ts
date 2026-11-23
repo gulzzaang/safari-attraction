@@ -326,7 +326,8 @@ describe("forget", () => {
 
   test("한 줄만 걸리면 지우고 보여 준다(다른 줄은 그대로)", async () => {
     const r = await run({ action: "forget", text: "오트 라떼" });
-    expect(r.text).toBe("지웠어요: 기억/나.md:1\n- 2026-11-01 커피는 오트 라떼");
+    // 이 시험 준비물에 지난 날 일지가 있어서 정리 안내 한 줄이 끝에 붙는다.
+    expect(r.text).toBe("지웠어요: 기억/나.md:1\n- 2026-11-01 커피는 오트 라떼\n… 기억 정리할 때가 됐어요 — memory 도구 tidy");
     expect(await home.read("기억/나.md")).toBe("- 2026-11-02 맥은 두 대\n- 2026-11-03 커피 원두는 산미 있는 것\n");
   });
 
@@ -588,5 +589,66 @@ describe("tidy_save", () => {
     await run({ action: "tidy_save", text: "요약" });
     const r = await run({ action: "search", query: "그램 노트북" });
     expect(r.text).toContain("일지/보관/2026-11-01");
+  });
+});
+
+describe("차례 줄(R19) · 정리 안내(R18) · 글 길이 상한", () => {
+  test("remember 둘을 한꺼번에 불러도 두 줄이 다 남는다", async () => {
+    const rs = await Promise.all(Array.from({ length: 8 }, (_, i) => run({ action: "remember", text: `동시 ${i}` })));
+    for (const r of rs) expect(r.isError).toBeFalsy();
+    const text = (await home.read("기억/나.md"))!;
+    for (let i = 0; i < 8; i++) expect(text).toContain(`동시 ${i}\n`);
+    expect(text.split("\n").filter(Boolean)).toHaveLength(8);
+  });
+
+  test("프로젝트 메모 둘도 다 남는다", async () => {
+    await put("프로젝트/이사/프로젝트.md", "# 이사\n\n## 메모\n\n## 상태\n진행 중\n");
+    ctx.activity.state.openProject = "이사";
+    await Promise.all([run({ action: "remember", text: "하나", about: "프로젝트" }), run({ action: "remember", text: "둘", about: "프로젝트" })]);
+    const md = (await home.read("프로젝트/이사/프로젝트.md"))!;
+    expect(md).toContain("하나");
+    expect(md).toContain("둘");
+  });
+
+  test("remember 와 forget 을 동시에 불러도 서로의 쓰기를 덮지 않는다", async () => {
+    await put("기억/나.md", "- 2026-11-01 지울 줄\n");
+    await Promise.all([run({ action: "remember", text: "새 줄" }), run({ action: "forget", text: "지울 줄" })]);
+    expect(await home.read("기억/나.md")).toBe("- 2026-11-23 새 줄\n");
+  });
+
+  test("정리 안내: 낡은 일지가 있으면 두 호출 중 한 번만 붙는다", async () => {
+    await put(logRel("2026-11-01"), "- 10:00 「가」 — x · 성공\n");
+    const a = await run({ action: "pause", on: false });
+    const b = await run({ action: "pause", on: false });
+    expect(a.text).toContain("기억 정리할 때가 됐어요");
+    expect(b.text).not.toContain("기억 정리할 때가 됐어요");
+  });
+
+  test("tidy · tidy_save 결과에는 안내를 붙이지 않는다", async () => {
+    await put(logRel("2026-11-01"), "- 10:00 「가」 — x · 성공\n");
+    const t = await run({ action: "tidy" });
+    expect(t.text).not.toContain("정리할 때가 됐어요");
+    const s = await run({ action: "tidy_save", text: "요약" });
+    expect(s.text).not.toContain("정리할 때가 됐어요");
+    expect(ctx.activity.state.tidyHinted).toBe(false);
+  });
+
+  test("remember · tidy_save 의 text 는 2,000자까지", async () => {
+    const ok = await run({ action: "remember", text: "가".repeat(2000) });
+    expect(ok.isError).toBeFalsy();
+    const big = await run({ action: "remember", text: "가".repeat(2001) });
+    expect(big.isError).toBe(true);
+    expect(big.text).toContain("너무 길어요(2,000자까지)");
+    expect((await home.read("기억/나.md"))!.split("\n").filter(Boolean)).toHaveLength(1);
+
+    await put(logRel("2026-11-01"), "- 10:00 「가」 — x · 성공\n");
+    await run({ action: "tidy" });
+    const bigSave = await run({ action: "tidy_save", text: "나".repeat(2001) });
+    expect(bigSave.isError).toBe(true);
+    expect(bigSave.text).toContain("너무 길어요(2,000자까지)");
+    expect(ctx.activity.state.pendingTidy).not.toBeNull();
+    expect(await exists(logRel("2026-11-01"))).toBe(true);
+    const okSave = await run({ action: "tidy_save", text: "나".repeat(2000) });
+    expect(okSave.isError).toBeFalsy();
   });
 });

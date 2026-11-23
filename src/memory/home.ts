@@ -137,9 +137,21 @@ const isMissing = (e: unknown) => {
  */
 export class MemoryHome {
   readonly dir: string;
+  /** exclusive() 의 차례 줄. 앞 일이 실패해도 끊기지 않는다. */
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor(dir: string) {
     this.dir = resolve(dir);
+  }
+
+  /**
+   * 같은 프로세스 안에서 「읽고 → 고쳐 → 쓰는」 공유 파일 일을 한 줄로 세운다(들어온 순서대로 하나씩).
+   * 한 일이 실패해도 던지는 건 그 호출자에게만이고 다음 일은 그대로 돈다. 안에서 다시 exclusive 를 부르면 서로 기다리니 부르지 않는다.
+   */
+  exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(() => fn());
+    this.queue = run.catch(() => {});
+    return run;
   }
 
   /** 집 폴더 안 경로. `..` · 절대 경로가 들어 있으면 거절한다. */
