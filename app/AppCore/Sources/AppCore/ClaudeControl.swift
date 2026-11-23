@@ -81,8 +81,11 @@ public enum ClaudeControl {
     }
 
     /// 한 줄 JSON — 키 정렬(시험이 흔들리지 않게), 슬래시는 그대로. 값은 전부 JSONSerialization 이 이스케이프한다.
+    /// U+2028 · U+2029(줄 구분 글자)는 JSON 문자열 안에서 \u 이스케이프로 바꾼다 — 줄 단위로 읽는 쪽이 한 줄을 가르지 않게.
     static func json(_ obj: [String: Any]) -> String {
         String(decoding: serialize(obj) ?? Data("{}".utf8), as: UTF8.self)
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
     }
 
     static func serialize(_ obj: [String: Any]) -> Data? {

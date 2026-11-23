@@ -93,7 +93,12 @@ final class ClaudeControlTests: XCTestCase {
     }
     func testWrittenLinesRoundTripThroughParserShape() {
         // 우리가 쓴 사용자 줄은 한 줄 JSON 이다(여러 줄이면 클로드가 깨진 줄로 읽음).
-        let s = ClaudeControl.userMessage("가\u{2028}나\r\n다")
+        let s = ClaudeControl.userMessage("가\u{2028}나\u{2029}다\r\n라")
         XCTAssertEqual(s.split(whereSeparator: { $0 == "\n" || $0 == "\r" }).count, 1)
+        XCTAssertFalse(s.contains("\u{2028}")); XCTAssertFalse(s.contains("\u{2029}"))
+        XCTAssertEqual(s.components(separatedBy: .newlines).count, 1) // U+2028 · 2029 · NEL 포함 어떤 줄바꿈도 없다
+        // 이스케이프로 바뀌어도 읽으면 원래 글이다.
+        let back = (obj(s)["message"] as! NSDictionary)["content"] as? String
+        XCTAssertEqual(back, "가\u{2028}나\u{2029}다\r\n라")
     }
 }

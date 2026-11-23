@@ -35,7 +35,7 @@ public final class ProcessRunner: @unchecked Sendable {
     /// 시간 상한(초) — 설계 값.
     public static let defaultTimeout: TimeInterval = 180
 
-    private enum Reason { case timedOut, stopped }
+    private enum Reason { case timedOut, stopped, inputFailed }
 
     private let killGrace: TimeInterval
     private let lock = NSLock()
@@ -52,7 +52,13 @@ public final class ProcessRunner: @unchecked Sendable {
     private let inputLock = NSLock()
     private var inputFd: Int32 = -1
 
-    public init(killGrace: TimeInterval = 2) { self.killGrace = killGrace }
+    /// 입력 파이프가 이만큼(초) 동안 조금도 비워지지 않으면 `write` 가 `.stalled` 를 던진다(기본 5초, 시험에서 줄일 수 있음).
+    private let writeStallLimit: TimeInterval
+
+    public init(killGrace: TimeInterval = 2, writeStallLimit: TimeInterval = 5) {
+        self.killGrace = killGrace
+        self.writeStallLimit = writeStallLimit
+    }
 
     /// 마지막으로 띄운 자식의 pid(시험 · 진단용). 아직 안 띄웠으면 0.
     public var lastPID: pid_t { lock.withLock { _lastPID } }
@@ -68,20 +74,25 @@ public final class ProcessRunner: @unchecked Sendable {
 
     /// 양방향으로 띄운 자식의 표준 입력에 한 줄을 쓴다(끝에 줄바꿈이 없으면 붙인다).
     /// 돌고 있지 않거나 이미 끝났거나 `closeInput` 뒤이거나 파이프가 끊겼으면 **오류 없이 무시**한다
-    /// (끊긴 파이프로 앱이 SIGPIPE 를 받지 않는다). 파이프가 꽉 차 자식이 안 읽으면 5초까지 기다린 뒤 던진다.
+    /// (끊긴 파이프로 앱이 SIGPIPE 를 받지 않는다). 파이프가 꽉 차 자식이 안 읽으면 `writeStallLimit`(기본 5초) 동안
+    /// 기다린 뒤 `.stalled` 를 던지고, 그 순간 **입력을 닫는다**(반쯤 쓴 줄 뒤에 다른 줄이 이어 붙어 깨진 줄이 되지 않게 —
+    /// 이후 쓰기는 무시).
+    ///
+    /// 주의: 이 함수는 호출 스레드를 최대 `writeStallLimit` 까지 막을 수 있다. **메인 스레드 · @MainActor 에서 부르지 말 것**
+    /// (백그라운드 작업에서 부른다).
     public func write(_ line: String) throws {
         var bytes = Array(line.utf8)
         if bytes.last != 0x0A { bytes.append(0x0A) }
         try inputLock.withLock {
             guard inputFd >= 0 else { return }
             var offset = 0
-            let deadline = Date().addingTimeInterval(Self.writeStallLimit)
+            var deadline = Date().addingTimeInterval(writeStallLimit)
             while offset < bytes.count {
                 let n = bytes[offset...].withUnsafeBytes { Darwin.write(inputFd, $0.baseAddress, $0.count) }
-                if n > 0 { offset += n; continue }
+                if n > 0 { offset += n; deadline = Date().addingTimeInterval(writeStallLimit); continue }
                 if n < 0 && errno == EINTR { continue }
                 if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    if Date() > deadline { throw RunnerWriteError.stalled }
+                    if Date() > deadline { closeInputLocked(); throw RunnerWriteError.stalled }
                     var p = pollfd(fd: inputFd, events: Int16(POLLOUT), revents: 0)
                     _ = poll(&p, 1, 100)
                     continue
@@ -100,7 +111,6 @@ public final class ProcessRunner: @unchecked Sendable {
         if inputFd >= 0 { close(inputFd); inputFd = -1 }
     }
 
-    static let writeStallLimit: TimeInterval = 5
 
     /// `onEvent` 는 이 객체 안의 전용 직렬 큐에서 순서대로 불리고, `run` 이 돌아오기 전에 모두 전달된다.
     /// 메인 스레드가 아니므로 화면을 만지는 쪽은 스스로 스레드를 옮겨야 한다.
@@ -181,6 +191,10 @@ public final class ProcessRunner: @unchecked Sendable {
         return env
     }
 
+    /// 쓰기 끝에 SIGPIPE 면제를 못 걸었을 때만 — 프로세스 전체에서 SIGPIPE 를 무시(한 번만).
+    private static let ignoreSIGPIPEOnce: Void = { signal(SIGPIPE, SIG_IGN); return () }()
+    private static func ignoreSIGPIPEProcessWide() { _ = ignoreSIGPIPEOnce }
+
     static func resolve(_ name: String, path: String) -> String? {
         let fm = FileManager.default
         if name.contains("/") { return fm.isExecutableFile(atPath: name) ? name : nil }
@@ -210,7 +224,7 @@ public final class ProcessRunner: @unchecked Sendable {
                 return .failed("파이프를 만들지 못했어요")
             }
             for fd in inFds { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
-            _ = fcntl(inFds[1], F_SETNOSIGPIPE, 1)
+            if fcntl(inFds[1], F_SETNOSIGPIPE, 1) == -1 { Self.ignoreSIGPIPEProcessWide() } // 보험
             _ = fcntl(inFds[1], F_SETFL, fcntl(inFds[1], F_GETFL) | O_NONBLOCK)
             inputLock.withLock { inputFd = inFds[1] }
         }
@@ -277,7 +291,14 @@ public final class ProcessRunner: @unchecked Sendable {
             }
         }
 
-        for line in initialLines { try? write(line) } // 읽는 쪽이 돌고 있으니 큰 줄도 막히지 않는다
+        // 읽는 쪽이 돌고 있으니 큰 줄도 막히지 않는다. 첫 줄을 못 보내면(자식이 입력을 안 읽음) 클로드는 입력을
+        // 기다리며 멈출 테니 이 실행을 멈추고 실패로 끝낸다.
+        for line in initialLines {
+            do { try write(line) } catch {
+                lock.withLock { terminateLocked(.inputFailed) }
+                break
+            }
+        }
 
         // 자식이 끝나길 기다림(거두지는 않고) → 그룹에 남은 것 정리 → 거둠.
         var info = siginfo_t()
@@ -306,6 +327,7 @@ public final class ProcessRunner: @unchecked Sendable {
         switch why {
         case .timedOut: return .timedOut
         case .stopped: return .stopped
+        case .inputFailed: return .failed("\(executable) 에 첫 입력을 보내지 못했어요(입력을 읽지 않아요)")
         case nil:
             if waitError != 0 {
                 return .failed("\(executable) 의 끝난 상태를 읽지 못했어요(\(String(cString: strerror(waitError))))")

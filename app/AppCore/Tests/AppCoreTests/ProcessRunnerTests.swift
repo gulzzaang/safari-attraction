@@ -299,6 +299,32 @@ final class ProcessRunnerInteractiveTests: XCTestCase {
         XCTAssertEqual(o, .finished(code: 0))
         XCTAssertEqual(c.stdout, "하나\n둘\n셋\n")
     }
+    // 입력을 안 읽는 자식 — 파이프가 꽉 찬다(큰 줄).
+    func testStalledWriteThrowsAndClosesInputSoLaterWritesAreIgnored() async throws {
+        let r = ProcessRunner(writeStallLimit: 0.5)
+        let t = startInteractive(r, "/bin/sh", ["-c", "/bin/sleep 4"], timeout: 20)
+        await started(r)
+        let big = String(repeating: "x", count: 2_000_000)
+        var thrown: Error?
+        do { try r.write(big) } catch { thrown = error }
+        XCTAssertEqual(thrown as? RunnerWriteError, .stalled)
+        // 입력이 닫혔으니 다음 쓰기는 기다리지도 던지지도 않고 무시된다(이어 붙은 깨진 줄도 없음).
+        let t0 = Date()
+        XCTAssertNoThrow(try r.write("{\"next\":1}"))
+        XCTAssertLessThan(Date().timeIntervalSince(t0), 0.3)
+        r.stop()
+        _ = await t.value
+        assertGone(r.lastPID)
+    }
+    func testStalledInitialLineStopsTheRunAndFails() async {
+        let r = ProcessRunner(killGrace: 0.5, writeStallLimit: 0.5); let t0 = Date()
+        let big = String(repeating: "x", count: 2_000_000)
+        let t = startInteractive(r, "/bin/sh", ["-c", "/bin/sleep 30"], timeout: 60, initial: [big, "둘째"])
+        let o = await t.value
+        if case .failed(let m) = o { XCTAssertTrue(m.contains("입력"), m) } else { XCTFail("\(o)") }
+        XCTAssertLessThan(Date().timeIntervalSince(t0), 8)
+        assertGone(r.lastPID)
+    }
     func testWriteWithoutRunIsIgnored() {
         let r = ProcessRunner()
         XCTAssertNoThrow(try r.write("nothing running"))
