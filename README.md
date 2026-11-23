@@ -208,6 +208,32 @@ Finder 에서 `사파리-어트랙션` 폴더를 열어 파일을 메모장이�
 - 우리 탭을 놓치면 로그에 「우리 탭 N개를 못 찾았어요(이미 닫혔을 수 있어요)」 한 줄이 남는다. 놓친 탭을 쓰려고 하면 「놓쳤어요」 오류가 난다. 그때는 `openTab` 으로 다시 열거나 `listBrowserTabs()` 로 찾아 `attachBrowserTab()` 으로 붙인다.
 - AI 창 크기와 `innerWidth` 는 사파리 창 최소 폭(약 336px)과 화면 크기에 묶인다.
 
+## 앱 관문(개발자용)
+
+사파리 앱(옆 창)이 일을 맡길 때, 서버는 페이지를 바꾸는 동작 직전에 앱에 허락을 묻는다. 환경값 네 개로 켠다.
+
+| 환경값 | 뜻 |
+| --- | --- |
+| `SAFARI_ATTRACTION_GATE` | 앱이 연 유닉스 소켓 경로. 이 값이 있어야 관문이 켜진다 |
+| `SAFARI_ATTRACTION_GATE_TOKEN` | 요청마다 붙는 64자 16진 토큰(틀리면 앱이 거절하고 끊는다) |
+| `SAFARI_ATTRACTION_NO_PERMISSION_PROMPTS=1` | 맥 허락 창이 뜰 수 있는 일(화면 기록)을 미리 확인하고, 안 되면 창을 띄우지 않고 오류를 낸다 |
+| `SAFARI_ATTRACTION_HOME` | 기억 폴더(앱은 `~/Library/Application Support/SafariAttractionApp/memory`) |
+
+동작 하나마다 소켓에 한 줄 JSON 을 보내고 한 줄 답을 받는다.
+
+```json
+{"v":1,"token":"…","id":"<무작위>","host":"www.coupang.com","url":"https://…","action":"click|fill|check|uncheck|select|press|type|evaluate|fetch|goto|nav","target":"…(120자까지)","value":"…(40자까지) 또는 (비밀)","irreversible":true}
+{"id":"…","allow":true}
+{"id":"…","allow":false,"reason":"한국어 이유"}
+```
+
+`irreversible` 은 되돌릴 수 없는 동작이면 `true`, 아니면 `false`, 알 수 없으면 `null`. 답이 오래(앱은 300초, 서버는 310초) 없거나 연결이 안 되거나 끊기면 거절이다. 거절은 `ACTION_DENIED` 오류(「사용자가 거절했어요: …」)로 돌아가고 동작은 일어나지 않는다. 관문을 기다리는 시간은 repl 호출 제한 시간(120초)에서 뺀다.
+
+- **관문이 없으면(환경값 없음) 지금과 똑같이 동작한다.** Claude Code · Claude 앱에서 쓰는 기존 방식은 아무것도 묻지 않는다.
+- **되돌릴 수 없음 판정**은 모델의 판단이 아니라 서버가 한다: 버튼 글 · 폼 제출 단추 글(Enter 로 제출할 때) · Enter · `fetch` 메서드(GET · HEAD 가 아니면)로 본다. 글에 `결제 · 구매 · 주문 · 보내기 · 삭제 · pay · buy · submit · delete` 같은 낱말이 있으면 되돌릴 수 없음이다. 비밀 칸(`type=password`, `autocomplete` 가 `current-password` · `new-password` · `one-time-code` · `cc-number` · `cc-csc` · `cc-exp`)의 값은 관문 줄에 「(비밀)」 로만 간다.
+- **`evaluate` 는 읽기 전용으로 확실한 식(허락 목록)만 묻지 않고**, 그 밖은 「알 수 없음」(`null`)으로 묻는다. 그래서 `typeof window` 같은 읽기 식도 묻는 쪽으로 갈 수 있다. 메서드 이름만 보는 한계도 있다(페이지가 정의한 `get` · `has` 등은 읽기로 잘못 볼 수 있다).
+- **관문은 실수와 보통의 속임**(페이지 글에 속아 「결제하기」 를 누르는 것)**을 막는 장치이고, 일부러 빠져나가는 코드까지 막는 벽은 아니다.** repl 은 vm 안에서 돌지만 노출된 함수로 호스트에 닿을 수 있다.
+
 ## 사파리 앱(시험판)
 
 사파리 옆에 붙어 클로드에게 묻는 옆 창 앱이 `app/` 에 있다(이 맥에서만 도는 시험판, ⌥⇧S). 빌드 · 쓰는 법 · 맥 허락 창 · 한계는 [`app/README.md`](app/README.md).
@@ -216,7 +242,7 @@ Finder 에서 `사파리-어트랙션` 폴더를 열어 파일을 메모장이�
 
 ```sh
 npm test                                   # 단위 시험(사파리 없이)
-SAFARI_IT=1 npx vitest run test/integration/tabs.it.test.ts   # 통합 시험(진짜 사파리, 파일 하나씩)
+SAFARI_IT=1 npx vitest run test/integration/tabs.it.test.ts   # 통합 시험(진짜 사파리, 파일 하나씩, 관문은 gate.it.test.ts)
 ```
 
 `src/` 를 고치면 `npm run build` 로 `plugin/server.mjs` 도 다시 만들어 함께 커밋한다(플러그인은 설치할 때 빌드하지 않는다).
