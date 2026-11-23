@@ -42,7 +42,8 @@ public enum SafariBridgeError: Error, Sendable, Equatable {
         case .noWindow:
             return "열린 사파리 창이 없어서 지금 페이지를 붙일 수 없어요."
         case .timedOut:
-            return "사파리가 바로 답하지 않아 지금 페이지를 붙이지 못했어요. 잠시 뒤 다시 해 보세요."
+            // 맥의 허락 창이 떠 있어 사파리가 답을 못 하는 경우가 대부분이라 「기다리는 중」 으로 알린다.
+            return "사파리 허락을 기다리는 중이에요 — 맥이 띄운 허락 창에서 허용을 눌러 주세요."
         case .failed:
             return "사파리에서 지금 페이지를 읽지 못했어요."
         }
@@ -65,8 +66,9 @@ public protocol SafariBridging: Sendable {
     func isSafariRunning() -> Bool
     /// 사파리가 가장 앞 앱인가(AppleEvent 없이 확인).
     func isFrontmost() -> Bool
-    /// 사파리 앞 창의 위치 — **왼쪽 위 기준 전역 좌표**(`ScreenCoordinates` 로 AppKit 좌표로 바꾼다). 못 읽으면 nil.
-    func frontWindowBounds() -> CGRect?
+    /// 사파리 앞 창의 위치 — **왼쪽 위 기준 전역 좌표**(`ScreenCoordinates` 로 AppKit 좌표로 바꾼다).
+    /// 못 읽으면 이유를 담아 실패(허락 없음이면 따라가기가 30초 쉰다).
+    func frontWindowBounds() -> Result<CGRect, SafariBridgeError>
     /// 앞 창의 지금 탭(제목 · 주소 · 고른 글).
     func frontTab() -> Result<TabReading, SafariBridgeError>
 }
@@ -83,9 +85,18 @@ public struct PageAttachment: Sendable, Equatable {
     public static func resolve(_ result: Result<TabReading, SafariBridgeError>) -> PageAttachment {
         switch result {
         case .success(let r):
+            // 시작 페이지처럼 주소가 비어 있으면 붙일 것이 없다 — 토글은 그대로 둔다(곧 다른 페이지로 갈 수 있다).
+            if r.page.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return PageAttachment(page: nil, hint: emptyPageHint, turnOffToggle: false)
+            }
             return PageAttachment(page: r.page, hint: r.selectionIssue?.hint, turnOffToggle: false)
+        case .failure(.timedOut):
+            // 허락 창이 떠 있는 중일 가능성이 크다 — 토글은 그대로 두고 기다린다고 알린다.
+            return PageAttachment(page: nil, hint: SafariBridgeError.timedOut.hint, turnOffToggle: false)
         case .failure(let e):
             return PageAttachment(page: nil, hint: e.hint, turnOffToggle: true)
         }
     }
+
+    public static let emptyPageHint = "지금 사파리 탭에 붙일 주소가 없어요(시작 페이지 등). 질문만 보낼게요."
 }

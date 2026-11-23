@@ -13,7 +13,8 @@ final class DispatchTickScheduler: TickScheduling, @unchecked Sendable {
 
     func every(_ interval: TimeInterval, _ fire: @escaping @Sendable () -> Void) -> TickCancelling {
         let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(50))
+        // 처음은 곧바로(열자마자 자리를 잡는다), 그다음부터 간격마다.
+        t.schedule(deadline: .now() + 0.05, repeating: interval, leeway: .milliseconds(50))
         t.setEventHandler(handler: fire)
         t.resume()
         return Cancel(t)
@@ -40,11 +41,12 @@ enum LiveScreens {
 
 extension PanelFollower {
     /// 실제 사파리 · 화면에 붙인 따라가기. `onCommand` 는 전용 큐에서 불리니 화면에 닿는 일은 메인으로 넘길 것.
-    static func live(bridge: SafariBridging = AppleScriptSafariBridge(),
+    static func live(bridge: SafariBridging = AppleScriptSafariBridge(), startsOpen: Bool = true,
                      onCommand: @escaping @Sendable (PanelCommand) -> Void) -> PanelFollower {
         PanelFollower(bridge: bridge, scheduler: DispatchTickScheduler(),
                       geometry: { LiveScreens.geometry() },
                       ownAppIsActive: { LiveScreens.ownAppIsFrontmost() },
+                      startsOpen: startsOpen,
                       onCommand: onCommand)
     }
 }

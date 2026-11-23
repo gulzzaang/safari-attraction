@@ -67,6 +67,15 @@ public final class LoginPathCache: @unchecked Sendable {
 }
 
 public enum AppPaths {
+    /// `~/Library/Application Support/SafariAttractionApp` — 앱 전용 폴더(없으면 만든다).
+    public static func supportDirectory(applicationSupport: URL? = nil) throws -> URL {
+        let base = try applicationSupport ?? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let dir = base.appendingPathComponent("SafariAttractionApp", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     /// `~/Library/Application Support/SafariAttractionApp/work` — CLI 를 돌릴 앱 전용 빈 폴더(없으면 만든다).
     public static func workDirectory(applicationSupport: URL? = nil) throws -> URL {
         let base = try applicationSupport ?? FileManager.default.url(

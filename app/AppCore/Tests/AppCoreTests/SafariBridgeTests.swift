@@ -52,6 +52,15 @@ final class PageAttachmentTests: XCTestCase {
         let a = PageAttachment.resolve(.failure(.notRunning))
         XCTAssertNil(a.page); XCTAssertTrue(a.turnOffToggle); XCTAssertNotNil(a.hint)
     }
+    func testPendingConsentPromptSaysWaitingAndKeepsToggle() {
+        let a = PageAttachment.resolve(.failure(.timedOut))
+        XCTAssertNil(a.page); XCTAssertFalse(a.turnOffToggle)
+        XCTAssertEqual(a.hint, "사파리 허락을 기다리는 중이에요 — 맥이 띄운 허락 창에서 허용을 눌러 주세요.")
+    }
+    func testEmptyURLIsTreatedAsNoPage() {
+        let a = PageAttachment.resolve(.success(TabReading(page: PageContext(title: "시작 페이지", url: ""))))
+        XCTAssertNil(a.page); XCTAssertFalse(a.turnOffToggle); XCTAssertNotNil(a.hint)
+    }
     func testJavaScriptOffKeepsTitleAndURLButExplains() {
         let p = PageContext(title: "T", url: "https://a.example", selection: nil)
         let a = PageAttachment.resolve(.success(TabReading(page: p, selectionIssue: .javaScriptDisabled)))

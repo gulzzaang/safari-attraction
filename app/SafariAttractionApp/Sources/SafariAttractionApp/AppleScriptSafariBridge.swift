@@ -21,40 +21,44 @@ final class AppleScriptSafariBridge: SafariBridging, @unchecked Sendable {
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Self.bundleID
     }
 
-    func frontWindowBounds() -> CGRect? {
-        guard isSafariRunning() else { return nil }
+    func frontWindowBounds() -> Result<CGRect, SafariBridgeError> {
+        guard isSafariRunning() else { return .failure(.notRunning) }
         let r = runner.run(Self.boundsScript) { d -> [Double]? in
             guard d.numberOfItems == 4 else { return nil }
             return (1...4).map { Double(d.atIndex($0)?.int32Value ?? 0) }
         }
-        guard case .success(let list) = r, let list else { return nil }
-        return ScreenCoordinates.rect(appleScriptBounds: list)
+        switch r {
+        case .failure(let f):
+            return .failure(SafariBridgeError.classify(number: f.number, message: f.message))
+        case .success(let list):
+            guard let list, let rect = ScreenCoordinates.rect(appleScriptBounds: list) else { return .failure(.noWindow) }
+            return .success(rect)
+        }
     }
 
+    /// 제목 · 주소 · 고른 글을 **스크립트 한 번**에 읽는다(두 번에 나눠 읽으면 그 사이 탭이 바뀔 수 있다).
+    /// 고른 글(`do JavaScript`)만 실패하면 제목 · 주소는 그대로 주고 이유(JS 꺼짐 · 허락 없음)를 함께 돌려준다.
     func frontTab() -> Result<TabReading, SafariBridgeError> {
         guard isSafariRunning() else { return .failure(.notRunning) }
-        let tab = runner.run(Self.tabScript) { d -> (String, String)? in
-            guard d.numberOfItems == 2 else { return nil }
-            return (d.atIndex(1)?.stringValue ?? "", d.atIndex(2)?.stringValue ?? "")
+        let r = runner.run(Self.tabScript, backstop: 2.6) { d -> TabSnapshot? in
+            guard d.numberOfItems == 5 else { return nil }
+            return TabSnapshot(title: d.atIndex(1)?.stringValue ?? "", url: d.atIndex(2)?.stringValue ?? "",
+                               selection: d.atIndex(3)?.stringValue ?? "",
+                               jsErrorNumber: Int(d.atIndex(4)?.int32Value ?? 0), jsErrorMessage: d.atIndex(5)?.stringValue ?? "")
         }
-        let title: String, url: String
-        switch tab {
-        case .failure(let f): return .failure(SafariBridgeError.classify(number: f.number, message: f.message))
-        case .success(let t):
-            guard let t else { return .failure(.failed(number: 0, message: "탭 정보를 읽지 못함")) }
-            (title, url) = t
-        }
-        // 고른 글: 실패해도 제목 · 주소는 돌려준다(빈 글). 이유가 허락 없음 · JS 꺼짐이면 함께 알린다.
-        let sel = runner.run(Self.selectionScript) { $0.stringValue ?? "" }
-        var selection: String?
-        var issue: SafariBridgeError?
-        switch sel {
-        case .success(let s): selection = s.isEmpty ? nil : s
+        switch r {
         case .failure(let f):
-            let e = SafariBridgeError.classify(number: f.number, message: f.message, whileRunningJavaScript: true)
-            if e == .javaScriptDisabled || e == .automationDenied { issue = e }
+            return .failure(SafariBridgeError.classify(number: f.number, message: f.message))
+        case .success(let snap):
+            guard let snap else { return .failure(.failed(number: 0, message: "탭 정보를 읽지 못함")) }
+            var issue: SafariBridgeError?
+            if snap.jsErrorNumber != 0 {
+                let e = SafariBridgeError.classify(number: snap.jsErrorNumber, message: snap.jsErrorMessage, whileRunningJavaScript: true)
+                if e == .javaScriptDisabled || e == .automationDenied { issue = e }
+            }
+            let page = PageContext(title: snap.title, url: snap.url, selection: snap.selection.isEmpty ? nil : snap.selection)
+            return .success(TabReading(page: page, selectionIssue: issue))
         }
-        return .success(TabReading(page: PageContext(title: title, url: url, selection: selection), selectionIssue: issue))
     }
 
     /// 자동화 허락 상태를 **창을 띄우지 않고** 본다(`askUser: false`). 0 = 허락됨, -1744 = 물어봐야 함(아직 안 정함),
@@ -83,30 +87,38 @@ final class AppleScriptSafariBridge: SafariBridging, @unchecked Sendable {
     end if
     """
 
+    /// 제목 · 주소 · 고른 글을 한 번에. 고른 글 읽기가 실패해도(JS 꺼짐 등) 오류는 안에서 받아 번호 · 문구로 돌려준다.
     private static let tabScript = """
     if application id "com.apple.Safari" is running then
         tell application id "com.apple.Safari"
-            with timeout of 1 seconds
+            with timeout of 2 seconds
                 set t to current tab of front window
-                return {name of t, URL of t}
+                set tabTitle to name of t
+                set tabURL to URL of t
+                set tabSelection to ""
+                set jsNumber to 0
+                set jsMessage to ""
+                try
+                    set tabSelection to (do JavaScript "(window.getSelection ? window.getSelection().toString() : '').slice(0, 4000)" in t)
+                on error errMessage number errNumber
+                    set jsNumber to errNumber
+                    set jsMessage to errMessage
+                end try
+                return {tabTitle, tabURL, tabSelection, jsNumber, jsMessage}
             end timeout
         end tell
     else
         error "Safari is not running" number -600
     end if
     """
+}
 
-    private static let selectionScript = """
-    if application id "com.apple.Safari" is running then
-        tell application id "com.apple.Safari"
-            with timeout of 1 seconds
-                return (do JavaScript "(window.getSelection ? window.getSelection().toString() : '').slice(0, 4000)" in current tab of front window)
-            end timeout
-        end tell
-    else
-        error "Safari is not running" number -600
-    end if
-    """
+struct TabSnapshot: Sendable {
+    var title: String
+    var url: String
+    var selection: String
+    var jsErrorNumber: Int
+    var jsErrorMessage: String
 }
 
 struct ScriptFailure: Error, Sendable { var number: Int; var message: String }
