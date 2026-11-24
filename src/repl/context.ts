@@ -3,7 +3,7 @@ import vm from "node:vm";
 import { inspect } from "node:util";
 import { GUIDES, listGuides, type SiteGuide } from "../guides/index.js";
 import { fetchIsIrreversible } from "../gate/classify.js";
-import type { ActionGate } from "../gate/gate.js";
+import { assertAllowed, clipTarget, hostOf, isNonWebDestination, type ActionGate } from "../gate/gate.js";
 import { guideAnswer } from "../guides/notes.js";
 import type { Touch } from "../memory/activity.js";
 import { SafariError, type SafariDriver, type SafariErrorCode, type TabInfo } from "../driver/types.js";
@@ -252,9 +252,25 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
     };
   };
 
+  // javascript: · data: · file: · blob: 처럼 웹 주소가 아닌 곳을 여는 일은 이동이 아니라 코드 실행 · 파일 열기일 수 있다 — 관문이 있으면 evaluate(알 수 없음)로 묻는다.
+  const gateOpenUrl = async (url: unknown): Promise<void> => {
+    const gate = opts.gate;
+    const u = String(url);
+    if (!gate || !isNonWebDestination(u)) return;
+    const resume = aiAccess.gateWait?.();
+    let answer;
+    try {
+      answer = await gate.check({ host: hostOf(u), url: "", action: "evaluate", target: clipTarget(u), value: "", irreversible: null });
+    } finally {
+      resume?.();
+    }
+    assertAllowed(answer);
+  };
+
   sandbox.openTab = async (url: string, opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<Page> => {
     if (disposed) throw new Error("openTab: 서버가 끝나는 중이라 탭을 열 수 없음");
     const more = extraWait(opts, "openTab"); // 잘못된 값이면 탭을 열기 전에 알린다
+    await gateOpenUrl(url);
     const wait = openWait(opts);
     const backToFront = () => {
       log("고른 창이 닫혀서 맨 앞 창으로 돌아갑니다");
@@ -291,6 +307,7 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
   sandbox.openAiWindow = async (url: string = "about:blank", opts: { width?: number; height?: number; waitUntil?: WaitUntil; timeout?: number } = {}): Promise<Page> => {
     if (disposed) throw new Error("openAiWindow: 서버가 끝나는 중이라 창을 열 수 없음");
     const more = extraWait(opts, "openAiWindow");
+    await gateOpenUrl(url);
     const wait = openWait(opts);
     const explicit = opts?.width !== undefined || opts?.height !== undefined;
     const width = opts?.width ?? 1280;

@@ -56,6 +56,21 @@ export function hostOf(url: string): string {
   }
 }
 
+/**
+ * 이 주소로 가는 일이 「웹 이동」이 아닌가 — 주소로 읽히는데 http: · https: · about:blank 가 아니면(javascript: · data: · file: · blob: …) true.
+ * 그런 주소는 이동이 아니라 코드 실행 · 파일 열기일 수 있어 관문이 evaluate(알 수 없음)로 묻는다. 주소로 못 읽는 글은 false(상대 주소 등).
+ */
+export function isNonWebDestination(url: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(String(url).trim());
+  } catch {
+    return false;
+  }
+  if (u.protocol === "http:" || u.protocol === "https:") return false;
+  return u.href !== "about:blank";
+}
+
 /** SAFARI_ATTRACTION_NO_PERMISSION_PROMPTS=1 이면 맥 허락 창이 뜰 수 있는 일(화면 기록 등)을 미리 확인하고 안 한다. */
 export function noPermissionPromptsFromEnv(env: NodeJS.ProcessEnv): boolean {
   return env.SAFARI_ATTRACTION_NO_PERMISSION_PROMPTS === "1";

@@ -32,9 +32,13 @@ struct SiteModesView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("저장하지 않은 사이트는 「묻고 하기」예요. 되돌릴 수 없어 보이는 일(결제 · 삭제 · 보내기 등)은 「다 허락」이어도 늘 물어요.")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("저장하지 않은 사이트는 「묻고 하기」예요. 되돌릴 수 없어 보이는 일(결제 · 삭제 · 보내기 등)은 「다 허락」이어도 늘 물어요.")
+                        Text("다 허락이면 코드 실행(evaluate)도 묻지 않아요 — 결제 · 삭제처럼 되돌릴 수 없어 보이는 낱말이 있으면 물어요.")
+                        Text("사이트는 주소가 똑같아야 해요 — coupang.com 과 www.coupang.com 은 서로 다른 사이트예요.")
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                     if entries.isEmpty {
                         Text("저장한 사이트가 없어요").font(.callout).foregroundStyle(.secondary).padding(.top, 4)
                     }

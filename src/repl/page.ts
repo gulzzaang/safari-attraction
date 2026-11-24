@@ -1,7 +1,7 @@
 import { SafariError, type SafariDriver } from "../driver/types.js";
 import { sameUrl } from "../driver/url.js";
-import { isReadOnlyExpression } from "../gate/classify.js";
-import { assertAllowed, buildElementRequest, clipTarget, hostOf, type ActionGate, type ElementDesc, type GateAction } from "../gate/gate.js";
+import { isIrreversibleText, isReadOnlyExpression } from "../gate/classify.js";
+import { assertAllowed, buildElementRequest, clipTarget, hostOf, isNonWebDestination, type ActionGate, type ElementDesc, type GateAction } from "../gate/gate.js";
 import {
   buildActionSource,
   buildEvalSource,
@@ -158,7 +158,9 @@ export class Page {
       } catch {
         // 주소로 못 읽으면 받은 글 그대로 묻는다
       }
-      await this.askGate("goto", dest, "", false, dest);
+      // javascript: · data: · file: · blob: 같은 주소는 이동이 아니라 코드 실행 · 파일 열기일 수 있다 — evaluate(알 수 없음)로 묻는다.
+      if (isNonWebDestination(dest)) await this.askGate("evaluate", clipTarget(dest), "", null);
+      else await this.askGate("goto", dest, "", false, dest);
     }
     await this.act("goto", { url }, nav);
     if (nav.replaced) await this.afterNav(nav); // 같은 문서 안 이동(#해시만 바뀜)이면 기다릴 새 문서가 없다
@@ -215,7 +217,8 @@ export class Page {
   async evaluate<T = unknown>(fn: string | ((arg: any) => T), arg?: unknown): Promise<Awaited<T>> {
     const src = evalSource(fn);
     // 페이지를 바꿀 수 있는 식만 묻는다(읽기 전용으로 읽히는 식은 안 묻는다). 문법 오류는 묻기 전에 위에서 이미 알렸다.
-    if (this.opts.gate && !isReadOnlyExpression(src)) await this.askGate("evaluate", clipTarget(src), "", null);
+    // 결제 · 삭제 같은 낱말이 든 식은 되돌릴 수 없어 보이는 일로 알린다(다 허락인 사이트에서도 카드가 뜬다). 그 밖에는 알 수 없음(null).
+    if (this.opts.gate && !isReadOnlyExpression(src)) await this.askGate("evaluate", clipTarget(src), "", isIrreversibleText(src) ? true : null);
     return this.runEvaluate<T>(src, arg);
   }
 

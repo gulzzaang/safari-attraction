@@ -283,6 +283,23 @@ describe("REPL 세부", () => {
       expect(JSON.stringify(asked)).not.toContain("비밀 본문"); // 본문은 관문에 가지 않는다
       await ss.dispose();
     });
+    test("openTab · openAiWindow 도 웹 주소가 아닌 곳(javascript: 등)은 evaluate 로 묻고, 웹 주소 · about:blank 는 묻지 않는다", async () => {
+      const { asked, ss } = gatedSession();
+      await ss.run('await openTab("http://a/"); await openTab("about:blank"); await openAiWindow("https://b/")');
+      expect(asked).toHaveLength(0);
+      await ss.run('await openTab("javascript:alert(1)")');
+      await ss.run('await openAiWindow("data:text/html,x")');
+      expect(asked.map((r) => [r.action, r.irreversible])).toEqual([["evaluate", null], ["evaluate", null]]);
+      expect(asked[0]!.target).toBe("javascript:alert(1)");
+      await ss.dispose();
+    });
+    test("거절된 javascript: openTab 은 탭을 열지 않는다", async () => {
+      const { dd, ss } = gatedSession(false);
+      const r = await ss.run('await openTab("javascript:alert(1)")');
+      expect(r.errorCode).toBe("ACTION_DENIED");
+      expect(dd.calls.openTab).toHaveLength(0);
+      await ss.dispose();
+    });
     test("GET · HEAD · 메서드 없음은 안 묻는다(안쪽 evaluate 도 다시 묻지 않는다)", async () => {
       const { asked, ss } = gatedSession();
       await ss.run('await openTab("http://a/")');

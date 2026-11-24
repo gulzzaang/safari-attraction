@@ -572,6 +572,42 @@ describe('Page 의 동작 관문(gate)', () => {
     expect(asked[1]!.target).toHaveLength(120);
   });
 
+  test('결제 · 삭제 낱말이 든 evaluate 식은 irreversible true, 그 밖의 바꾸는 식은 null', async () => {
+    const { page, asked } = gated();
+    await page.evaluate("document.querySelector('form').submit()");
+    await page.evaluate("document.querySelector('.cart').remove()");
+    await page.evaluate("document.querySelector('b').click()");
+    expect(asked.map((r) => r.irreversible)).toEqual([true, true, null]);
+  });
+
+  test('javascript: · data: · file: · blob: 로 가는 goto 는 이동이 아니라 evaluate(irreversible null)로 묻는다', async () => {
+    for (const dest of ['javascript:alert(1)', 'data:text/html,<b>x</b>', 'file:///etc/hosts', 'blob:https://shop.example.com/abc', 'JavaScript:void(0)', 'about:preferences']) {
+      const { page, asked, calls } = gated();
+      await page.goto(dest);
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toMatchObject({ action: 'evaluate', host: 'shop.example.com', value: '', irreversible: null });
+      expect(asked[0]!.target.toLowerCase().startsWith(dest.slice(0, 20).toLowerCase())).toBe(true);
+      expect(calls).toContain('runJs:goto');
+    }
+    const long = 'javascript:' + 'x'.repeat(300);
+    const g = gated();
+    await g.page.goto(long);
+    expect(g.asked[0]!.target).toHaveLength(120);
+    const denied = gated({ allow: false, reason: '막음' });
+    await expect(denied.page.goto('javascript:alert(1)')).rejects.toMatchObject({ code: 'ACTION_DENIED' });
+    expect(denied.calls).not.toContain('runJs:goto');
+  });
+
+  test('http · https · about:blank 로 가는 goto 는 그대로 이동(goto)으로 묻는다', async () => {
+    for (const dest of ['http://a.example.org/x', 'https://a.example.org/x', 'about:blank', '/relative/path']) {
+      const { page, asked } = gated();
+      await page.goto(dest);
+      expect(asked).toHaveLength(1);
+      expect(asked[0]!.action).toBe('goto');
+      expect(asked[0]!.irreversible).toBe(false);
+    }
+  });
+
   test('거절된 evaluate 는 ACTION_DENIED 이고 페이지 글을 돌리지 않는다', async () => {
     const { page, calls } = gated({ allow: false });
     await expect(page.evaluate("document.body.remove()")).rejects.toMatchObject({ code: 'ACTION_DENIED' });
