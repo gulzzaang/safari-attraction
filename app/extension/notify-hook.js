@@ -132,7 +132,12 @@
           if (options && typeof options === "object") {
             try { body = options.body; } catch (_) { body = ""; }
           }
-          post(title, body);
+          // Promise 를 돌려주면 이행(실제로 알림 표시)됐을 때만 알리고, 권한 거부 등 거절은 버린다.
+          if (result && typeof result.then === "function") {
+            result.then(function () { post(title, body); }, function () { /* 거절된 알림은 보내지 않음 */ });
+          } else {
+            post(title, body);
+          }
         } catch (_) { /* 삼킨다 */ }
         return result;
       };

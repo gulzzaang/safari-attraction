@@ -88,3 +88,12 @@ test("background: 목록이 비면 /alert 를 보내지 않는다", async () => 
   await tick();
   assert.deepEqual(empty.fetches.map((f) => f.url), ["http://127.0.0.1:51000/alert-hosts"]);
 });
+
+test("background: 비-http(s) 주소에서 온 알림은 msg.host 로 폴백하지 않고 버린다", async () => {
+  const b = boot();
+  for (const url of ["file:///tmp/a.html", "about:blank", "safari-web-extension://example.com/x.html"]) {
+    b.sendAlert({ t: "alert", host: "example.com", kind: "notification", title: "가짜", body: "" }, { id: "me", url });
+  }
+  await tick();
+  assert.deepEqual(b.fetches, []);
+});

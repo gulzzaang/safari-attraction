@@ -68,8 +68,10 @@
   // ── 사이트 알림(content script → 여기 → 앱) ────────────────────────────────
   ext.runtime.onMessage.addListener((msg, sender) => {
     if (!fromSelf(sender) || !msg || msg.t !== "alert") return false;
-    // 호스트는 보낸 탭의 주소에서 다시 읽는다(없을 때만 메시지의 것).
-    const senderHost = lib.hostFromUrl(sender.url || (sender.tab && sender.tab.url) || "");
+    // 호스트는 보낸 탭의 http(s) 주소에서 다시 읽는다(주소가 아예 없을 때만 메시지의 것; 비-http 주소는 버림).
+    const senderUrl = sender.url || (sender.tab && sender.tab.url) || "";
+    const senderHost = lib.hostFromUrl(senderUrl);
+    if (senderUrl && !senderHost) return false;
     const payload = lib.alertPayload(msg, senderHost);
     if (payload) alerts.forward(payload).catch(() => { /* 조용히 버림 */ });
     return false;

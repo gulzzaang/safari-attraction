@@ -133,6 +133,7 @@ test("showNotification 은 원래 것을 같은 this · 인자로 부르고 그 
   assert.equal(f.state.shown[0].options, opts);
   assert.deepEqual(f.posted.map((x) => x.data), [{ __safariAttractionAlert: 1, title: "서비스 워커 알림", body: "푸시 글" }]);
   await assert.rejects(reg.showNotification("거절"), /No permission/);
+  assert.equal(f.posted.length, 1); // 거절된 showNotification 은 알리지 않는다
   assert.throws(() => f.win.ServiceWorkerRegistration.prototype.showNotification.call({}, "x"), /Illegal invocation/);
   assert.equal(f.win.ServiceWorkerRegistration.prototype.showNotification.name, "showNotification");
 });

@@ -94,8 +94,14 @@ test("background 로 온 알림 다듬기: 종류 두 가지만, 호스트는 �
   assert.equal(big.title.length, 1000);
   assert.equal(big.body, "");
   assert.equal(L.hostFromUrl("https://Mail.Example.com:8443/x?y#z"), "mail.example.com");
+  assert.equal(L.hostFromUrl("http://example.com/"), "example.com");
+  assert.equal(L.hostFromUrl("safari-web-extension://example.com/panel.html"), "");
+  assert.equal(L.hostFromUrl("file:///tmp/a.html"), "");
+  assert.equal(L.hostFromUrl("about:blank"), "");
   assert.equal(L.hostFromUrl("not a url"), "");
   assert.equal(L.hostFromUrl(undefined), "");
+  assert.equal(L.normalizeHost(".example.com"), "");
+  assert.equal(L.normalizeHost("a..example.com"), "");
 });
 
 // ── background 의 보내기(지켜볼 사이트만) ─────────────────────────────────────
@@ -152,6 +158,10 @@ test("목록은 5분 기억 — 5분이 지나면 다음 알림 때 새로 받�
   t.tick(60_000);
   await t.f.forward(ALERT);
   assert.deepEqual(t.calls.map((c) => c.path), ["/alert-hosts", "/alert", "/alert", "/alert-hosts", "/alert"]);
+  // 시계가 뒤로 가면 캐시에 갇히지 않고 다시 묻는다
+  t.tick(-120_000);
+  await t.f.forward(ALERT);
+  assert.deepEqual(t.calls.map((c) => c.path), ["/alert-hosts", "/alert", "/alert", "/alert-hosts", "/alert", "/alert-hosts", "/alert"]);
 });
 
 test("목록을 못 받으면(앱 꺼짐 · 연결 실패 · 403 · 깨진 답) 빈 목록으로 보고 1분 뒤 다시", async () => {

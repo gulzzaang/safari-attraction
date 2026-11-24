@@ -63,13 +63,17 @@
   function normalizeHost(value) {
     if (typeof value !== "string") return "";
     const h = value.trim().toLowerCase().replace(/\.+$/, "");
-    if (!h || h.length > 253 || !/^[a-z0-9._-]+$/.test(h)) return "";
+    if (!h || h.length > 253 || h.startsWith(".") || h.includes("..") || !/^[a-z0-9._-]+$/.test(h)) return "";
     return h;
   }
 
   function hostFromUrl(url) {
     if (typeof url !== "string" || !url) return "";
-    try { return normalizeHost(new URL(url).hostname); } catch (_) { return ""; }
+    try {
+      const u = new URL(url);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return "";
+      return normalizeHost(u.hostname);
+    } catch (_) { return ""; }
   }
 
   /** 알림 호스트 `h` 가 목록의 `x` 와 같거나 `.x` 로 끝날 때(하위 도메인)만. */
@@ -106,25 +110,33 @@
   function createAlertForwarder(deps) {
     const clock = typeof deps.now === "function" ? deps.now : () => Date.now();
     let hosts = [];
-    let validUntil = -Infinity;
+    let fetchedAt = null;
+    let ttlMs = 0;
     let inFlight = null;
 
     async function fetchHosts() {
+      let res = null;
       try {
-        const res = await deps.request("/alert-hosts", { method: "GET" });
-        if (!res || !res.ok) throw new Error("목록 실패");
+        res = await deps.request("/alert-hosts", { method: "GET" });
+        if (!res || !res.ok) {
+          try { if (res && res.body && typeof res.body.cancel === "function") await res.body.cancel(); } catch (_) { /* 무시 */ }
+          throw new Error("목록 실패");
+        }
         const body = await res.json();
         if (!body || !Array.isArray(body.hosts)) throw new Error("목록 모양");
         hosts = body.hosts.map(normalizeHost).filter(Boolean);
-        validUntil = clock() + HOSTS_TTL_MS;
+        fetchedAt = clock();
+        ttlMs = HOSTS_TTL_MS;
       } catch (_) {
         hosts = [];
-        validUntil = clock() + HOSTS_RETRY_MS;
+        fetchedAt = clock();
+        ttlMs = HOSTS_RETRY_MS;
       }
     }
 
     async function watchedHosts() {
-      if (clock() < validUntil) return hosts;
+      const now = clock();
+      if (fetchedAt !== null && now >= fetchedAt && now - fetchedAt < ttlMs) return hosts;
       if (!inFlight) inFlight = fetchHosts().finally(() => { inFlight = null; });
       await inFlight;
       return hosts;
