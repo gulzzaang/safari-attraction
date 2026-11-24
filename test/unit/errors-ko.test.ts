@@ -28,7 +28,7 @@ describe("toKorean(오류 → 한국어 안내)", () => {
   });
 
   test("사람 없이 도는 일의 안내: 사파리 꺼짐 · 새 창 금지", () => {
-    expect(toKorean(new SafariError("SAFARI_NOT_RUNNING", "원문"))).toContain("사람 없이 도는 일은 사파리를 켜지 않아요");
+    expect(toKorean(new SafariError("SAFARI_NOT_RUNNING", "원문"))).toContain("사람 없이 도는 일에서는 사파리를 켜지 않고");
     expect(toKorean(new SafariError("NOT_ALLOWED", "원문"))).toContain("사람 없이 도는 일");
   });
 

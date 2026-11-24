@@ -86,9 +86,9 @@ const errorText = (e: unknown): string => {
 export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGuide[]; gate?: ActionGate | null; noPermissionPrompts?: boolean; unattended?: boolean } = {}): ReplSession {
   const guides = opts.guides ?? GUIDES;
   // 동작 관문(없으면 null — 아무것도 묻지 않는다)과 허락 창 없는 모드. 모든 Page 가 같은 것을 쓴다.
-  const pageOpts: PageOptions = { gate: opts.gate ?? null, noPermissionPrompts: opts.noPermissionPrompts === true };
-  // 사람 없음 모드(SAFARI_ATTRACTION_UNATTENDED): 관문이 있으면 새 탭 · fetch 를 전부 묻고, 새 창(openAiWindow)은 열지 않는다.
+  // 사람 없음 모드(SAFARI_ATTRACTION_UNATTENDED): 관문이 있으면 새 탭 · 이동 · fetch 를 전부 묻고, 새 창(openAiWindow)은 열지 않는다.
   const unattended = opts.unattended === true;
+  const pageOpts: PageOptions = { gate: opts.gate ?? null, noPermissionPrompts: opts.noPermissionPrompts === true, unattended };
   const store = new SnapshotStore();
   const owned = new Set<string>();
   // 호출마다 출력 칸(slot)을 따로 둔다. AsyncLocalStorage 가 칸을 await · 타이머 · 드라이버 호출을 건너 따라가므로,
@@ -277,7 +277,17 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
   sandbox.openTab = async (url: string, opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<Page> => {
     if (disposed) throw new Error("openTab: 서버가 끝나는 중이라 탭을 열 수 없음");
     const more = extraWait(opts, "openTab"); // 잘못된 값이면 탭을 열기 전에 알린다
-    await gateOpenUrl(url, true);
+    // 사람 없음이면 한 번만 글로 바꾸고 서버가 푼 절대 주소로 묻고 그 값을 그대로 연다(묻는 주소와 여는 주소가 어긋나지 않게).
+    const urlStr = String(url);
+    let openUrl = urlStr;
+    if (unattended) {
+      try {
+        openUrl = new URL(urlStr).href;
+      } catch {
+        // 주소로 못 읽으면 받은 글 그대로(호스트는 빈 글 — 앱이 거절한다)
+      }
+    }
+    await gateOpenUrl(openUrl, true);
     const wait = openWait(opts);
     const backToFront = () => {
       log("고른 창이 닫혀서 맨 앞 창으로 돌아갑니다");
@@ -290,12 +300,12 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
     }
     let opened;
     try {
-      opened = await driver.openTab(String(url), { windowId: target, loadBudgetMs: wait.hostBudget });
+      opened = await driver.openTab(openUrl, { windowId: target, loadBudgetMs: wait.hostBudget });
     } catch (e) {
       // 창을 확인한 뒤 열기 전에 닫혔다면 맨 앞 창에 다시 연다. 창이 살아 있으면 원래 오류 그대로.
       if (target === undefined || (await windowExists(target))) throw e;
       backToFront();
-      opened = await driver.openTab(String(url), { loadBudgetMs: wait.hostBudget });
+      opened = await driver.openTab(openUrl, { loadBudgetMs: wait.hostBudget });
     }
     const { tab, frontAppChanged } = opened;
     if (frontAppChanged) log("주의: 사파리가 맨 앞으로 나왔어요");
@@ -470,21 +480,25 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
     }
     // GET · HEAD 가 아니면 페이지에 요청을 바꾸는 일이라 관문에 한 번 묻는다. 안쪽 evaluate 는 관문을 거치지 않는 길로 부른다(같은 일을 두 번 묻지 않게).
     // 사람 없음이면 GET · HEAD 도 묻고(irreversible false), 호스트는 가려는 주소의 것이다(읽은 글의 속임수로 값을 남의 주소에 내보내는 길을 막으려고).
+    // 주소는 글로 한 번만 바꾸고, 사람 없음이면 서버가 푼 절대 주소로 묻고 그 값을 그대로 보낸다(페이지 안에서 <base> 로 다시 풀려 다른 호스트로 나가지 않게).
+    const urlStr = String(url);
     const method = String(clean.method ?? "GET").trim() || "GET";
     const irreversible = fetchIsIrreversible(method);
+    let sendUrl = urlStr;
     if (unattended) {
-      let dest = String(url);
       try {
-        dest = new URL(dest, pg.url() || undefined).href;
+        sendUrl = new URL(urlStr, pg.url() || undefined).href;
       } catch {
         // 주소로 못 읽으면 받은 글 그대로(호스트는 빈 글 — 앱이 거절한다)
       }
-      await pg[GATE_ASK]("fetch", `${method.toUpperCase()} ${String(url)}`, "", irreversible, dest);
-    } else if (irreversible) await pg[GATE_ASK]("fetch", `${method.toUpperCase()} ${String(url)}`, "", true);
+      await pg[GATE_ASK]("fetch", `${method.toUpperCase()} ${urlStr}`, "", irreversible, sendUrl);
+    } else if (irreversible) await pg[GATE_ASK]("fetch", `${method.toUpperCase()} ${urlStr}`, "", true);
     const r = await pg[RAW_EVALUATE]<{ status: number; ok: boolean; statusText: string; url: string; headers: Record<string, string>; body: string }>(IN_PAGE_FETCH, {
-      url: String(url),
+      url: sendUrl,
       init: clean,
     });
+    // 사람 없음: 따라간 리다이렉트가 묻지 않은 호스트에 닿았으면 본문을 돌려주지 않는다.
+    if (unattended && opts.gate && r.url && hostOf(r.url) !== hostOf(sendUrl)) throw new SafariError("NOT_ALLOWED", "허락한 사이트 밖으로 넘어간 응답이라 돌려주지 않아요");
     return {
       status: r.status,
       ok: r.ok,

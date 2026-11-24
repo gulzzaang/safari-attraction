@@ -39,6 +39,8 @@ export interface PageOptions {
   gate?: ActionGate | null;
   /** 맥 허락 창이 뜰 수 있는 일(화면 찍기)을 미리 확인하고, 권한이 없으면 부르지 않는다. */
   noPermissionPrompts?: boolean;
+  /** 사람 없음 모드: 관문이 있으면 goto 는 서버가 푼 절대 주소로 묻고 그 값을 그대로 보낸다. */
+  unattended?: boolean;
 }
 
 /** 이동 하나의 기다림: 무엇을 기다리고(wait) 얼마 안에(timeoutMs, 시작 t0 부터) 끝내야 하는지. 호스트가 기다리는 시간도 남은 만큼으로 맞춘다. */
@@ -151,8 +153,9 @@ export class Page {
    */
   async goto(url: string, opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<void> {
     const nav = new NavWait(parseWaitUntil(opts?.waitUntil, "goto", true), normTimeout(opts?.timeout, LOAD_TIMEOUT_MS));
+    let sendUrl: string | undefined;
     if (this.opts.gate) {
-      let dest = String(url);
+      let dest = String(url); // 글로 바꾸는 건 한 번만
       try {
         dest = new URL(dest, this.currentUrl() || undefined).href;
       } catch {
@@ -161,8 +164,10 @@ export class Page {
       // javascript: · data: · file: · blob: 같은 주소는 이동이 아니라 코드 실행 · 파일 열기일 수 있다 — evaluate(알 수 없음)로 묻는다.
       if (isNonWebDestination(dest)) await this.askGate("evaluate", clipTarget(dest), "", null);
       else await this.askGate("goto", dest, "", false, dest);
+      // 사람 없음이면 물은 주소를 그대로 보낸다(페이지 안에서 <base> 나 낡은 주소로 다시 풀려 다른 호스트로 가지 않게).
+      if (this.opts.unattended) sendUrl = dest;
     }
-    await this.act("goto", { url }, nav);
+    await this.act("goto", { url: sendUrl ?? url }, nav);
     if (nav.replaced) await this.afterNav(nav); // 같은 문서 안 이동(#해시만 바뀜)이면 기다릴 새 문서가 없다
   }
 

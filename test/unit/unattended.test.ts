@@ -6,8 +6,11 @@ import { unattendedFromEnv, type ActionGate, type GateRequest } from "../../src/
 import { createReplSession, type ReplSession } from "../../src/repl/context.js";
 import { createFakeDriver } from "../helpers/fake-driver.js";
 
+/** 보낸 주소를 그대로 답의 최종 주소로 돌려주는 가짜 페이지(redirectTo 가 있으면 그리로 넘어간 것처럼). */
+const sentUrl = (src: string): string => /"url":("(?:[^"\\]|\\.)*")/.exec(src)?.[1] ? JSON.parse(/"url":("(?:[^"\\]|\\.)*")/.exec(src)![1]!) : "";
+let redirectTo: string | undefined;
 const fetchAnswer = (_k: string, src: string) =>
-  src.includes("__saA") ? JSON.stringify({ ok: true, r: { s: JSON.stringify({ status: 200, ok: true, statusText: "OK", url: "http://a/api", headers: {}, body: "{}" }) } }) : "";
+  src.includes("__saA") ? JSON.stringify({ ok: true, r: { s: JSON.stringify({ status: 200, ok: true, statusText: "OK", url: redirectTo ?? sentUrl(src), headers: {}, body: "{}" }) } }) : "";
 
 function make(opts: { unattended?: boolean; gate?: boolean; allow?: boolean | ((r: GateRequest) => boolean) } = {}) {
   const asked: GateRequest[] = [];
@@ -21,6 +24,7 @@ function make(opts: { unattended?: boolean; gate?: boolean; allow?: boolean | ((
 
 let live: ReplSession | undefined;
 afterEach(async () => {
+  redirectTo = undefined;
   await live?.dispose();
   live = undefined;
 });
@@ -123,6 +127,73 @@ describe("사람 없음 모드 + 관문", () => {
     const r = await ss.run('await fetch("/api")');
     expect(r.errorCode).toBe("ACTION_DENIED");
     expect(dd.calls.runJs.some((c) => c.source.includes("__saA"))).toBe(false);
+  });
+  test("묻는 주소와 보내는 주소가 같다 — 상대 주소는 서버가 풀어 절대 주소로 보낸다(페이지의 <base> 와 무관)", async () => {
+    const { asked, dd, ss } = make({ unattended: true });
+    live = ss;
+    await ss.run('await openTab("http://a/dir/")');
+    asked.length = 0;
+    await ss.run('await fetch("x?q=1")');
+    const sent = dd.calls.runJs.filter((c) => c.source.includes("__saA")).map((c) => sentUrl(c.source));
+    expect(asked[0]!.url).toBe("http://a/dir/x?q=1");
+    expect(sent).toEqual(["http://a/dir/x?q=1"]);
+  });
+  test("fetch 주소가 부를 때마다 다른 값을 돌려주는 객체여도 한 값만 쓴다", async () => {
+    const { asked, dd, ss } = make({ unattended: true });
+    live = ss;
+    await ss.run('await openTab("http://a/")');
+    asked.length = 0;
+    await ss.run('let n = 0; await fetch({ toString() { n++; return n === 1 ? "http://ok.example/p" : "http://evil.example/p"; } })');
+    const sent = dd.calls.runJs.filter((c) => c.source.includes("__saA")).map((c) => sentUrl(c.source));
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ host: "ok.example", url: "http://ok.example/p" });
+    expect(sent).toEqual(["http://ok.example/p"]);
+  });
+  test("openTab 주소가 부를 때마다 달라지는 객체여도 물은 주소 그대로 연다", async () => {
+    const { asked, dd, ss } = make({ unattended: true });
+    live = ss;
+    await ss.run('let n = 0; await openTab({ toString() { n++; return n === 1 ? "http://ok.example/p" : "http://evil.example/p"; } })');
+    expect(asked[0]).toMatchObject({ action: "open", host: "ok.example", url: "http://ok.example/p" });
+    expect(dd.calls.openTab.map((c) => c.url)).toEqual(["http://ok.example/p"]);
+  });
+  test("goto 도 물은 절대 주소를 그대로 보낸다(상대 주소 · 달라지는 객체)", async () => {
+    const { asked, dd, ss } = make({ unattended: true });
+    live = ss;
+    await ss.run('await openTab("http://a/dir/")');
+    asked.length = 0;
+    await ss.run('await page.goto("y")');
+    await ss.run('let n = 0; await page.goto({ toString() { n++; return n === 1 ? "http://ok.example/p" : "http://evil.example/p"; } })');
+    const sent = dd.calls.runJs.filter((c) => c.source.includes('"op":"goto"')).map((c) => sentUrl(c.source));
+    expect(asked.map((r) => [r.action, r.url])).toEqual([["goto", "http://a/dir/y"], ["goto", "http://ok.example/p"]]);
+    expect(sent).toEqual(["http://a/dir/y", "http://ok.example/p"]);
+  });
+  test("사람 없음이 아니면 goto 는 원문을 그대로 보낸다(지금과 같음)", async () => {
+    const { dd, ss } = make({});
+    live = ss;
+    await ss.run('await openTab("http://a/dir/")');
+    await ss.run('await page.goto("y")');
+    expect(dd.calls.runJs.filter((c) => c.source.includes('"op":"goto"')).map((c) => sentUrl(c.source))).toEqual(["y"]);
+  });
+  test("리다이렉트로 묻지 않은 호스트에 닿은 응답은 돌려주지 않는다(NOT_ALLOWED)", async () => {
+    const { ss } = make({ unattended: true });
+    live = ss;
+    await ss.run('await openTab("http://a/")');
+    redirectTo = "http://evil.example/landing";
+    const r = await ss.run('const r = await fetch("/api"); console.log(await r.text())');
+    expect(r.errorCode).toBe("NOT_ALLOWED");
+    expect(r.error).toContain("허락한 사이트 밖으로 넘어간 응답이라 돌려주지 않아요");
+    expect(r.output ?? "").not.toContain("{}");
+    redirectTo = undefined;
+    expect((await ss.run('const r = await fetch("/api"); console.log(r.status)')).output).toBe("200"); // 같은 호스트면 돌려준다
+  });
+  test("reload · 뒤로 가기의 호스트는 지금 페이지의 것", async () => {
+    const { asked, ss } = make({ unattended: true });
+    live = ss;
+    await ss.run('await openTab("http://a/p")');
+    asked.length = 0;
+    await ss.run("await page.reload()");
+    await ss.run("await page.goBack()");
+    expect(asked.map((r) => [r.action, r.host, r.url])).toEqual([["nav", "a", "http://a/p"], ["nav", "a", "http://a/p"]]);
   });
   test("goto · reload · 뒤로 가기도 묻는다(호스트는 가려는 곳 · 지금 곳)", async () => {
     const { asked, ss } = make({ unattended: true });
