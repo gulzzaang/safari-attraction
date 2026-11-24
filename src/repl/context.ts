@@ -422,7 +422,14 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
     aiWindowId = n;
   };
 
-  sandbox.listBrowserTabs = (): Promise<TabInfo[]> => driver.listTabs();
+  // 사람 없이 도는 일은 사용자가 열어 둔 탭(로그인된 메일 · 은행 등)을 읽거나 붙잡지 않는다.
+  const noUserTabs = (): void => {
+    if (unattended) throw new SafariError("NOT_ALLOWED", "사람 없이 도는 일은 사용자 탭을 읽거나 붙잡지 않아요");
+  };
+  sandbox.listBrowserTabs = async (): Promise<TabInfo[]> => {
+    noUserTabs();
+    return driver.listTabs();
+  };
 
   const attach = (key: string): Page => {
     const existing = tabs.find((t) => t.key === key);
@@ -433,6 +440,7 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
   };
 
   sandbox.attachBrowserTab = async (key: string): Promise<Page> => {
+    noUserTabs();
     // 목록에서 본 탭 키면 그대로 쓴다(표시는 처음 쓸 때 레지스트리가 적는다).
     const all = await driver.listTabs();
     if (!all.some((t) => t.key === key)) throw new Error(`attachBrowserTab: 탭 ${key} 을(를) 찾을 수 없음(listBrowserTabs() 로 키를 확인하세요)`);
@@ -440,6 +448,7 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
   };
 
   sandbox.attachActiveBrowserTab = async (): Promise<Page> => {
+    noUserTabs();
     const windows = await driver.listWindows();
     const front = windows[0]; // 맨 앞 창부터 온다
     if (!front) throw new SafariError("SAFARI_ERROR", "열린 사파리 창이 없음");

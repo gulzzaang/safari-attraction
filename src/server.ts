@@ -184,6 +184,8 @@ function attachWithinCap(base: string, extras: Extra[]): string {
   return text;
 }
 
+const UNATTENDED_NO_WRITE = "사람 없이 도는 일은 기억 · 프로젝트를 바꾸지 않아요";
+
 export interface SafariServer {
   server: McpServer;
   /** 우리가 연 탭을 닫고 기억을 비운다(드라이버 자체는 닫지 않는다). */
@@ -201,18 +203,19 @@ export interface SafariServer {
 /**
  * home · now · memoryTimeoutMs · guides 는 시험에서 임시 폴더 · 가짜 시계 · 가짜 안내서를 끼우는 자리다. 기본은 resolveHome() 의 기억 폴더와 진짜 시계.
  */
-export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHome; homeKind?: HomeKind; now?: () => Date; memoryTimeoutMs?: number; guides?: SiteGuide[] } = {}): SafariServer {
+export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHome; homeKind?: HomeKind; now?: () => Date; memoryTimeoutMs?: number; guides?: SiteGuide[]; /** 사람 없음 모드(시험에서 끼움). 기본은 SAFARI_ATTRACTION_UNATTENDED 환경값. */ unattended?: boolean } = {}): SafariServer {
   const resolved = opts.home ? undefined : resolveHome();
   const home = opts.home ?? new MemoryHome(resolved!.dir);
   // status 에 보일 위치 종류. 시험이 폴더를 직접 끼우면 환경 변수로 정한 것과 같은 취급.
   const homeKind: HomeKind = opts.homeKind ?? resolved?.kind ?? "env";
   const now = opts.now ?? (() => new Date());
+  const unattended = opts.unattended ?? unattendedFromEnv(process.env);
   const activity = new ActivityLog(home, now);
   const index = new MemoryIndex(home, { now });
   const memoryTimeoutMs = opts.memoryTimeoutMs ?? MEMORY_TIMEOUT_MS;
   const guides = opts.guides ?? GUIDES;
   // 앱이 환경값으로 알려 준 동작 관문(없으면 null — 지금과 똑같이 바로 돈다)과 허락 창 없는 모드.
-  const session = createReplSession(driver, { guides, gate: createGateFromEnv(process.env), noPermissionPrompts: noPermissionPromptsFromEnv(process.env), unattended: unattendedFromEnv(process.env) });
+  const session = createReplSession(driver, { guides, gate: createGateFromEnv(process.env), noPermissionPrompts: noPermissionPromptsFromEnv(process.env), unattended });
   const server = new McpServer({ name: "safari-attraction", version: VERSION });
 
   server.registerTool(
@@ -267,6 +270,8 @@ export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHo
       },
     },
     async (input) => {
+      // 사람 없이 도는 일은 읽기만 한다 — 속임 글이 기억에 심어지지 않게.
+      if (unattended && input.action !== "search" && input.action !== "read") return { isError: true, content: [{ type: "text" as const, text: `NOT_ALLOWED: ${UNATTENDED_NO_WRITE}` }] };
       const r = await runMemoryTool({ home, index, activity, now }, input);
       const content = [{ type: "text" as const, text: r.text }];
       return r.isError ? { isError: true, content } : { content };
@@ -288,6 +293,7 @@ export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHo
       },
     },
     async (input) => {
+      if (unattended && input.action !== "list") return { isError: true, content: [{ type: "text" as const, text: `NOT_ALLOWED: ${UNATTENDED_NO_WRITE}` }] };
       const r = await runProjectTool(
         {
           home,
