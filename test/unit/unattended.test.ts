@@ -174,17 +174,45 @@ describe("사람 없음 모드 + 관문", () => {
     await ss.run('await page.goto("y")');
     expect(dd.calls.runJs.filter((c) => c.source.includes('"op":"goto"')).map((c) => sentUrl(c.source))).toEqual(["y"]);
   });
-  test("리다이렉트로 묻지 않은 호스트에 닿은 응답은 돌려주지 않는다(NOT_ALLOWED)", async () => {
-    const { ss } = make({ unattended: true });
+  test("리다이렉트가 남의 호스트에 닿으면 최종 주소로 한 번 더 묻고, 거절이면 NOT_ALLOWED(본문 안 나옴)", async () => {
+    const { asked, ss } = make({ unattended: true, allow: (r) => r.host !== "evil.example" });
     live = ss;
     await ss.run('await openTab("http://a/")');
+    asked.length = 0;
     redirectTo = "http://evil.example/landing";
     const r = await ss.run('const r = await fetch("/api"); console.log(await r.text())');
     expect(r.errorCode).toBe("NOT_ALLOWED");
     expect(r.error).toContain("허락한 사이트 밖으로 넘어간 응답이라 돌려주지 않아요");
     expect(r.output ?? "").not.toContain("{}");
-    redirectTo = undefined;
-    expect((await ss.run('const r = await fetch("/api"); console.log(r.status)')).output).toBe("200"); // 같은 호스트면 돌려준다
+    expect(asked.map((q) => [q.action, q.host, q.url, q.irreversible])).toEqual([
+      ["fetch", "a", "http://a/api", false],
+      ["fetch", "evil.example", "http://evil.example/landing", false],
+    ]);
+  });
+  test("같은 사이트 안 리다이렉트(앱이 허락)는 최종 주소로 한 번 더 묻고 본문을 돌려준다", async () => {
+    const { asked, ss } = make({ unattended: true, allow: (r) => r.host === "a" || r.host === "www.a" });
+    live = ss;
+    await ss.run('await openTab("http://a/")');
+    asked.length = 0;
+    redirectTo = "http://www.a/api";
+    const r = await ss.run('const r = await fetch("/api"); console.log(r.status, await r.text())');
+    expect(r.error).toBeUndefined();
+    expect(r.output).toBe("200 {}");
+    expect(asked.map((q) => [q.host, q.url])).toEqual([["a", "http://a/api"], ["www.a", "http://www.a/api"]]);
+  });
+  test("같은 호스트 응답은 다시 묻지 않는다 · 관문이 없으면 리다이렉트 검사도 없다", async () => {
+    const same = make({ unattended: true });
+    live = same.ss;
+    await same.ss.run('await openTab("http://a/")');
+    same.asked.length = 0;
+    expect((await same.ss.run('await fetch("/api")')).error).toBeUndefined();
+    expect(same.asked).toHaveLength(1);
+    await same.ss.dispose();
+    const noGate = make({ unattended: true, gate: false });
+    live = noGate.ss;
+    await noGate.ss.run('await openTab("http://a/")');
+    redirectTo = "http://evil.example/landing";
+    expect((await noGate.ss.run('const r = await fetch("/api"); console.log(r.status)')).output).toBe("200");
   });
   test("reload · 뒤로 가기의 호스트는 지금 페이지의 것", async () => {
     const { asked, ss } = make({ unattended: true });

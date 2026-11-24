@@ -497,8 +497,15 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
       url: sendUrl,
       init: clean,
     });
-    // 사람 없음: 따라간 리다이렉트가 묻지 않은 호스트에 닿았으면 본문을 돌려주지 않는다.
-    if (unattended && opts.gate && r.url && hostOf(r.url) !== hostOf(sendUrl)) throw new SafariError("NOT_ALLOWED", "허락한 사이트 밖으로 넘어간 응답이라 돌려주지 않아요");
+    // 사람 없음: 따라간 리다이렉트가 묻지 않은 호스트에 닿았으면 그 최종 주소로 관문에 한 번 더 묻고(앱이 같은 사이트 안인지 판정), 거절이면 본문을 돌려주지 않는다.
+    if (unattended && opts.gate && r.url && hostOf(r.url) !== hostOf(sendUrl)) {
+      try {
+        await pg[GATE_ASK]("fetch", `${method.toUpperCase()} ${r.url}`, "", false, r.url);
+      } catch (e) {
+        if (e instanceof SafariError && e.code === "ACTION_DENIED") throw new SafariError("NOT_ALLOWED", "허락한 사이트 밖으로 넘어간 응답이라 돌려주지 않아요");
+        throw e;
+      }
+    }
     return {
       status: r.status,
       ok: r.ok,
