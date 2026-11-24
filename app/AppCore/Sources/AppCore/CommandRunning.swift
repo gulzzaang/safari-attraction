@@ -24,3 +24,21 @@ public protocol InteractiveRunning: Sendable {
 }
 
 extension ProcessRunner: InteractiveRunning {}
+
+/// 앱 전용 설정 폴더를 못 만들었을 때 — CLI 를 하나도 띄우지 않고(그러면 사용자 `~/.codex` · `~/.claude` 를 읽게 되므로) 한국어 이유만 돌려준다.
+public final class FolderBlockedRunner: CommandRunning, InteractiveRunning, @unchecked Sendable {
+    public let message: String
+    public init(reason: String) { message = "앱 전용 설정 폴더를 만들지 못했어요 — \(reason)" }
+
+    public func run(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
+                    onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+        .failed(message)
+    }
+    public func runInteractive(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
+                               initialLines: [String], onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+        .failed(message)
+    }
+    public func write(_ line: String) throws {}
+    public func closeInput() {}
+    public func stop() {}
+}

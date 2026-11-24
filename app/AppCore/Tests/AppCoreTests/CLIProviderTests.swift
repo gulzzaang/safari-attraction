@@ -54,7 +54,8 @@ final class CLIProviderTests: XCTestCase {
         let c = CLICommands.codexExec(prompt: "안녕 $(x)", modelID: "gpt-5.6-luna")
         XCTAssertEqual(c.executable, "codex")
         XCTAssertEqual(c.arguments, ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only",
-                                     "-c", "cli_auth_credentials_store=file", "-m", "gpt-5.6-luna", "안녕 $(x)"])
+                                     "-c", "cli_auth_credentials_store=file"]
+                       + CLIManagedConfig.codexDisabledFeatures.flatMap { ["--disable", $0] } + ["-m", "gpt-5.6-luna", "안녕 $(x)"])
         XCTAssertEqual(CLICommands.codexExec(prompt: "q", modelID: nil).arguments.last, "q")
         XCTAssertFalse(CLICommands.codexExec(prompt: "q", modelID: nil).arguments.contains("-m"))
     }

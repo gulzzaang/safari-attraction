@@ -87,7 +87,7 @@ final class CLIStatusServiceTests: XCTestCase {
         XCTAssertEqual(s.login, .loggedOut)
         XCTAssertTrue(s.isLoggedOut)
         XCTAssertEqual(s.models, [])
-        XCTAssertEqual(s.modelsNote, "설정에서 로그인 뒤 다시 불러와요")
+        XCTAssertEqual(s.modelsNote, "모델 목록을 못 불러왔어요 — 로그인했는지, codex 가 최신인지 확인해 주세요(지금은 기본 모델로 물어요)")
         XCTAssertEqual(r.commands, ["codex login status"], "로그인 안 됐으면 모델 목록 · 앱서버를 부르지 않는다")
     }
 

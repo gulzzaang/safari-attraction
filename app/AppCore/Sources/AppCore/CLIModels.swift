@@ -16,7 +16,19 @@ public enum CLIModels {
         ModelChoice(id: "fable", label: "Fable"),
     ]
 
-    public static let codexLoadFailureNote = "설정에서 로그인 뒤 다시 불러와요"
+    public static let codexLoadFailureNote = "모델 목록을 못 불러왔어요 — 로그인했는지, codex 가 최신인지 확인해 주세요(지금은 기본 모델로 물어요)"
+    public static let agyLoadFailureNote = "모델 목록을 못 불러왔어요 — 로그인했는지 확인해 주세요(지금은 기본 모델로 물어요)"
+    public static let opencodeLoadFailureNote = "모델 목록을 못 불러왔어요 — 로그인했는지 확인하고 새로 고침을 눌러 주세요(지금은 opencode 기본 모델로 물어요)"
+
+    /// 모델 목록을 못 불렀을 때 CLI 마다 보일 한 줄.
+    public static func loadFailureNote(for kind: ModelKind) -> String {
+        switch kind {
+        case .chatgpt: return codexLoadFailureNote
+        case .gemini: return agyLoadFailureNote
+        case .opencode: return opencodeLoadFailureNote
+        case .claude: return ""
+        }
+    }
 
     /// 모델 id 로 명령줄에 넣어도 되는 글자만(옵션으로 읽히거나 이상한 글자가 끼지 않게). 설정 파일을 손으로 고친 경우 대비.
     public static func isSafeID(_ id: String) -> Bool {

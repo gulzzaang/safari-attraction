@@ -32,9 +32,12 @@ public enum ModelKind: String, CaseIterable, Sendable, Equatable {
         case .claude: return "앱 전용 클로드 로그인이 필요해요 — 터미널에서 한 번: CLAUDE_CONFIG_DIR=\"$HOME/Library/Application Support/SafariAttractionApp/claude-config\" claude auth login"
         case .gemini: return "설정에서 제미나이 로그인을 해 주세요"
         case .chatgpt: return "설정에서 ChatGPT 로그인을 해 주세요"
-        case .opencode: return "설정에서 opencode 로그인을 해 주세요 — 무료 모델은 로그인 없이도 돼요"
+        case .opencode: return "설정에서 opencode 로그인을 해 주세요 — 로그인 없이 쓰는 무료 사용량은 금방 막혀요"
         }
     }
+
+    /// opencode 가 `provider.free-limit` · 「Free usage limit reached」 로 거절했을 때.
+    public static let opencodeFreeLimitMessage = "opencode 무료 사용량이 다 찼어요 — 설정에서 opencode 로그인을 해 주세요"
 
     public var notFoundMessage: String {
         "\(cliName) 를 찾지 못했어요 — 설치돼 있는지, 터미널에서 \(cliName) 가 실행되는지 확인해 주세요"

@@ -141,7 +141,7 @@ struct ChatView: View {
             ForEach(vm.availableModels, id: \.self) { kind in
                 cliChip(kind, selected: vm.model == kind, dimmed: vm.loginState(for: kind) == .loggedOut) {
                     // 바꿨으면 그 CLI 의 상태 · 목록 · 남은 양을 읽는다(5분 안에 읽었으면 다시 읽지 않는다 — 메인 밖).
-                    if vm.selectCLI(kind), let status = vm.status { Task { await status.refresh(kind, force: false) } }
+                    if vm.selectCLI(kind) { Task { await vm.refreshStatus(for: kind) } }
                 }
             }
         }
@@ -167,7 +167,7 @@ struct ChatView: View {
         HStack(spacing: 8) {
             let choices = vm.modelChoices(for: kind)
             if choices.isEmpty {
-                Text(kind == .opencode ? "모델 목록은 설정 창에서 새로 고치면 보여요" : CLIModels.codexLoadFailureNote).font(.caption).foregroundStyle(.secondary)
+                Text(CLIModels.loadFailureNote(for: kind)).font(.caption).foregroundStyle(.secondary)
             } else {
                 Picker("모델", selection: Binding(get: { vm.selectedModelID(for: kind) ?? "" },
                                                  set: { vm.setModelID($0, for: kind) })) {

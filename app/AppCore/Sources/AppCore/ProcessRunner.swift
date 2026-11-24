@@ -201,8 +201,11 @@ public final class ProcessRunner: @unchecked Sendable {
 
     /// 자식 CLI 에 넘길 환경 — 이 앱을 띄운 Claude 의 내부 값(`CLAUDECODE` · `CLAUDE_CODE_*`)은 빼고 나머지는 그대로, PATH 는 지정값.
     /// `overrides` 는 사용자 환경에 같은 이름이 있어도 덮어쓴다.
+    /// 자식에게 넘기지 않는 키 값 환경변수 — 구독 대신 키로 과금되는 일을 막는다(사용자 환경에 있어도 뺀다).
+    public static let strippedAPIKeyVariables: Set<String> = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"]
+
     public static func childEnvironment(base: [String: String], path: String, overrides: [String: String] = [:]) -> [String: String] {
-        var env = base.filter { $0.key != "CLAUDECODE" && !$0.key.hasPrefix("CLAUDE_CODE_") }
+        var env = base.filter { $0.key != "CLAUDECODE" && !$0.key.hasPrefix("CLAUDE_CODE_") && !strippedAPIKeyVariables.contains($0.key) }
         for (k, v) in overrides { env[k] = v }
         env["PATH"] = path
         return env

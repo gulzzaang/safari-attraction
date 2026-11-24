@@ -4,6 +4,9 @@ import XCTest
 // 계획 10 조각 5 — 제미나이(agy) · opencode. 출력 모양은 조사 문서(cli-research.md 3 · 4장)의 예시를 고정 글로 쓴다(실제 CLI 는 부르지 않는다).
 
 /// agy `-p … --output-format stream-json` 한 번의 출력(조사 문서의 모양).
+/// 가짜 실행기 대본의 열쇠 — 실행 파일 + 인자를 공백으로 이은 글.
+func cmdKey(_ c: CLICommands.Command) -> String { ([c.executable] + c.arguments).joined(separator: " ") }
+
 let agySample = """
 {"event":"init","conversation_id":"c1","init":{"model":"gemini-3.8-flash-medium","cwd":"/tmp","tools":["a","b"]}}
 {"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"안녕"}}
@@ -127,11 +130,11 @@ final class CLIEnvironmentFourTests: XCTestCase {
 
     // MARK: 명령줄
     func testAgyCommands() {
-        XCTAssertEqual(CLICommands.agyModels.arguments, ["models"])
-        XCTAssertEqual(CLICommands.agyUsage.arguments, ["-p", "/usage", "--output-format", "stream-json"])
+        XCTAssertEqual(CLICommands.agyModels.arguments, ["models", "--settings", CLICommands.agySettingsJSON(webSearch: false)])
+        XCTAssertEqual(CLICommands.agyUsage.arguments, ["-p", "/usage", "--output-format", "stream-json", "--settings", CLICommands.agySettingsJSON(webSearch: false)])
         XCTAssertEqual(CLICommands.agyLogin.arguments, [])
         XCTAssertEqual(CLICommands.agyAsk(prompt: "질문", modelID: "gemini-4-neon-low").arguments,
-                       ["-p", "질문", "--model", "gemini-4-neon-low", "--output-format", "stream-json"])
+                       ["-p", "질문", "--model", "gemini-4-neon-low", "--output-format", "stream-json", "--settings", CLICommands.agySettingsJSON(webSearch: false)])
         XCTAssertEqual(CLICommands.agyAsk(prompt: "q", modelID: nil).arguments[3], "gemini-3.8-flash-medium")
         XCTAssertEqual(CLICommands.agyAsk(prompt: "q", modelID: "--evil").arguments[3], "gemini-3.8-flash-medium", "안전하지 않은 id 는 기본으로")
     }
@@ -156,7 +159,7 @@ final class CLIEnvironmentFourTests: XCTestCase {
     func testCommandBuilderRoutesNewKinds() {
         let g = CommandBuilder.build(AskRequest(question: "q", model: .gemini, modelID: "gemini-4-neon-low"), workDir: support)
         XCTAssertEqual(g.executable, "agy")
-        XCTAssertEqual(g.arguments, ["-p", "q", "--model", "gemini-4-neon-low", "--output-format", "stream-json"])
+        XCTAssertEqual(g.arguments, ["-p", "q", "--model", "gemini-4-neon-low", "--output-format", "stream-json", "--settings", CLICommands.agySettingsJSON(webSearch: false)])
         let w = CommandBuilder.build(AskRequest(question: "q", model: .gemini, webSearch: true), workDir: support)
         XCTAssertEqual(w.arguments[1], "웹에서 찾아서 답해 줘. 출처 주소도 적어 줘.\n\nq")
         let o = CommandBuilder.build(AskRequest(question: "-x", model: .opencode, modelID: "opencode/a-free"), workDir: support)
@@ -347,12 +350,12 @@ final class OpenCodeStreamParserTests: XCTestCase {
         XCTAssertEqual(run(#"{"type":"error","error":{"name":"APIError","data":{"message":"model not found"}}}"# + "\n"), [.error("model not found")])
         XCTAssertEqual(run(#"{"type":"error","error":{"name":"UnknownError"}}"# + "\n"), [.error("UnknownError")])
         XCTAssertEqual(run(#"{"type":"error","error":{"data":{"message":"Authentication failed for provider"}}}"# + "\n"),
-                       [.error("설정에서 opencode 로그인을 해 주세요 — 무료 모델은 로그인 없이도 돼요")])
+                       [.error("설정에서 opencode 로그인을 해 주세요 — 로그인 없이 쓰는 무료 사용량은 금방 막혀요")])
     }
 
     func testBrokenLinesAndLoginTextOutsideJson() {
         XCTAssertEqual(run("{깨진\n" + opencodeSample).first, .text("안녕하세요"))
-        XCTAssertEqual(run("Not logged in\n"), [.error("설정에서 opencode 로그인을 해 주세요 — 무료 모델은 로그인 없이도 돼요")])
+        XCTAssertEqual(run("Not logged in\n"), [.error("설정에서 opencode 로그인을 해 주세요 — 로그인 없이 쓰는 무료 사용량은 금방 막혀요")])
         XCTAssertEqual(run("그냥 안내 글\n"), [])
     }
 
@@ -443,7 +446,7 @@ final class CLIStatusParsersFourTests: XCTestCase {
     }
 
     func testOpenCodeStatus() {
-        XCTAssertEqual(CLIAccountParser.parseOpenCodeStatus(output: "No authenticated integrations\n", exitCode: 0), .freeOnly)
+        XCTAssertEqual(CLIAccountParser.parseOpenCodeStatus(output: "No authenticated integrations\n", exitCode: 0), .loggedOut)
         XCTAssertEqual(CLIAccountParser.parseOpenCodeStatus(output: "OpenCode Console  Personal  stored\n", exitCode: 0), .loggedIn(CLIAccountInfo()))
         XCTAssertEqual(CLIAccountParser.parseOpenCodeStatus(output: "", exitCode: 3), .unknown)
         let s = CLIAccountParser.parseOpenCodeStatus(output: "OpenCode Console  Personal  stored  sk-SECRETVALUE\n", exitCode: 0)
@@ -531,44 +534,44 @@ final class CLIStatusServiceFourTests: XCTestCase {
 
     func testAgyLoggedInGivesModelsAndUsage() async {
         let r = ScriptedCLIRunner()
-        r.reply("agy models", stdout: agyModelsOut)
-        r.reply("agy -p /usage --output-format stream-json", stdout: agyUsageSample)
+        r.reply(cmdKey(CLICommands.agyModels), stdout: agyModelsOut)
+        r.reply(cmdKey(CLICommands.agyUsage), stdout: agyUsageSample)
         let svc = make(r)
         await svc.refresh(.gemini, force: true)
         let s = svc.state(.gemini)
         XCTAssertTrue(s.isLoggedIn)
         XCTAssertEqual(s.models.map(\.id), ["gemini-3.8-flash-low", "gemini-3.8-flash-medium", "claude-opus-5-5-high"])
         XCTAssertEqual(s.usage?.windows.count, 4)
-        XCTAssertEqual(r.commands, ["agy models", "agy -p /usage --output-format stream-json"], "agy 만 불렀다")
+        XCTAssertEqual(r.commands, [cmdKey(CLICommands.agyModels), cmdKey(CLICommands.agyUsage)], "agy 만 불렀다")
     }
 
     func testAgyLoggedOutSkipsUsage() async {
         let r = ScriptedCLIRunner()
-        r.reply("agy models", outcome: .finished(code: 1), stderr: "Error: Please sign in to view available models.\n")
+        r.reply(cmdKey(CLICommands.agyModels), outcome: .finished(code: 1), stderr: "Error: Please sign in to view available models.\n")
         let svc = make(r)
         await svc.refresh(.gemini, force: true)
         let s = svc.state(.gemini)
         XCTAssertEqual(s.login, .loggedOut)
         XCTAssertEqual(s.models, [])
         XCTAssertEqual(s.usageNote, "로그인하면 보여요")
-        XCTAssertEqual(r.commands, ["agy models"])
+        XCTAssertEqual(r.commands, [cmdKey(CLICommands.agyModels)])
     }
 
     func testAgyTimeoutAndEmptyListAreUnknownNotLoggedOut() async {
         let r = ScriptedCLIRunner()
-        r.reply("agy models", outcome: .timedOut)
+        r.reply(cmdKey(CLICommands.agyModels), outcome: .timedOut)
         let svc = make(r)
         await svc.refresh(.gemini, force: true)
         XCTAssertEqual(svc.state(.gemini).login, .unknown)
         XCTAssertTrue(svc.state(.gemini).loginNote?.hasPrefix("알 수 없음") == true)
         let r2 = ScriptedCLIRunner()
-        r2.reply("agy models", stdout: "")
+        r2.reply(cmdKey(CLICommands.agyModels), stdout: "")
         let svc2 = make(r2)
         await svc2.refresh(.gemini, force: true)
         XCTAssertEqual(svc2.state(.gemini).login, .unknown)
     }
 
-    func testOpenCodeWithoutLoginStillListsFreeModelsAndIsNotLoggedOut() async {
+    func testOpenCodeWithoutLoginIsLoggedOutButStillReadsModelsAndUsage() async {
         let r = ScriptedCLIRunner()
         r.reply("opencode auth list --standalone", stdout: "No authenticated integrations\n")
         r.reply("opencode models --standalone", stdout: "opencode/a-free\nopencode/b-free\n")
@@ -576,8 +579,8 @@ final class CLIStatusServiceFourTests: XCTestCase {
         let svc = make(r)
         await svc.refresh(.opencode, force: true)
         let s = svc.state(.opencode)
-        XCTAssertEqual(s.login, .freeOnly)
-        XCTAssertFalse(s.isLoggedOut, "칩을 흐리게 하거나 막지 않는다")
+        XCTAssertEqual(s.login, .loggedOut, "로그인 없이는 무료 사용량이 금방 막힌다 — 다른 CLI 처럼 로그인 안 됨")
+        XCTAssertTrue(s.isLoggedOut)
         XCTAssertEqual(s.models.map(\.id), ["opencode/a-free", "opencode/b-free"])
         XCTAssertEqual(s.usage?.rawLines, ["최근 7일 이 맥에서 쓴 양 — 토큰 900 · 비용 $0.00"])
         XCTAssertEqual(s.usageNote, "구독 남은 양은 알 수 없어요 — 이 맥에서 쓴 양만")
@@ -690,12 +693,12 @@ final class ChatViewModelFourTests: XCTestCase {
         XCTAssertNil(vm.messages.last?.error)
         XCTAssertEqual(vm.lastUsageText, "쓴 양 128 토큰 (입력 120 · 출력 8)")
         XCTAssertEqual(runner.calls[0].executable, "agy")
-        XCTAssertEqual(runner.calls[0].arguments, ["-p", "안녕", "--model", "gemini-3.8-flash-medium", "--output-format", "stream-json"])
+        XCTAssertEqual(runner.calls[0].arguments, ["-p", "안녕", "--model", "gemini-3.8-flash-medium", "--output-format", "stream-json", "--settings", CLICommands.agySettingsJSON(webSearch: false)])
     }
 
     func testAgyUsesTheChosenModelFromTheLoadedList() async {
-        let st = await status({ $0.reply("agy models", stdout: "gemini-4-neon-low\tN\ngemini-3.8-flash-medium\tM\n")
-                                $0.reply("agy -p /usage --output-format stream-json", stdout: agyUsageSample) }, refresh: [.gemini])
+        let st = await status({ $0.reply(cmdKey(CLICommands.agyModels), stdout: "gemini-4-neon-low\tN\ngemini-3.8-flash-medium\tM\n")
+                                $0.reply(cmdKey(CLICommands.agyUsage), stdout: agyUsageSample) }, refresh: [.gemini])
         let store = AppSettingsStore(directory: dir)
         let vm = makeVM(status: st, settings: store); vm.model = .gemini
         XCTAssertEqual(vm.selectedModelID(for: .gemini), "gemini-3.8-flash-medium", "기본")
@@ -715,7 +718,7 @@ final class ChatViewModelFourTests: XCTestCase {
     }
 
     func testAgyKnownLoggedOutNeverStartsAProcess() async {
-        let st = await status({ $0.reply("agy models", outcome: .finished(code: 1), stderr: "Please sign in") }, refresh: [.gemini])
+        let st = await status({ $0.reply(cmdKey(CLICommands.agyModels), outcome: .finished(code: 1), stderr: "Please sign in") }, refresh: [.gemini])
         let vm = makeVM(status: st)
         XCTAssertFalse(vm.selectCLI(.gemini), "로그인 안 된 걸 알면 고르지 못한다")
         XCTAssertEqual(vm.hint, "제미나이(agy) 로그인이 안 돼 있어요 — 메뉴 막대 「설정…」 에서 로그인해 주세요")
@@ -726,11 +729,11 @@ final class ChatViewModelFourTests: XCTestCase {
     }
 
     func testOpenCodeAnswerWithFreeModelDefaultAndNotice() async {
-        let st = await status({ $0.reply("opencode auth list --standalone", stdout: "No authenticated integrations\n")
+        let st = await status({ $0.reply("opencode auth list --standalone", stdout: "OpenCode Console  Personal  stored\n")
                                 $0.reply("opencode models --standalone", stdout: "opencode/pro\nopencode/x-free\n")
                                 $0.reply("opencode stats --json --days 7 --standalone", stdout: #"{"totalCost":0,"totalTokens":5}"#) }, refresh: [.opencode])
         let vm = makeVM(status: st)
-        XCTAssertTrue(vm.selectCLI(.opencode), "로그인 안 함(무료 모델만)이어도 고를 수 있다")
+        XCTAssertTrue(vm.selectCLI(.opencode))
         XCTAssertEqual(vm.model, .opencode)
         XCTAssertEqual(vm.selectedModelID(for: .opencode), "opencode/x-free")
         runner.setScript { _, emit in emit(.stdout(Data(opencodeSample.utf8))); return .finished(code: 0) }
@@ -743,6 +746,15 @@ final class ChatViewModelFourTests: XCTestCase {
         XCTAssertEqual(vm.remainingUsageText, "최근 7일 이 맥에서 쓴 양 — 토큰 5 · 비용 $0.00")
     }
 
+    func testOpenCodeLoggedOutCannotBeSelectedLikeOtherCLIs() async {
+        let st = await status({ $0.reply("opencode auth list --standalone", stdout: "No authenticated integrations\n")
+                                $0.reply("opencode models --standalone", stdout: "opencode/x-free\n")
+                                $0.reply("opencode stats --json --days 7 --standalone", stdout: #"{"totalCost":0}"#) }, refresh: [.opencode])
+        let vm = makeVM(status: st)
+        XCTAssertFalse(vm.selectCLI(.opencode))
+        XCTAssertEqual(vm.hint, "opencode 로그인이 안 돼 있어요 — 메뉴 막대 「설정…」 에서 로그인해 주세요")
+    }
+
     func testOpenCodeWithoutLoadedListRunsWithoutDashM() async {
         runner.setScript { _, emit in emit(.stdout(Data(opencodeSample.utf8))); return .finished(code: 0) }
         let vm = makeVM(); vm.model = .opencode
@@ -752,8 +764,8 @@ final class ChatViewModelFourTests: XCTestCase {
     }
 
     func testRemainingUsageLineFollowsTheChosenCLIAndModelGroup() async {
-        let st = await status({ $0.reply("agy models", stdout: "gemini-3.8-flash-medium\tM\nclaude-opus-5-5-high\tO\n")
-                                $0.reply("agy -p /usage --output-format stream-json", stdout: agyUsageSample)
+        let st = await status({ $0.reply(cmdKey(CLICommands.agyModels), stdout: "gemini-3.8-flash-medium\tM\nclaude-opus-5-5-high\tO\n")
+                                $0.reply(cmdKey(CLICommands.agyUsage), stdout: agyUsageSample)
                                 $0.reply("claude auth status", stdout: #"{"loggedIn":true}"#)
                                 $0.reply("claude -p /usage --output-format json", stdout: #"{"result":"Current session: 8% used\nCurrent week (all models): 48% used"}"#) },
                               refresh: [.gemini, .claude])

@@ -16,8 +16,9 @@ public enum TerminalLogin {
     /// `#!/bin/zsh -l` + export 환경(이름순) + (명령 전에 보일 안내) + 명령 + 안내 한 줄.
     /// `beforeNote` 는 명령 **앞에** 찍는다 — agy 처럼 명령이 창을 통째로 차지하는 TUI 면 뒤에 찍은 안내는 늦게 보이기 때문이다.
     public static func script(environment: [String: String], command: [String], beforeNote: String? = nil,
-                              closingNote: String = "끝나면 이 창을 닫으세요.") -> String {
+                              closingNote: String = "끝나면 이 창을 닫으세요.", unsetVariables: [String] = []) -> String {
         var lines = ["#!/bin/zsh -l", "# 사파리-어트랙션 — 앱 전용 로그인(이 창에서 한 번만 하면 돼요)"]
+        if !unsetVariables.isEmpty { lines.append("unset " + unsetVariables.sorted().joined(separator: " ")) }   // 로그인 셸이 키를 내보냈어도 구독 로그인이 키로 바뀌지 않게
         for key in environment.keys.sorted() {
             lines.append("export \(key)=\(shellQuote(environment[key] ?? ""))")
         }
@@ -33,11 +34,12 @@ public enum TerminalLogin {
 
     /// 파일을 쓰고 실행 권한(0755)을 준다. 같은 이름이 있으면 바꾼다. 돌려주는 것은 파일 주소.
     public static func writeCommandFile(directory: URL, name: String, environment: [String: String], command: [String],
-                                        beforeNote: String? = nil, closingNote: String = "끝나면 이 창을 닫으세요.") throws -> URL {
+                                        beforeNote: String? = nil, closingNote: String = "끝나면 이 창을 닫으세요.",
+                                        unsetVariables: [String] = []) throws -> URL {
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(name)
-        try script(environment: environment, command: command, beforeNote: beforeNote, closingNote: closingNote)
+        try script(environment: environment, command: command, beforeNote: beforeNote, closingNote: closingNote, unsetVariables: unsetVariables)
             .write(to: url, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         return url
@@ -49,7 +51,9 @@ public enum TerminalLogin {
 
     /// 이 CLI 의 로그인 `.command` 파일을 지원 폴더에 쓴다(클로드 `claude auth login --claudeai` · codex `codex login --device-auth` ·
     /// 제미나이 `agy`(인자 없이, TUI) · opencode `opencode auth login --standalone`). 환경은 그 CLI 의 앱 전용 환경 그대로(`agyMode` 는 agy 에만).
-    public static func writeLoginFile(kind: ModelKind, support: URL, agyMode: AgyMode = .isolated) throws -> URL {
+    /// `loginPath`(앱이 읽은 로그인 PATH)가 있으면 `.command` 가 그 PATH 를 export 하고, 찾은 절대 경로로 부른다(터미널 PATH 가 달라도 같은 CLI 가 돈다).
+    /// 키 값 환경변수는 `unset` 한다.
+    public static func writeLoginFile(kind: ModelKind, support: URL, agyMode: AgyMode = .isolated, loginPath: String? = nil) throws -> URL {
         let cmd: CLICommands.Command
         let name: String
         var before: String?
@@ -63,9 +67,15 @@ public enum TerminalLogin {
         case .opencode: cmd = CLICommands.opencodeLogin; name = "login-opencode.command"
         }
         try CLIEnvironment.prepareDirectories(support: support)
-        return try writeCommandFile(directory: support, name: name,
-                                    environment: CLIEnvironment.environment(for: kind, support: support, agyMode: agyMode),
-                                    command: [cmd.executable] + cmd.arguments, beforeNote: before, closingNote: closing)
+        var env = CLIEnvironment.environment(for: kind, support: support, agyMode: agyMode)
+        var executable = cmd.executable
+        if let loginPath, !loginPath.isEmpty {
+            env["PATH"] = loginPath
+            if let found = ProcessRunner.resolve(cmd.executable, path: loginPath) { executable = found }
+        }
+        return try writeCommandFile(directory: support, name: name, environment: env,
+                                    command: [executable] + cmd.arguments, beforeNote: before, closingNote: closing,
+                                    unsetVariables: ProcessRunner.strippedAPIKeyVariables.sorted())
     }
 }
 

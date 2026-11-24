@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotKeys: HotKeys?
     private var settingsWindow: SettingsWindowController?
     private var deviceLogin: CodexDeviceLogin?
+    private var status: CLIStatusService?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 로그인 셸 PATH(`zsh -lic` 는 사용자 rc 를 실행한다)는 앱이 켜질 때 읽지 않는다 —
@@ -21,29 +22,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 사용자 클로드 설정이 문서 폴더 경로를 가리켜 맥이 문서 폴더 허락 창을 띄우는 것을 피한다.
         // 같은 값을 묻기 · 일 맡기기(루틴은 일 맡기기 세션을 탄다)가 함께 쓴다.
         // 클로드(`CLAUDE_CONFIG_DIR`)와 codex(`CODEX_HOME`)의 앱 전용 폴더 — 같은 사전을 모든 실행기가 쓴다(폴더는 0700).
-        let support = (try? AppPaths.supportDirectory()) ?? FileManager.default.temporaryDirectory
-        let claudeEnv: [String: String]
-        do {
-            try CLIEnvironment.prepareDirectories(support: support)
-            claudeEnv = CLIEnvironment.overrides(support: support)
-        } catch {
-            claudeEnv = [:]
-            NSLog("사파리-어트랙션: 앱 전용 CLI 설정 폴더를 만들지 못했어요 — 사용자 CLI 설정을 그대로 써요")
+        // 덮어쓰기 사전(경로 글자)은 폴더를 만들었든 못 만들었든 **늘** 적용한다. 폴더를 못 만들었으면 CLI 를 하나도 띄우지 않는다
+        // (안 그러면 사용자 `~/.codex` · `~/.claude` 로 되돌아가 문서 폴더 허락 창이 뜰 수 있다) — 묻기 · 상태 · 로그인이 이유를 한국어로 알린다.
+        var folderError: String?
+        let support: URL
+        do { support = try AppPaths.supportDirectory() } catch {
+            support = FileManager.default.temporaryDirectory
+            folderError = error.localizedDescription
         }
+        if folderError == nil {
+            do { try CLIEnvironment.prepareDirectories(support: support) } catch { folderError = error.localizedDescription }
+        }
+        if let folderError { NSLog("사파리-어트랙션: 앱 전용 CLI 설정 폴더를 만들지 못했어요 — CLI 를 띄우지 않아요 (%@)", folderError) }
+        let blocked: FolderBlockedRunner? = folderError.map { FolderBlockedRunner(reason: $0) }
+        let claudeEnv = CLIEnvironment.overrides(support: support)
         let cliEnv = claudeEnv
         let settings = AppSettingsStore(directory: support)
         // 제미나이(agy)의 `HOME` · opencode 의 `XDG_*` 는 그 CLI 를 띄울 때만 — 클로드 · codex 의 자식에는 안 샌다.
         // agy 방식(앱 전용 폴더 / 내 설정 함께 쓰기)은 설정에서 바뀔 수 있어서 띄우는 순간마다 읽는다.
-        let folderReady = !claudeEnv.isEmpty
         let executableEnv: @Sendable (String) -> [String: String] = { exe in
-            folderReady ? CLIEnvironment.executableEnvironment(executable: exe, support: support, agyMode: settings.current.agyMode) : [:]
+            CLIEnvironment.executableEnvironment(executable: exe, support: support, agyMode: settings.current.agyMode)
         }
         // 로그인 상태 · 모델 목록 · 남은 양은 읽는 일마다 새 실행기로(질문이 도는 중에도 부딪히지 않게). 앱을 켤 때는 읽지 않는다.
         let status = CLIStatusService(loginPath: { ShellPath.loginPath() },
-                                      runnerFactory: { ProcessRunner(environmentOverrides: cliEnv, executableEnvironment: executableEnv) })
-        let vm = ChatViewModel(runner: ProcessRunner(environmentOverrides: claudeEnv, executableEnvironment: executableEnv), bridge: bridge,
-                               loginPath: { ShellPath.loginPath() }, settings: settings, status: status)
-        let deviceLogin = CodexDeviceLogin(runner: ProcessRunner(environmentOverrides: cliEnv), loginPath: { ShellPath.loginPath() })
+                                      runnerFactory: { () -> any CLIRunner in
+                                          if let blocked { return blocked }
+                                          return ProcessRunner(environmentOverrides: cliEnv, executableEnvironment: executableEnv)
+                                      })
+        self.status = status
+        let askRunner: CommandRunning = blocked ?? ProcessRunner(environmentOverrides: claudeEnv, executableEnvironment: executableEnv)
+        let vm = ChatViewModel(runner: askRunner, bridge: bridge, loginPath: { ShellPath.loginPath() }, settings: settings, status: status)
+        let loginRunner: CommandRunning = blocked ?? ProcessRunner(environmentOverrides: cliEnv)
+        let deviceLogin = CodexDeviceLogin(runner: loginRunner, loginPath: { ShellPath.loginPath() })
         self.deviceLogin = deviceLogin
         settingsWindow = SettingsWindowController(status: status, login: deviceLogin, support: support, settings: settings)
         // 일 맡기기 — 서버 묶음은 앱 안(Resources/safari-attraction), 기억 · 사이트 허락 · 관문 소켓은 앱 지원 폴더.
@@ -54,7 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             memoryHome: support.appendingPathComponent("memory", isDirectory: true),
             siteModes: siteModes,
             gateFactory: { try GateServer(directory: try AppPaths.supportDirectory()) },
-            runnerFactory: { ProcessRunner(environmentOverrides: claudeEnv) },
+            runnerFactory: { () -> InteractiveRunning in
+                if let blocked { return blocked }
+                return ProcessRunner(environmentOverrides: claudeEnv)
+            },
             claudeModel: { [vm] in vm.selectedModelID(for: .claude) },   // 일 맡기기 명령줄의 --model(루틴은 늘 기본)
             loginPath: { ShellPath.loginPath() })
         // 자주 하는 일 · 루틴 — 저장소는 폴더당 인스턴스 하나(화면과 시계가 같은 것을 쓴다). 시계는 루틴이 하나라도 켜져 있을 때만 돈다.
@@ -154,6 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         viewModel?.shutdown()
         agent?.shutdown()
         settingsWindow?.shutdown()   // 도는 기기 코드 로그인을 멈춘다
+        status?.shutdown()           // 상태 · 목록 · 남은 양을 읽는 중인 CLI 도 멈춘다
         controller?.shutdown()
         hotKeys?.shutdown()
     }

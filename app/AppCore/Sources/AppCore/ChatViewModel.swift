@@ -123,6 +123,14 @@ public final class ChatViewModel {
         persist { $0.models[kind.rawValue] = id }
     }
 
+    /// 앱 전용 HOME 방식의 제미나이는 키체인 창이 뜰 수 있어서 자동으로 읽지 않는다(「로그인」 · 「새로 고침」 을 누를 때만).
+    public var agyAutoRead: Bool { (settings?.current.agyMode ?? .shared) == .shared }
+
+    /// 옆 창을 열 때 · CLI 칩을 바꿀 때 — 그 CLI 의 상태 · 목록 · 남은 양을 읽는다(5분 안이면 읽지 않음, 메인 밖).
+    public func refreshStatus(for kind: ModelKind) async {
+        await status?.refreshForPanel(selected: kind, agyAutoRead: agyAutoRead)
+    }
+
     /// 로그인 상태를 모르면 `.unknown`(막지 않는다).
     public func loginState(for kind: ModelKind) -> CLILoginState { status?.state(kind).login ?? .unknown }
 
@@ -318,6 +326,7 @@ public final class ChatViewModel {
         case .finished(let code): message = "codex 로그인 상태를 확인하지 못했어요(종료 코드 \(code)) — 설정에서 확인해 주세요"
         case .notFound: message = ModelKind.chatgpt.notFoundMessage
         case .stopped: return false
+        case .failed(let why) where why.hasPrefix("앱 전용 설정 폴더"): message = why
         case .timedOut, .failed: message = "codex 로그인 상태를 확인하지 못했어요 — 설정에서 확인해 주세요"
         }
         update(job.answerID) { $0.error = message }

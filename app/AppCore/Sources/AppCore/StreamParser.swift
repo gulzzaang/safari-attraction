@@ -176,6 +176,10 @@ public struct ModelOutputReader: Sendable {
     public mutating func finish(outcome: RunOutcome) -> [StreamEvent] {
         var events = track(finishStdout())
         if sawError { return events }
+        if model == .opencode, OpenCodeStreamParser.looksLikeFreeLimit(stderrText) {
+            events.append(.error(ModelKind.opencodeFreeLimitMessage))
+            return events
+        }
         if case .finished(let code) = outcome, code != 0 || !sawAnswer {
             let shortStdout = stdoutHead.count <= Self.shortStdoutLimit ? stdoutHead : ""
             if LoginDetector.looksLikeLoginNeeded(stderrText) || LoginDetector.looksLikeLoginNeeded(shortStdout) {

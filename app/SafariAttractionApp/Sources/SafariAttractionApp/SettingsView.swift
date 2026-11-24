@@ -33,7 +33,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
         NSApp.activate()
         window?.makeKeyAndOrderFront(nil)
-        Task { await status.refreshAll(force: false) }
+        // 앱 전용 HOME 방식의 제미나이는 `agy models` 가 키체인 창을 띄울 수 있어서 자동으로 읽지 않는다(새로 고침 · 로그인을 누를 때만).
+        let agyAutoRead = settings.current.agyMode == .shared
+        Task { await status.refreshAll(force: false, agyAutoRead: agyAutoRead) }
     }
 
     /// 창을 닫으면 도는 로그인을 멈춘다(기기 코드 로그인은 몇 분을 기다리므로).
@@ -61,11 +63,13 @@ struct SettingsView: View {
                 Text("구독 CLI").font(.title3.weight(.semibold))
                 ForEach(ModelKind.subscriptionCLIs, id: \.self) { kind in
                     CLIRowView(kind: kind, state: status.state(kind), login: login,
+                               unreadHint: kind == .gemini && agyMode == .isolated && status.state(kind).lastRefresh == nil
+                                   ? "앱 전용 폴더 방식은 키체인 창을 피하려고 열 때 자동으로 읽지 않아요 — [새로 고침] 이나 [로그인] 을 누르면 읽어요." : nil,
                                onLogin: { startLogin(kind) },
                                onRefresh: { Task { await status.refresh(kind, force: true) } })
                     if kind == .gemini { agySection }
                     if kind == .opencode {
-                        Text("로그인 없이도 무료 모델은 쓸 수 있어요. 구독 남은 양은 알려 주는 명령이 없어서 이 맥에서 쓴 양만 보여요.")
+                        Text("로그인 없이 쓰는 무료 사용량은 금방 막혀요 — opencode 는 로그인해서 쓰세요. 구독 남은 양은 알려 주는 명령이 없어서 이 맥에서 쓴 양만 보여요.")
                             .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     Divider()
@@ -145,13 +149,18 @@ struct SettingsView: View {
 
     /// 지원 폴더에 `.command` 파일을 쓰고 연다(Apple 이벤트 없이 `NSWorkspace.open`). 끝나면 창으로 돌아와 새로 고침.
     private func openTerminal(_ kind: ModelKind) {
-        do {
-            let url = try TerminalLogin.writeLoginFile(kind: kind, support: support, agyMode: agyMode)
-            NSWorkspace.shared.open(url)
-            terminalOpenedFor.insert(kind)
-            if notice == nil { notice = "터미널 창에서 로그인을 마치고, 이 창으로 돌아오면 상태를 새로 읽어요." }
-        } catch {
-            notice = "터미널 로그인 파일을 만들지 못했어요 — \(error.localizedDescription)"
+        let support = self.support, mode = agyMode
+        // 로그인 PATH 읽기는 로그인 셸을 돌려 몇 초 걸릴 수 있어서 메인 밖에서 — `.command` 가 그 PATH 와 찾은 절대 경로를 쓴다.
+        Task {
+            let path = await Task.detached(priority: .userInitiated) { ShellPath.loginPath() }.value
+            do {
+                let url = try TerminalLogin.writeLoginFile(kind: kind, support: support, agyMode: mode, loginPath: path)
+                NSWorkspace.shared.open(url)
+                terminalOpenedFor.insert(kind)
+                if notice == nil { notice = "터미널 창에서 로그인을 마치고, 이 창으로 돌아오면 상태를 새로 읽어요." }
+            } catch {
+                notice = "터미널 로그인 파일을 만들지 못했어요 — \(error.localizedDescription)"
+            }
         }
     }
 }
@@ -160,6 +169,7 @@ private struct CLIRowView: View {
     let kind: ModelKind
     let state: CLIState
     @Bindable var login: CodexDeviceLogin
+    var unreadHint: String?
     let onLogin: () -> Void
     let onRefresh: () -> Void
 
@@ -176,6 +186,7 @@ private struct CLIRowView: View {
             }
             Text(installText).font(.callout).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
             Text(loginText).font(.callout)
+            if let unreadHint { Text(unreadHint).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             if kind == .chatgpt { deviceLoginView }
             usageView
         }
@@ -190,8 +201,8 @@ private struct CLIRowView: View {
     private var loginText: String {
         switch state.login {
         case .unknown: return "로그인 상태: " + (state.loginNote ?? (state.installChecked ? "알 수 없음" : "아직 안 읽었어요"))
-        case .loggedOut: return "로그인 상태: 로그인이 안 돼 있어요"
-        case .freeOnly: return "로그인 상태: 로그인 안 함(무료 모델만)"
+        case .loggedOut:
+            return kind == .opencode ? "로그인 상태: 로그인 필요 — 로그인 없이 쓰는 무료 사용량은 금방 막혀요" : "로그인 상태: 로그인이 안 돼 있어요"
         case .loggedIn(let info): return "로그인 상태: " + info.summary
         }
     }

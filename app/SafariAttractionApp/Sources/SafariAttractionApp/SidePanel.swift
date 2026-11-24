@@ -104,10 +104,8 @@ final class SidePanelController {
         follower.setOpen(true)
         // 로그인 상태 · 모델 목록 · 남은 양은 옆 창을 열 때, **고른 CLI 만** 읽는다(5분 안에는 다시 읽지 않는다 — 메인 밖).
         // 쓰지 않는 CLI(제미나이 · opencode 는 읽는 것만으로도 프로세스를 띄운다)는 설정 창을 열 때 읽는다.
-        if let status = viewModel.status {
-            let selected = viewModel.model
-            Task { await status.refreshForPanel(selected: selected) }
-        }
+        let selected = viewModel.model
+        Task { [vm = viewModel] in await vm.refreshStatus(for: selected) }
     }
 
     func close() {

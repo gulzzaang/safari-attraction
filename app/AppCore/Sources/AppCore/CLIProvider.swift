@@ -89,10 +89,12 @@ public enum CLIEnvironment {
         var dirs = [claudeConfigDirectory(support: support), codexHomeDirectory(support: support), agyHomeDirectory(support: support),
                     opencodeXDGRoot(support: support)]
         dirs += opencodeXDGDirectories(support: support).values.sorted { $0.path < $1.path }
+        dirs.append(CLIManagedConfig.opencodeConfigDirectory(support: support))
         for dir in dirs {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
         }
+        try CLIManagedConfig.write(support: support)
     }
 
     /// 이 CLI 의 자식에 들어갈 환경 한 줄들(`.command` 파일 · 시험용).
@@ -129,21 +131,29 @@ public enum CLICommands {
     public static func codexExec(prompt: String, modelID: String?) -> Command {
         var args = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only",
                     "-c", "cli_auth_credentials_store=file"]
+        for feature in CLIManagedConfig.codexDisabledFeatures { args += ["--disable", feature] }   // 도구 끄기(config.toml 의 [features] 와 이중)
         if let id = modelID, CLIModels.isSafeID(id) { args += ["-m", id] }
         args.append(prompt)
         return ("codex", args)
     }
 
     // 제미나이(agy) — 로그인 상태는 전용 명령이 없어 `agy models` 로 본다(목록이 나오면 로그인됨).
-    public static let agyModels: Command = ("agy", ["models"])
-    public static let agyUsage: Command = ("agy", ["-p", "/usage", "--output-format", "stream-json"])
+    /// agy 의 도구 막기 — `--settings` 의 금지 규칙(파일 읽기 · 쓰기 · 명령 · 주소 읽기 · 실행 · MCP). 웹 검색을 켰을 때만 `read_url` 을 열어 검색 결과 페이지를 읽게 한다.
+    /// (박정욱 agy 로 확인: `--mode plan --sandbox` 로는 도구 목록이 그대로였고, 이 금지 규칙은 먹혔다.)
+    public static func agySettingsJSON(webSearch: Bool) -> String {
+        let denies = ["read_file(*)", "write_file(*)", "command(*)"] + (webSearch ? [] : ["read_url(*)"]) + ["execute_url(*)", "mcp(*)"]
+        return #"{"permissions":{"deny":["# + denies.map { "\"\($0)\"" }.joined(separator: ",") + "]}}"
+    }
+
+    public static let agyModels: Command = ("agy", ["models", "--settings", agySettingsJSON(webSearch: false)])
+    public static let agyUsage: Command = ("agy", ["-p", "/usage", "--output-format", "stream-json", "--settings", agySettingsJSON(webSearch: false)])
     /// 로그인은 터미널에서 `agy` 를 인자 없이(TUI).
     public static let agyLogin: Command = ("agy", [])
 
-    /// `agy -p "<질문>" --model <id> --output-format stream-json` — 질문은 `-p` 바로 뒤. `modelID` 가 비었거나 안전하지 않으면 기본 모델.
-    public static func agyAsk(prompt: String, modelID: String?) -> Command {
+    /// `agy -p "<질문>" --model <id> --output-format stream-json --settings <금지 규칙>` — 질문은 `-p` 바로 뒤. `modelID` 가 비었거나 안전하지 않으면 기본 모델.
+    public static func agyAsk(prompt: String, modelID: String?, webSearch: Bool = false) -> Command {
         let id = (modelID.flatMap { CLIModels.isSafeID($0) ? $0 : nil }) ?? CommandBuilder.geminiModel
-        return ("agy", ["-p", prompt, "--model", id, "--output-format", "stream-json"])
+        return ("agy", ["-p", prompt, "--model", id, "--output-format", "stream-json", "--settings", agySettingsJSON(webSearch: webSearch)])
     }
 
     // opencode — **모든 명령에 `--standalone`**(없으면 이 맥의 공용 상주 서버로 가서 앱 전용 폴더를 안 쓴다).

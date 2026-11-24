@@ -20,15 +20,14 @@ public enum CLILoginState: Equatable, Sendable {
     case unknown
     case loggedOut
     case loggedIn(CLIAccountInfo)
-    /// 로그인은 안 했지만 쓸 수 있다(opencode 의 무료 모델) — 칩을 흐리게 하지도 막지도 않는다.
-    case freeOnly
 }
 
 /// 로그인 상태 출력 읽기 — 종료 코드가 먼저, 글은 이메일 · 플랜 · 고정 문구만 뽑고 나머지는 버린다.
 public enum CLIAccountParser {
-    /// `claude auth status` — 종료 1(또는 `loggedIn:false`)이면 안 됨. JSON 에서 `email` · `subscriptionType` 만.
+    /// `claude auth status` — 종료 **1**(또는 `loggedIn:false`)이면 안 됨, 그 밖의 0 아닌 종료는 알 수 없음. JSON 에서 `email` · `subscriptionType` 만.
     public static func parseClaudeStatus(stdout: String, exitCode: Int32) -> CLILoginState {
-        if exitCode != 0 { return .loggedOut }
+        if exitCode == 1 { return .loggedOut }
+        if exitCode != 0 { return .unknown }
         guard let start = stdout.firstIndex(of: "{"),
               let data = String(stdout[start...]).data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -38,9 +37,10 @@ public enum CLIAccountParser {
         return .loggedIn(CLIAccountInfo(email: safeEmail(obj["email"]), plan: safePlan(obj["subscriptionType"])))
     }
 
-    /// `codex login status` — 종료 1 이면 안 됨. 글(예: 「Logged in using ChatGPT」)은 고정 문구로만 바꿔 보인다.
+    /// `codex login status` — 종료 **1** 이면 안 됨, 그 밖의 0 아닌 종료는 알 수 없음. 글(예: 「Logged in using ChatGPT」)은 고정 문구로만 바꿔 보인다.
     public static func parseCodexStatus(output: String, exitCode: Int32) -> CLILoginState {
-        if exitCode != 0 { return .loggedOut }
+        if exitCode == 1 { return .loggedOut }
+        if exitCode != 0 { return .unknown }
         let low = output.lowercased()
         if low.contains("not logged in") { return .loggedOut }
         if low.contains("chatgpt") { return .loggedIn(CLIAccountInfo(detail: "ChatGPT 계정")) }
@@ -57,9 +57,9 @@ public enum CLIAccountParser {
         return models.isEmpty ? (.unknown, []) : (.loggedIn(CLIAccountInfo()), models)
     }
 
-    /// `opencode auth list --standalone` — 「No authenticated…」 이면 로그인 안 함(무료 모델은 됨 → `.freeOnly`), 종료 0 이면 로그인됨. 목록 글은 버린다.
+    /// `opencode auth list --standalone` — 「No authenticated…」 이면 로그인 안 함(로그인 없이는 무료 사용량이 금방 막힌다), 종료 0 이면 로그인됨. 목록 글은 버린다.
     public static func parseOpenCodeStatus(output: String, exitCode: Int32) -> CLILoginState {
-        if output.lowercased().contains("no authenticated") { return .freeOnly }
+        if output.lowercased().contains("no authenticated") { return .loggedOut }
         return exitCode == 0 ? .loggedIn(CLIAccountInfo()) : .unknown
     }
 

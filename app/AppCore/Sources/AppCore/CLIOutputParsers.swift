@@ -260,8 +260,9 @@ public struct OpenCodeStreamParser: StreamParsing {
     private mutating func parse(line: Data) -> [StreamEvent] {
         guard !line.isEmpty else { return [] }
         guard let obj = try? JSONSerialization.jsonObject(with: line), let d = obj as? [String: Any] else {
-            if let s = String(data: line, encoding: .utf8), LoginDetector.looksLikeLoginNeeded(s) {
-                return [.error(ModelKind.opencode.loginNeededMessage)]
+            if let s = String(data: line, encoding: .utf8) {
+                if Self.looksLikeFreeLimit(s) { return [.error(ModelKind.opencodeFreeLimitMessage)] }
+                if LoginDetector.looksLikeLoginNeeded(s) { return [.error(ModelKind.opencode.loginNeededMessage)] }
             }
             return []
         }
@@ -280,10 +281,18 @@ public struct OpenCodeStreamParser: StreamParsing {
             sawTokens = true
             return []
         case "error":
+            // 거절 이름(`provider.free-limit`)이 어느 필드에 있어도 알아보게 오류 줄 전체 글에서 찾는다.
+            if Self.looksLikeFreeLimit(String(decoding: line, as: UTF8.self)) { return [.error(ModelKind.opencodeFreeLimitMessage)] }
             return [.error(Self.userError(Self.message(in: d) ?? "opencode 가 오류를 냈어요"))]
         default:
             return []
         }
+    }
+
+    /// 로그인 없이 쓰는 무료 사용량이 찼다는 거절.
+    static func looksLikeFreeLimit(_ text: String) -> Bool {
+        let low = text.lowercased()
+        return low.contains("free-limit") || low.contains("free usage limit")
     }
 
     /// `error.data.message` · `error.message` · `message` · `error.name`.

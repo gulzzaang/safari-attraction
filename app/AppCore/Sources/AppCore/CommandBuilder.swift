@@ -41,7 +41,7 @@ public enum CommandBuilder {
             return ("claude", args)
         case .gemini:
             // 출력은 stream-json(NDJSON) — 답 글 · 쓴 양을 `AgyStreamParser` 가 읽는다. 모델은 목록에서 고른 것(없으면 기본).
-            let c = CLICommands.agyAsk(prompt: prompt, modelID: r.modelID)
+            let c = CLICommands.agyAsk(prompt: prompt, modelID: r.modelID, webSearch: r.webSearch)
             return (c.executable, c.arguments)
         case .chatgpt:
             let c = CLICommands.codexExec(prompt: prompt, modelID: r.modelID)

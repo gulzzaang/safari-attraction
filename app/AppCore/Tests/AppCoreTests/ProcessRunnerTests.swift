@@ -171,7 +171,8 @@ final class ProcessRunnerTests: XCTestCase {
         let base = ["CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDE_CODE_OAUTH_TOKEN": "x",
                     "CLAUDE_CONFIG_DIR": "/keep", "HOME": "/h", "PATH": "/old", "ANTHROPIC_API_KEY": "k"]
         let env = ProcessRunner.childEnvironment(base: base, path: "/new:/p")
-        XCTAssertEqual(env, ["CLAUDE_CONFIG_DIR": "/keep", "HOME": "/h", "PATH": "/new:/p", "ANTHROPIC_API_KEY": "k"])
+        // 키 값 환경변수(ANTHROPIC_API_KEY 등)는 구독 대신 키로 과금되지 않게 뺀다.
+        XCTAssertEqual(env, ["CLAUDE_CONFIG_DIR": "/keep", "HOME": "/h", "PATH": "/new:/p"])
     }
     func testChildEnvironmentOverridesBeatUserValue() {
         let base = ["CLAUDE_CONFIG_DIR": "/user", "HOME": "/h"]
