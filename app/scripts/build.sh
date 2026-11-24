@@ -35,6 +35,23 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/SafariAttractionApp"
 
+# 서버 묶음(일 맡기기가 클로드에게 붙이는 MCP 서버)을 앱 안에 넣는다 — 문서 폴더의 dist 가 아니라 앱 안에서 띄워
+# 맥의 문서 폴더 허락 창을 피한다. 서명 전에 넣는다(서명이 이 파일들까지 봉인한다).
+REPO_ROOT="$(cd "$APP_DIR/.." && pwd)"
+BUNDLE_RES="$APP/Contents/Resources/safari-attraction"
+BUNDLE_FILES=(run.sh server.mjs jxa/host.js)
+for f in "${BUNDLE_FILES[@]}"; do
+  if [[ ! -f "$REPO_ROOT/plugin/$f" ]]; then
+    echo "빌드 실패: 서버 묶음 파일이 없어요 — $REPO_ROOT/plugin/$f (plugin/ 폴더가 온전한지 확인하세요 — server.mjs 가 없으면 저장소 루트에서 npm run build)" >&2
+    exit 1
+  fi
+done
+mkdir -p "$BUNDLE_RES/jxa"
+cp "$REPO_ROOT/plugin/run.sh" "$BUNDLE_RES/run.sh"
+cp "$REPO_ROOT/plugin/server.mjs" "$BUNDLE_RES/server.mjs"
+cp "$REPO_ROOT/plugin/jxa/host.js" "$BUNDLE_RES/jxa/host.js"
+chmod +x "$BUNDLE_RES/run.sh"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -72,4 +89,18 @@ PLIST
 plutil -lint "$APP/Contents/Info.plist"
 codesign --force -s - "$APP"
 codesign --verify --verbose=2 "$APP"
+
+# 끝 확인 — 서명한 뒤에도 서버 묶음 세 파일이 앱 안에 있고 run.sh 가 실행 가능한지.
+for f in "${BUNDLE_FILES[@]}"; do
+  if [[ ! -s "$BUNDLE_RES/$f" ]]; then
+    echo "빌드 실패: 앱 안에 서버 묶음 파일이 없어요 — $BUNDLE_RES/$f" >&2
+    exit 1
+  fi
+done
+if [[ ! -x "$BUNDLE_RES/run.sh" ]]; then
+  echo "빌드 실패: 앱 안의 run.sh 가 실행 가능하지 않아요 — $BUNDLE_RES/run.sh" >&2
+  exit 1
+fi
+echo "서버 묶음 확인:"
+ls -l "$BUNDLE_RES" "$BUNDLE_RES/jxa"
 echo "앱 만듦: $APP"

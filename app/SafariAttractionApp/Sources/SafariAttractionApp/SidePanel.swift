@@ -36,13 +36,18 @@ final class SidePanel: NSPanel {
 @MainActor
 final class SidePanelController {
     let viewModel: ChatViewModel
+    let agent: AgentSession
     private let follower: PanelFollower
     private let panel: SidePanel
     private(set) var isOpen = false
     private var activateOnNextShow = false
+    /// 사용자가 켠 「고정」 · 기다리는 카드가 있다 — 둘 중 하나면 따라가기가 옆 창을 숨기지 않는다.
+    private var userPinned = false
+    private var cardWaiting = false
 
-    init(viewModel: ChatViewModel, bridge: SafariBridging) {
+    init(viewModel: ChatViewModel, agent: AgentSession, siteModes: SiteModeStore, bridge: SafariBridging) {
         self.viewModel = viewModel
+        self.agent = agent
         let hosting = NSHostingView(rootView: AnyView(EmptyView()))
         hosting.sizingOptions = []       // 크기는 따라가기가 정한다 — 안쪽 내용이 창 크기를 바꾸지 않게
         panel = SidePanel(content: hosting)
@@ -52,10 +57,12 @@ final class SidePanelController {
             DispatchQueue.main.async { MainActor.assumeIsolated { box.value?.apply(cmd) } }
         }
         box.value = self
-        hosting.rootView = AnyView(ChatView(vm: viewModel, onClose: { [weak self] in self?.close() }))
-        viewModel.onPinnedChange = { [follower, panel] pinned in
-            follower.setPinned(pinned)
+        hosting.rootView = AnyView(ChatView(vm: viewModel, agent: agent, siteModes: siteModes,
+                                            onClose: { [weak self] in self?.close() }))
+        viewModel.onPinnedChange = { [weak self, panel] pinned in
             panel.level = SidePanel.windowLevel(pinned: pinned)
+            self?.userPinned = pinned
+            self?.refreshFollowerPin()
         }
 
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
@@ -66,6 +73,18 @@ final class SidePanelController {
 
     private final class WeakBox: @unchecked Sendable {
         weak var value: SidePanelController?
+    }
+
+    /// 카드가 사람의 답을 기다리는 동안은 사파리가 뒤로 가도 옆 창을 숨기지 않는다.
+    /// 앞으로 가져오지도, 포커스를 뺏지도, 사파리를 건드리지도 않는다(따라가기가 「고정」 처럼 그 자리에 둘 뿐).
+    /// 사용자가 옆 창을 닫아 둔 경우는 열지 않는다(메뉴 막대 아이콘이 기다림을 알린다).
+    func setCardWaiting(_ waiting: Bool) {
+        cardWaiting = waiting
+        refreshFollowerPin()
+    }
+
+    private func refreshFollowerPin() {
+        follower.setPinned(userPinned || cardWaiting)
     }
 
     /// 열려 있어도 안 보이면(다른 앱으로 옮겨 가 따라가기가 숨김) 닫지 않고 다시 띄운다.

@@ -430,7 +430,9 @@ public final class AgentSession {
         guard let run, run.id == runID, !run.closing else { return .deny(GateServer.stoppedReason) }
         let mode = siteModes.mode(for: req.host)
         switch ActionPolicy.decide(phase: phase, mode: mode, action: req.action, irreversible: req.irreversible) {
-        case .allow: return .allow
+        case .allow:
+            noteAllowed(req, run: run)
+            return .allow
         case .deny(let reason): return .deny(reason)
         case .card(let danger):
             let (id, waiter) = openCard(.actionCard(host: req.host, action: req.action, target: req.target,
@@ -438,10 +440,13 @@ public final class AgentSession {
             let r = await waiter.waitHonoringCancellation()
             closeCard(id, fallback: r)
             switch r {
-            case .answer(.approve): return .allow
+            case .answer(.approve):
+                noteAllowed(req, run: run)
+                return .allow
             case .answer(.alwaysAllowSite):
                 do { try siteModes.setMode(.allowAll, for: req.host) }
                 catch { append(.notice("이 사이트 허락을 저장하지 못했어요 — 이번 한 번만 허락했어요")) }
+                noteAllowed(req, run: run)
                 return .allow
             case .answer: return .deny(Self.cardRejectedReason)
             case .timedOut: return .deny(Self.cardExpiredReason)
@@ -449,6 +454,12 @@ public final class AgentSession {
             case .withdrawn: return .deny(Self.cardRejectedReason)
             }
         }
+    }
+
+    /// 허락된 동작을 진행 줄에 보인다(일이 끝나 가는 중이면 건드리지 않는다).
+    private func noteAllowed(_ req: GateRequest, run: Run) {
+        guard !run.closing, run.generation == generation else { return }
+        activity = AgentActionLabel.progress(host: req.host, action: req.action, target: req.target)
     }
 
     // MARK: 카드 · 멈춤

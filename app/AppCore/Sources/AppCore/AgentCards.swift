@@ -121,3 +121,45 @@ final class CardWaiter: @unchecked Sendable {
         await withTaskCancellationHandler { await wait() } onCancel: { self.resolve(.withdrawn) }
     }
 }
+
+/// 동작 이름(서버가 보내는 영어)을 사람이 읽는 말로 — 카드 · 진행 줄이 쓴다.
+public enum AgentActionLabel {
+    /// 카드에 보이는 이름(「누르기」).
+    public static func noun(_ action: String) -> String {
+        switch action {
+        case "click": return "누르기"
+        case "fill": return "칸 채우기"
+        case "check": return "체크하기"
+        case "uncheck": return "체크 풀기"
+        case "select": return "고르기"
+        case "press": return "키 누르기"
+        case "type": return "글자 입력"
+        case "evaluate": return "페이지 코드 실행"
+        case "fetch": return "서버로 요청 보내기"
+        case "goto", "nav": return "이동"
+        default: return action
+        }
+    }
+
+    /// 진행 줄(「쿠팡에서 '장바구니 담기' 누름」) — 허락된 동작 하나.
+    public static func progress(host: String, action: String, target: String) -> String {
+        switch action {
+        case "goto", "nav": return "\(host) 이동"
+        case "evaluate": return "\(host)에서 페이지 코드를 실행함"
+        case "fetch": return "\(host)에서 서버로 요청을 보냄"
+        default:
+            let verb: String
+            switch action {
+            case "click": verb = "누름"
+            case "fill": verb = "칸을 채움"
+            case "check": verb = "체크함"
+            case "uncheck": verb = "체크를 풂"
+            case "select": verb = "고름"
+            case "press": verb = "키를 누름"
+            case "type": verb = "글자를 입력함"
+            default: verb = action
+            }
+            return target.isEmpty ? "\(host)에서 \(verb)" : "\(host)에서 '\(target)' \(verb)"
+        }
+    }
+}

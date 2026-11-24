@@ -25,17 +25,34 @@ func openInSafari(_ url: URL) {
     }
 }
 
+/// 입력 칸 위의 두 칸 — 묻기(질문에 답) · 일 맡기기(클로드가 사파리를 움직임).
+enum ChatMode: String, CaseIterable {
+    case ask, agent
+    var label: String { self == .ask ? "묻기" : "일 맡기기" }
+}
+
 struct ChatView: View {
     @Bindable var vm: ChatViewModel
+    @Bindable var agent: AgentSession
+    let siteModes: SiteModeStore
     var onClose: () -> Void
+
+    @State private var mode: ChatMode = .ask
+    @State private var showingSites = false
+
+    private var busy: Bool { vm.isRunning || agent.isRunning }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            messageList
-            Divider()
-            composer
+            if mode == .agent && showingSites {
+                SiteModesView(store: siteModes, onClose: { showingSites = false })
+            } else {
+                if mode == .ask { messageList } else { agentMessageList }
+                Divider()
+                composer
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.regularMaterial)
@@ -55,14 +72,14 @@ struct ChatView: View {
             HStack {
                 Text("사파리-어트랙션").font(.headline)
                 Spacer()
-                Button("새 대화") { vm.newChat() }
+                Button("새 대화") { if mode == .ask { vm.newChat() } else { agent.newTask() } }
                     .controlSize(.small)
-                    .disabled(vm.messages.isEmpty && !vm.isRunning)
+                    .disabled(mode == .ask ? (vm.messages.isEmpty && !vm.isRunning) : (agent.messages.isEmpty && !agent.isRunning))
                 Button(action: onClose) { Image(systemName: "xmark") }
                     .buttonStyle(.borderless)
                     .help("닫기 (\(HotKey.toggleLabel))")
             }
-            if vm.availableModels.count > 1 {
+            if mode == .ask, vm.availableModels.count > 1 {
                 Picker("모델", selection: $vm.model) {
                     ForEach(vm.availableModels, id: \.self) { Text($0.pickerLabel).tag($0) }
                 }
@@ -102,6 +119,20 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
+            Picker("모드", selection: $mode) {
+                ForEach(ChatMode.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(busy)
+            .help(busy ? "답하는 중에는 바꿀 수 없어요" : "묻기: 질문에 답해요 · 일 맡기기: 클로드가 사파리를 직접 움직여요")
+            if mode == .ask { askComposer } else { agentComposer }
+        }
+        .padding(12)
+    }
+
+    private var askComposer: some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 Toggle("웹 검색", isOn: $vm.webSearch)
                 Toggle("이 페이지 함께", isOn: $vm.attachPage)
@@ -140,7 +171,75 @@ struct ChatView: View {
                 }
             }
         }
-        .padding(12)
+    }
+
+    // MARK: 일 맡기기
+
+    private var agentMessageList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if agent.messages.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("사파리 일을 맡겨 보세요").font(.subheadline.weight(.semibold))
+                            Text("클로드가 먼저 작업 목록을 보여 드려요. 「이대로 진행」을 눌러야 사파리를 움직이고, 페이지를 바꾸는 동작은 사이트마다 정한 허락(「사이트 허락」)대로 물어봐요.")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                        .padding(.top, 8)
+                    }
+                    ForEach(agent.messages) { AgentMessageView(message: $0, agent: agent) }
+                    if agent.isRunning, !agent.hasPendingCard {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text(agent.activity ?? "일하는 중이에요…").font(.caption).foregroundStyle(.secondary)
+                        }
+                    } else if agent.hasPendingCard {
+                        Label("위 카드에 답해 주세요", systemImage: "hourglass").font(.caption).foregroundStyle(.orange)
+                    }
+                    Color.clear.frame(height: 1).id("bottom")
+                }
+                .padding(12)
+            }
+            .onChange(of: agent.messages.count) { proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: agent.messages.last) { proxy.scrollTo("bottom", anchor: .bottom) }
+        }
+    }
+
+    private var agentComposer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Button { showingSites = true } label: { Label("사이트 허락", systemImage: "checkmark.shield") }
+                    .controlSize(.small)
+                Toggle("고정", isOn: Binding(get: { vm.pinned }, set: { vm.setPinned($0) }))
+                    .toggleStyle(.checkbox).controlSize(.small)
+                    .help("켜면 사파리가 앞이 아니어도 옆 창이 숨지 않아요")
+                Spacer(minLength: 0)
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                InputTextView(text: $agent.input, focusTick: vm.focusTick, onSubmit: { agent.send() })
+                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(alignment: .topLeading) {
+                        if agent.input.isEmpty {
+                            Text("맡길 일을 입력하세요 (Return 보내기 · Option+Return 줄바꿈)")
+                                .font(.system(size: 13)).foregroundStyle(.tertiary)
+                                .padding(.horizontal, InputTextView.insetX + InputTextView.linePadding)
+                                .padding(.vertical, InputTextView.insetY)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                if agent.isStopping {
+                    HStack(spacing: 4) { ProgressView().controlSize(.small); Text("멈추는 중…").font(.caption) }
+                        .foregroundStyle(.secondary)
+                } else if agent.isRunning {
+                    Button(action: agent.stop) { Image(systemName: "stop.circle.fill").font(.title2) }
+                        .buttonStyle(.borderless).help("멈춤")
+                } else {
+                    Button { agent.send() } label: { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                        .buttonStyle(.borderless).help("보내기 (Return)")
+                        .disabled(agent.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
     }
 }
 
@@ -192,7 +291,7 @@ private struct MessageView: View {
 }
 
 /// 답 글 그리기 — 문단 · 제목 · 목록 · 코드 상자. 줄 안 서식은 `AttributedString(markdown:)`.
-private struct MarkdownView: View {
+struct MarkdownView: View {
     let text: String
 
     var body: some View {

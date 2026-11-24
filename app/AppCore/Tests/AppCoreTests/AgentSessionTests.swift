@@ -570,6 +570,31 @@ final class AgentSessionTests: XCTestCase {
         r.finish(.finished(code: 0)); await t.value
     }
 
+    func testAllowedActionsShowAProgressLine() async throws {
+        let (r, g, t) = try await start("일")
+        try await approvePlan(r)
+        let decision = g.request(gateRequest(host: "www.coupang.com"))
+        try await waitUntil { self.cards.count == 2 }
+        XCTAssertTrue(session.answer(cardID: lastCard!.id, .approve))
+        _ = await decision.value
+        XCTAssertEqual(session.activity, "www.coupang.com에서 '장바구니 담기' 누름")
+        // 다 허락 사이트는 카드 없이 바로.
+        try siteModes.setMode(.allowAll, for: "b.example.com")
+        _ = await g.request(gateRequest(id: "g2", host: "b.example.com", action: "fill", target: "검색")).value
+        XCTAssertEqual(session.activity, "b.example.com에서 '검색' 칸을 채움")
+        r.finish(.finished(code: 0)); await t.value
+        XCTAssertNil(session.activity)
+    }
+
+    func testActionLabels() {
+        XCTAssertEqual(AgentActionLabel.noun("click"), "누르기")
+        XCTAssertEqual(AgentActionLabel.noun("evaluate"), "페이지 코드 실행")
+        XCTAssertEqual(AgentActionLabel.noun("weird"), "weird")
+        XCTAssertEqual(AgentActionLabel.progress(host: "a.com", action: "goto", target: "https://a.com/x"), "a.com 이동")
+        XCTAssertEqual(AgentActionLabel.progress(host: "a.com", action: "evaluate", target: "1+1"), "a.com에서 페이지 코드를 실행함")
+        XCTAssertEqual(AgentActionLabel.progress(host: "a.com", action: "click", target: ""), "a.com에서 누름")
+    }
+
     func testUnsupportedControlRequestGetsErrorReply() async throws {
         let (r, _, t) = try await start("일")
         r.emit(["type": "control_request", "request_id": "u1", "request": ["subtype": "mcp_message"]])

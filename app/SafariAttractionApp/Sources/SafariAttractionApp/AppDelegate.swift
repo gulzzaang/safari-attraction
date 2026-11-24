@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var toggleItem: NSMenuItem?
     private var viewModel: ChatViewModel?
+    private var agent: AgentSession?
     private var controller: SidePanelController?
     private var hotKey: HotKey?
 
@@ -14,8 +15,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 사용자가 첫 질문을 보낼 때 ChatViewModel 이 메인 밖에서 처음 읽고 캐시한다.
         let bridge = AppleScriptSafariBridge()
         let vm = ChatViewModel(runner: ProcessRunner(), bridge: bridge, loginPath: { ShellPath.loginPath() })
-        let controller = SidePanelController(viewModel: vm, bridge: bridge)
+        // 일 맡기기 — 서버 묶음은 앱 안(Resources/safari-attraction), 기억 · 사이트 허락 · 관문 소켓은 앱 지원 폴더.
+        // 이 시점엔 폴더만 준비하고 클로드 · 사파리는 건드리지 않는다(첫 일 맡기기 때 시작).
+        let support = (try? AppPaths.supportDirectory()) ?? FileManager.default.temporaryDirectory
+        let siteModes = SiteModeStore(directory: support)
+        let agent = AgentSession(
+            resources: Bundle.main.resourceURL ?? URL(fileURLWithPath: Bundle.main.bundlePath),
+            memoryHome: support.appendingPathComponent("memory", isDirectory: true),
+            siteModes: siteModes,
+            gateFactory: { try GateServer(directory: try AppPaths.supportDirectory()) },
+            loginPath: { ShellPath.loginPath() })
+        let controller = SidePanelController(viewModel: vm, agent: agent, siteModes: siteModes, bridge: bridge)
+        agent.onPendingCardChange = { [weak self] waiting in
+            self?.controller?.setCardWaiting(waiting)
+            self?.setWaitingIcon(waiting)
+        }
         self.viewModel = vm
+        self.agent = agent
         self.controller = controller
 
         hotKey = HotKey(keyCode: HotKey.toggleKeyCode, modifiers: HotKey.toggleModifiers) { [weak self] in
@@ -23,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "safari", accessibilityDescription: "사파리-어트랙션")
+        item.button?.image = NSImage(systemSymbolName: Self.idleSymbol, accessibilityDescription: "사파리-어트랙션")
         item.button?.toolTip = "사파리-어트랙션"
         let menu = NSMenu()
         menu.delegate = self
@@ -40,9 +56,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 사파리는 여기서 읽지 않는다 — 옆 창을 처음 연 뒤에야 읽기 시작한다(맥의 자동화 허락 창이 그때 뜬다).
     }
 
+    private static let idleSymbol = "safari"
+    private static let waitingSymbol = "bell.badge.fill"
+
+    /// 승인 카드가 답을 기다리는 동안 메뉴 막대 아이콘을 「기다림」 모양으로.
+    private var isWaiting = false
+    private func setWaitingIcon(_ waiting: Bool) {
+        isWaiting = waiting
+        let symbol = waiting ? Self.waitingSymbol : Self.idleSymbol
+        let label = waiting ? "사파리-어트랙션 — 승인을 기다리는 카드가 있어요" : "사파리-어트랙션"
+        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label) {
+            statusItem?.button?.image = image
+        }
+        statusItem?.button?.toolTip = label
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         var title = "옆 창 열기 · 닫기"
         title += (hotKey?.registrationError == nil) ? " (\(HotKey.toggleLabel))" : " (단축키를 못 써요)"
+        if isWaiting { title += " — 승인 기다리는 카드가 있어요" }
         toggleItem?.title = title
     }
 
@@ -51,12 +83,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: 끝낼 때
 
-    /// 답하는 중이면 CLI 를 먼저 멈춘다 — 멈춤은 SIGTERM, 2초 뒤 SIGKILL 이라 정리될 때까지 잠깐(최대 3초) 기다린다.
+    /// 답하는 중(묻기 · 일 맡기기)이면 CLI 를 먼저 멈춘다 — 멈춤은 SIGTERM, 2초 뒤 SIGKILL 이라 정리될 때까지 잠깐(최대 3초) 기다린다.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let vm = viewModel, vm.isRunning else { return .terminateNow }
-        vm.shutdown()
+        let vm = viewModel, agent = agent
+        guard (vm?.isRunning ?? false) || (agent?.isRunning ?? false) else { return .terminateNow }
+        vm?.shutdown()
+        agent?.shutdown()
         Task { @MainActor in
-            for _ in 0..<30 where vm.isRunning { try? await Task.sleep(nanoseconds: 100_000_000) }
+            for _ in 0..<30 where (vm?.isRunning ?? false) || (agent?.isRunning ?? false) {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
@@ -64,6 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         viewModel?.shutdown()
+        agent?.shutdown()
         controller?.shutdown()
         hotKey?.unregister()
     }
