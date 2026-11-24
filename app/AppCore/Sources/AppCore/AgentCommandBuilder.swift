@@ -12,6 +12,8 @@ public struct GateInfo: Sendable, Equatable {
 
 /// 「일 맡기기」용 클로드 명령줄(양방향 stream-json · 계획 모드 · 사파리 MCP 서버만).
 /// 셸을 거치지 않고 인자 배열로만 넘기며, MCP JSON 은 JSONSerialization 으로 만든다(값을 글자로 이어 붙이지 않는다).
+/// `--tools ExitPlanMode,Write` — 계획 모드에서 클로드는 계획 파일(`~/.claude/plans/…md`)을 Write 로 쓴 뒤 ExitPlanMode 를 부른다(묻지 않고 쓰이고,
+/// 입력에 `plan` · `planFilePath` 가 온다). Write 가 없으면 입력이 `{}` 로 비어 계획 카드가 빈다. 승인 뒤의 Write 는 `AgentSession` 이 거절한다.
 /// 사용자 입력은 명령줄에 넣지 않는다 — 표준 입력의 user 줄(`ClaudeControl.userMessage`)로 간다.
 public enum AgentCommandBuilder {
     public static let mcpServerName = "safari-attraction"
@@ -22,7 +24,7 @@ public enum AgentCommandBuilder {
                     "--model", CommandBuilder.claudeModel,
                     "--setting-sources", "", "--strict-mcp-config",
                     "--mcp-config", mcpConfigJSON(resources: resources, gate: gate, memoryHome: memoryHome),
-                    "--tools", "ExitPlanMode",
+                    "--tools", "ExitPlanMode,Write",
                     "--permission-prompt-tool", "stdio", "--permission-mode", "plan"]
         if let id = resumeSessionID, !id.isEmpty { args += ["--resume", id] }
         return ("claude", args)

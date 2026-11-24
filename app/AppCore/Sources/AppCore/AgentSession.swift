@@ -32,6 +32,9 @@ public final class AgentSession {
     public static let cardRejectedReason = "카드에서 거절했어요"
     public static let toolNotAllowedMessage = "이 도구는 쓸 수 없어요"
     public static let unsupportedRequestMessage = "지원하지 않는 요청이에요"
+    /// 계획 글이 비어 ExitPlanMode 를 되돌릴 때 클로드에게 가는 말(한 실행에 최대 `maxEmptyPlanDenials` 번).
+    public static let emptyPlanReason = "계획을 답 글에 목록으로 먼저 써 보여 준 뒤 다시 ExitPlanMode 를 불러 주세요"
+    static let maxEmptyPlanDenials = 2
     public static let replToolName = "mcp__\(AgentCommandBuilder.mcpServerName)__repl"
     static let mcpToolPrefix = "mcp__\(AgentCommandBuilder.mcpServerName)__"
     /// 이 낱말이 든 `repl` 코드는 빨간 코드 카드로 묻는다(계획 8 Global Constraints — 관문은 실수 · 보통의 속임을 막는 장치).
@@ -120,7 +123,10 @@ public final class AgentSession {
               let waiter = waiters[cardID] else { return false }
         let isPlan: Bool
         switch messages[index].content {
-        case .planCard: isPlan = true
+        case .planCard(let markdown, _):
+            // 보여 줄 계획이 비었으면 「이대로 진행」 은 막는다(고쳐 줘 · 그만은 된다).
+            if answer == .approve, Self.isBlank(markdown) { return false }
+            isPlan = true
         case .actionCard: isPlan = false
         case .codeCard: isPlan = false
         default: return false
@@ -181,6 +187,9 @@ public final class AgentSession {
         var sessionID: String?
         var sawError = false
         var sawAssistantText = false
+        /// 이번 실행에서 클로드가 마지막으로 쓴 글(계획 글이 비었을 때의 대신).
+        var lastAssistantText = ""
+        var emptyPlanDenials = 0
         var jobTimer: Task<Void, Never>?
         /// 클로드의 물음 번호 → 카드 번호(취소 요청이 오면 그 카드를 거둔다).
         var requestCards: [String: Int] = [:]
@@ -341,6 +350,7 @@ public final class AgentSession {
         case .text(let t):
             activity = nil
             run.sawAssistantText = true
+            if !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { run.lastAssistantText = t }
             appendAssistant(t)
         case .toolUse(let name):
             activity = Self.progressLine(toolName: name)
@@ -373,7 +383,15 @@ public final class AgentSession {
         guard !run.closing else { return }   // 멈추는 중 — 더 묻지 않는다(프로세스는 곧 끝난다)
         let input = req.input
         if req.toolName == "ExitPlanMode" {
-            let plan = (input["plan"] as? String) ?? ""
+            // 계획 글 사다리: 입력의 plan → 이번 실행의 마지막 클로드 글 → 빈 것.
+            let given = (input["plan"] as? String) ?? ""
+            let plan = !Self.isBlank(given) ? given : (Self.isBlank(run.lastAssistantText) ? "" : run.lastAssistantText)
+            if plan.isEmpty, run.emptyPlanDenials < Self.maxEmptyPlanDenials {
+                // 보여 줄 계획이 없다 — 카드를 띄우지 않고 클로드에게 계획을 글로 먼저 쓰게 되돌린다.
+                run.emptyPlanDenials += 1
+                reply(ClaudeControl.deny(requestID: req.requestID, message: Self.emptyPlanReason), run: run)
+                return
+            }
             let (id, waiter) = openCard(.planCard(markdown: plan, state: .pending))
             run.requestCards[req.requestID] = id
             Task { [self] in
@@ -418,6 +436,8 @@ public final class AgentSession {
             reply(ClaudeControl.deny(requestID: req.requestID, message: Self.toolNotAllowedMessage), run: run)
         }
     }
+
+    static func isBlank(_ s: String) -> Bool { s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     static func hasWrapperWord(_ code: String) -> Bool {
         code.range(of: codeWrapperPattern, options: .regularExpression) != nil

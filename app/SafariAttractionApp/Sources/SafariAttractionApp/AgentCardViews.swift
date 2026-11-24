@@ -95,19 +95,24 @@ private struct PlanCardView: View {
     let agent: AgentSession
     @State private var revision = ""
 
+    private var planIsBlank: Bool { markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
     var body: some View {
         CardFrame(color: .blue, title: "작업 목록 — 이대로 진행할까요?", titleSymbol: "list.bullet.rectangle",
                   state: state, resultText: resultText(state, isPlan: true)) {
-            if markdown.isEmpty {
-                Text("(계획 글이 비어 있어요)").font(.callout).foregroundStyle(.secondary)
+            if planIsBlank {
+                Text("(계획 글이 비어 있어요 — 「고쳐 줘」로 계획을 목록으로 써 달라고 해 주세요)")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
-                MarkdownView(text: markdown)
+                MarkdownView(text: markdown, links: false)   // 링크는 누를 수 없게 — 허락 전에 읽는 글
             }
         } buttons: {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Button("이대로 진행") { agent.answer(cardID: id, .approve) }
                         .buttonStyle(.borderedProminent)
+                        .disabled(planIsBlank)   // 보여 줄 계획이 없으면 승인할 수 없다
                     Button("그만") { agent.answer(cardID: id, .reject) }
                     Spacer(minLength: 0)
                 }
@@ -164,7 +169,7 @@ private struct ActionCardView: View {
                 Button("거절") { agent.answer(cardID: id, .reject) }
                 if !danger {   // 빨간 카드는 「늘 허락」 으로 묶지 않는다 — 그때그때 본다
                     Button("이 사이트 늘 허락") { agent.answer(cardID: id, .alwaysAllowSite) }
-                        .help("이 사이트를 「다 허락」 으로 저장해요. 되돌릴 수 없어 보이는 일은 그래도 계속 물어요.")
+                        .help("이 사이트를 「다 허락」 으로 저장해요. 다 허락이면 코드 실행(evaluate)도 묻지 않아요 — 결제 · 삭제처럼 되돌릴 수 없어 보이는 낱말이 있으면 물어요.")
                 }
                 Spacer(minLength: 0)
             }

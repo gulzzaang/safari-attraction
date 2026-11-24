@@ -22,7 +22,7 @@ final class AgentCommandBuilderTests: XCTestCase {
         XCTAssertEqual(Array(a[8..<11]), ["--setting-sources", "", "--strict-mcp-config"])
         XCTAssertEqual(a[11], "--mcp-config")
         // a[12] 는 MCP JSON(아래에서 따로 확인)
-        XCTAssertEqual(Array(a[13...]), ["--tools", "ExitPlanMode", "--permission-prompt-tool", "stdio", "--permission-mode", "plan"])
+        XCTAssertEqual(Array(a[13...]), ["--tools", "ExitPlanMode,Write", "--permission-prompt-tool", "stdio", "--permission-mode", "plan"])
     }
     func testSettingSourcesIsAnEmptyArgumentNotDropped() {
         let (_, a) = AgentCommandBuilder.build(resources: res, gate: gate, memoryHome: home, resumeSessionID: nil)

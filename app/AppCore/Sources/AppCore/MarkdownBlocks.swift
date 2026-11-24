@@ -80,6 +80,22 @@ public enum MarkdownBlocks {
         return a
     }
 
+    /// `attributed` 와 같되 누를 수 있는 링크는 만들지 않는다 — 링크는 글자만 보이고 주소는 괄호로 덧붙인다
+    /// (계획 카드처럼 클로드가 쓴 글을 사람이 허락하기 전에 읽는 자리용: 눌러서 열리지 않게).
+    public static func attributedWithoutLinks(_ text: String) -> AttributedString {
+        let a = attributed(text)
+        var out = AttributedString()
+        for run in a.runs {
+            var piece = AttributedString(a[run.range])
+            guard let url = run.link else { out += piece; continue }
+            piece.link = nil
+            out += piece
+            let shown = String(a[run.range].characters)
+            if !url.absoluteString.contains(shown) { out += AttributedString(" (\(url.absoluteString))") }
+        }
+        return out
+    }
+
     private static func linkBareURLs(in a: inout AttributedString) {
         let plain = String(a.characters)
         guard plain.contains("://") || plain.contains("@"), let detector = linkDetector else { return }

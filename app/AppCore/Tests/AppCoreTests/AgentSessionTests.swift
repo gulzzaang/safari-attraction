@@ -427,6 +427,80 @@ final class AgentSessionTests: XCTestCase {
         r.finish(.finished(code: 0)); await t.value
     }
 
+    // MARK: 빈 계획 카드(ExitPlanMode 입력에 plan 이 없을 때)
+
+    func testPlanTextLadderFallsBackToLastAssistantText() async throws {
+        let (r, _, t) = try await start("일")
+        r.emit(assistant("먼저 이렇게 해요\n1. 연다\n2. 담는다"))
+        r.emit(canUseTool("plan1", "ExitPlanMode", [:]))
+        try await waitUntil("계획 카드") { self.lastCard != nil }
+        XCTAssertEqual(lastCard?.content, .planCard(markdown: "먼저 이렇게 해요\n1. 연다\n2. 담는다", state: .pending))
+        XCTAssertTrue(session.answer(cardID: lastCard!.id, .approve), "글이 있으면 승인할 수 있다")
+        r.finish(.finished(code: 0)); await t.value
+    }
+
+    func testBlankPlanInputCountsAsMissingAndPlanInputWinsOverAssistantText() async throws {
+        let (r, _, t) = try await start("일")
+        r.emit(assistant("답 글"))
+        r.emit(canUseTool("plan1", "ExitPlanMode", ["plan": "   \n "]))
+        try await waitUntil("계획 카드") { self.lastCard != nil }
+        XCTAssertEqual(lastCard?.content, .planCard(markdown: "답 글", state: .pending))
+        r.emit(canUseTool("plan2", "ExitPlanMode", ["plan": "진짜 계획"]))
+        try await waitUntil("두 번째 카드") { self.cards.count == 2 }
+        XCTAssertEqual(lastCard?.content, .planCard(markdown: "진짜 계획", state: .pending))
+        r.finish(.finished(code: 0)); await t.value
+    }
+
+    func testEmptyPlanIsDeniedTwiceAutomaticallyThenCardWithApproveBlocked() async throws {
+        let (r, _, t) = try await start("일")
+        r.emit(canUseTool("plan1", "ExitPlanMode", [:]))
+        try await waitUntil { self.reply(r, "plan1") != nil }
+        XCTAssertEqual(reply(r, "plan1")?.behavior, "deny")
+        XCTAssertEqual(reply(r, "plan1")?.message, AgentSession.emptyPlanReason)
+        XCTAssertTrue(cards.isEmpty, "자동으로 되돌릴 땐 카드를 띄우지 않는다")
+        r.emit(canUseTool("plan2", "ExitPlanMode", ["plan": "  "]))
+        try await waitUntil { self.reply(r, "plan2") != nil }
+        XCTAssertEqual(reply(r, "plan2")?.behavior, "deny")
+        XCTAssertTrue(cards.isEmpty)
+        // 세 번째 — 카드는 띄우되 「이대로 진행」 은 막는다.
+        r.emit(canUseTool("plan3", "ExitPlanMode", [:]))
+        try await waitUntil("계획 카드") { self.lastCard != nil }
+        XCTAssertEqual(lastCard?.content, .planCard(markdown: "", state: .pending))
+        XCTAssertFalse(session.answer(cardID: lastCard!.id, .approve), "빈 계획은 승인할 수 없다")
+        XCTAssertEqual(session.phase, .planning)
+        XCTAssertTrue(session.hasPendingCard)
+        XCTAssertNil(reply(r, "plan3"))
+        // 고쳐 줘 · 그만은 된다.
+        XCTAssertTrue(session.answer(cardID: lastCard!.id, .revise("계획을 목록으로 써 줘")))
+        try await waitUntil { self.reply(r, "plan3") != nil }
+        XCTAssertEqual(reply(r, "plan3")?.behavior, "deny")
+        r.finish(.finished(code: 0)); await t.value
+    }
+
+    func testEmptyPlanDenialCountIsPerRun() async throws {
+        let (r1, _, t1) = try await start("일")
+        r1.emit(canUseTool("a", "ExitPlanMode", [:]))
+        r1.emit(canUseTool("b", "ExitPlanMode", [:]))
+        try await waitUntil { self.replies(r1).count == 2 }
+        r1.finish(.finished(code: 0)); await t1.value
+        let (r2, _, t2) = try await start("다음 일")
+        r2.emit(canUseTool("c", "ExitPlanMode", [:]))
+        try await waitUntil { self.reply(r2, "c") != nil }
+        XCTAssertEqual(reply(r2, "c")?.behavior, "deny", "새 실행은 처음부터 센다")
+        XCTAssertTrue(cards.isEmpty)
+        r2.finish(.finished(code: 0)); await t2.value
+    }
+
+    func testWriteIsDeniedAfterApprovalToo() async throws {
+        let (r, _, t) = try await start("일")
+        try await approvePlan(r)
+        r.emit(canUseTool("w1", "Write", ["file_path": "/tmp/x.md", "content": "x"]))
+        try await waitUntil { self.reply(r, "w1") != nil }
+        XCTAssertEqual(reply(r, "w1")?.behavior, "deny")
+        XCTAssertEqual(reply(r, "w1")?.message, AgentSession.toolNotAllowedMessage)
+        r.finish(.finished(code: 0)); await t.value
+    }
+
     // MARK: 도구 물음
 
     func testSafariToolsAreAlwaysAllowedWithInputUnchanged() async throws {

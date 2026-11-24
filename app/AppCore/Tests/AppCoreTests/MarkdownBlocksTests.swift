@@ -45,4 +45,15 @@ final class MarkdownBareLinkTests: XCTestCase {
         let a = MarkdownBlocks.attributed("[열린 괄호 (https://a.example")
         XCTAssertTrue(String(a.characters).contains("열린 괄호"))
     }
+
+    func testAttributedWithoutLinksKeepsTextAndShowsAddressInParentheses() {
+        let a = MarkdownBlocks.attributedWithoutLinks("**굵게** [사이트](https://example.com/a) 끝")
+        XCTAssertTrue(a.runs.compactMap(\.link).isEmpty)
+        XCTAssertEqual(String(a.characters), "굵게 사이트 (https://example.com/a) 끝")
+    }
+    func testAttributedWithoutLinksDoesNotRepeatABareAddress() {
+        let a = MarkdownBlocks.attributedWithoutLinks("자세히: https://example.com/x 를 보세요")
+        XCTAssertTrue(a.runs.compactMap(\.link).isEmpty)
+        XCTAssertEqual(String(a.characters), "자세히: https://example.com/x 를 보세요")
+    }
 }
