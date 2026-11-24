@@ -17,6 +17,12 @@ final class RunnerFactoryLog: @unchecked Sendable {
     var all: [FakeRunner] { lock.withLock { runners } }
 }
 
+final class LineBox: @unchecked Sendable {
+    private let lock = NSLock(); private var _all: [PanelLine] = []
+    func add(_ l: PanelLine) { lock.withLock { _all.append(l) } }
+    var all: [PanelLine] { lock.withLock { _all } }
+}
+
 final class PanelAskTests: XCTestCase {
     private var tempDir: URL!
 
@@ -362,6 +368,67 @@ final class PanelAskTests: XCTestCase {
         let s = await vm.panelSelection(waitForStatus: true)
         XCTAssertEqual(s.modelID, "opus")
         XCTAssertEqual(script.commands, [], "클로드 묻기는 상태 읽기(CLI 실행)를 시작하지도 기다리지도 않는다")
+    }
+
+    // MARK: 취소
+
+    /// 모든 읽기 호출이 문이 열릴 때까지 멈춰 있는 가짜 실행기(상태 읽기가 진행 중인 채 취소되는 경우).
+    final class BlockedStatusRunner: CommandRunning, InteractiveRunning, @unchecked Sendable {
+        let gate = Gate()
+        private let lock = NSLock()
+        private var _calls = 0
+        var calls: Int { lock.withLock { _calls } }
+        func run(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
+                 onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+            lock.withLock { _calls += 1 }
+            await gate.wait()
+            return .finished(code: 1)
+        }
+        func runInteractive(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
+                            initialLines: [String], onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome { await gate.wait(); return .stopped }
+        func write(_ line: String) throws {}
+        func closeInput() {}
+        func stop() { Task { await gate.open() } }
+    }
+
+    @MainActor
+    func testCancelWhileWaitingForStatusEndsRightAway() async throws {
+        let store = AppSettingsStore(directory: tempDir)
+        try store.update { $0.selectedCLI = ModelKind.chatgpt.rawValue }
+        let blocked = BlockedStatusRunner()
+        let bin = fakeBin(["codex"])
+        let status = CLIStatusService(loginPath: { bin }, runnerFactory: { blocked },
+                                      workDirectory: { URL(fileURLWithPath: NSTemporaryDirectory()) }, timeout: 60)
+        let vm = ChatViewModel(runner: FakeRunner(), bridge: FakeBridge(), loginPath: { bin },
+                               workDirectory: { URL(fileURLWithPath: NSTemporaryDirectory()) }, settings: store, status: status)
+        _ = await vm.panelSelection(waitForStatus: false)   // /info — 상태 읽기가 문 앞에서 멈춘 채 진행 중
+        let started = await PanelTest.waitUntil { blocked.calls >= 1 }
+        XCTAssertTrue(started)
+
+        let begun = Date()
+        let task = Task { @MainActor in await vm.panelSelection(waitForStatus: true) }   // 진행 중인 읽기를 기다린다(최대 25초)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        task.cancel()
+        _ = await task.value
+        XCTAssertLessThan(Date().timeIntervalSince(begun), 3, "취소되면 25초를 채우지 않고 바로 끝나야 해요")
+        await blocked.gate.open()
+    }
+
+    func testCancelledAskNeverCreatesARunner() async throws {
+        let factory = RunnerFactoryLog { _, _ in .finished(code: 0) }
+        let gate = Gate()
+        let dir = tempDir!
+        let svc = PanelAskService(selection: { _ in await gate.wait(); return PanelSelection(kind: .claude, modelID: nil) },
+                                  runnerFactory: { factory.make() }, loginPath: { "/usr/bin:/bin" }, workDirectory: { dir },
+                                  geminiLoggedOut: { false })
+        let lines = LineBox()
+        let task = Task { await svc.ask(PanelQuestion(question: "질문")) { lines.add($0) } }
+        task.cancel()
+        await gate.open()
+        _ = await task.value
+        XCTAssertEqual(factory.count, 0, "취소된 질문은 실행기를 만들지 않는다")
+        XCTAssertEqual(lines.all, [])
+        XCTAssertFalse(svc.isRunning)
     }
 
     // MARK: 정보

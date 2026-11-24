@@ -22,11 +22,14 @@ public final class PanelServer: @unchecked Sendable {
     public static let maxBodyBytes = 256 * 1024
     public static let maxConcurrentAsks = 2
     static let maxHeadBytes = 16 * 1024
-    static let readTimeout: TimeInterval = 10
+    public static let defaultReadTimeout: TimeInterval = 10
+    public static let defaultMaxConnections = 64
     static let drainTimeout: TimeInterval = 2
     public static let busyMessage = "다른 질문이 끝나면 다시 시도해 주세요"
 
     private let token: String
+    fileprivate let readTimeout: TimeInterval
+    private let maxConnections: Int
     private let backend: PanelBackend
     private let queue = DispatchQueue(label: "SafariAttraction.PanelServer")
     // 아래는 모두 `queue` 에서만 만진다(`port` 읽기만 잠금).
@@ -37,8 +40,25 @@ public final class PanelServer: @unchecked Sendable {
     private let portLock = NSLock()
     private var boundPort: UInt16?
 
-    public init(token: String, backend: PanelBackend) {
-        self.token = token; self.backend = backend
+    /// `readTimeout` — 연결한 뒤 요청(머리 · 본문)을 이 시간 안에 다 못 보내면 끊는다. `maxConnections` — 동시 연결 수 상한(넘으면 바로 끊는다). 시험이 낮춰 쓴다.
+    public init(token: String, backend: PanelBackend, readTimeout: TimeInterval = PanelServer.defaultReadTimeout,
+                maxConnections: Int = PanelServer.defaultMaxConnections) {
+        self.token = token; self.backend = backend; self.readTimeout = readTimeout; self.maxConnections = maxConnections
+    }
+
+    /// `safari-web-extension://` 뒤가 호스트 글자(`A-Z a-z 0-9 . -`)에 선택 `:포트`일 때만 — 값을 응답 머리에 되돌려 주므로 CR · LF 나 다른 글자가 있으면 거절한다.
+    static func isExtensionOrigin(_ origin: String) -> Bool {
+        guard origin.hasPrefix(originPrefix) else { return false }
+        let rest = origin.dropFirst(originPrefix.count)
+        let parts = rest.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let host = parts.first, !host.isEmpty, parts.count <= 2 else { return false }
+        func ok(_ c: Character) -> Bool { c.isASCII && (c.isLetter || c.isNumber || c == "." || c == "-") }
+        guard host.allSatisfy(ok) else { return false }
+        if parts.count == 2 {
+            let port = parts[1]
+            guard !port.isEmpty, port.count <= 5, port.allSatisfy({ $0.isASCII && $0.isNumber }) else { return false }
+        }
+        return true
     }
 
     /// 켜진 뒤의 포트(켜지기 전 · 멈춘 뒤엔 nil).
@@ -109,7 +129,7 @@ public final class PanelServer: @unchecked Sendable {
 
     private func accept(_ nw: NWConnection) {
         // newConnectionHandler 는 `queue` 에서 불린다.
-        if stopped { nw.cancel(); return }
+        if stopped || connections.count >= maxConnections { nw.cancel(); return }
         let c = Connection(server: self, nw: nw)
         connections[ObjectIdentifier(c)] = c
         c.start()
@@ -156,14 +176,14 @@ public final class PanelServer: @unchecked Sendable {
     /// 헤더만으로 가려낸다 — 통과하면 nil, 아니면 보낼 상태 코드.
     fileprivate func authorize(_ head: Head, port: UInt16?) -> (status: Int, message: String)? {
         guard let port, head.headers["host"]?.lowercased() == "127.0.0.1:\(port)" else { return (403, "허락되지 않은 요청이에요") }
-        if let origin = head.headers["origin"], !origin.hasPrefix(Self.originPrefix) { return (403, "허락되지 않은 요청이에요") }
+        if let origin = head.headers["origin"], !Self.isExtensionOrigin(origin) { return (403, "허락되지 않은 요청이에요") }
         let given = head.headers[Self.tokenHeader.lowercased()] ?? ""
         guard PanelLink.constantTimeEquals(given, token) else { return (403, "허락되지 않은 요청이에요") }
         return nil
     }
 
     fileprivate func corsHeaders(for head: Head) -> [(String, String)] {
-        guard let origin = head.headers["origin"], origin.hasPrefix(Self.originPrefix) else { return [] }
+        guard let origin = head.headers["origin"], Self.isExtensionOrigin(origin) else { return [] }
         return [("Access-Control-Allow-Origin", origin), ("Vary", "Origin")]
     }
 
@@ -194,7 +214,7 @@ public final class PanelServer: @unchecked Sendable {
                 }
             }
             nw.start(queue: server.queue)
-            armTimer(PanelServer.readTimeout) { [weak self] in self?.cancelAll() }
+            armTimer(server.readTimeout) { [weak self] in self?.cancelAll() }
             receive()
         }
 

@@ -420,6 +420,9 @@ final class PanelServerTests: XCTestCase {
         XCTAssertTrue(PanelLink.constantTimeEquals("abc", "abc"))
         XCTAssertFalse(PanelLink.constantTimeEquals("abc", "abd"))
         XCTAssertFalse(PanelLink.constantTimeEquals("abc", "abcd"))
+        // 길이 차이가 256 의 배수여도(하위 8비트만 접으면 0) 통과하지 않는다.
+        XCTAssertFalse(PanelLink.constantTimeEquals(PanelTest.token, PanelTest.token + String(repeating: "\0", count: 256)))
+        XCTAssertFalse(PanelLink.constantTimeEquals(PanelTest.token + String(repeating: "\0", count: 256), PanelTest.token))
         XCTAssertFalse(PanelLink.constantTimeEquals("", "a"))
         XCTAssertTrue(PanelLink.constantTimeEquals("", ""))
     }
@@ -470,5 +473,89 @@ final class PanelServerTests: XCTestCase {
         let (_, port) = try await start(StubBackend())
         let r = await PanelTest.roundTrip(port: port, PanelTest.request("GET", "/info", port: port, extra: ["X-Junk": String(repeating: "a", count: 20_000)]))
         XCTAssertEqual(r?.status, 431)
+    }
+
+    func testTokenWithTrailingNULsIsRejectedOverHTTP() async throws {
+        let (_, port) = try await start(StubBackend())
+        let nuls = String(repeating: "\0", count: 256)
+        let r = await PanelTest.roundTrip(port: port, PanelTest.request("GET", "/info", port: port, token: PanelTest.token + nuls))
+        XCTAssertEqual(r?.status, 403)
+    }
+
+    // MARK: Origin 모양 · 읽기 시간 · 연결 수
+
+    func testOnlyHostShapedExtensionOriginsAreEchoed() async throws {
+        for ok in [PanelTest.extensionOrigin, "safari-web-extension://abc.def-1", "safari-web-extension://abc:8080"] {
+            XCTAssertTrue(PanelServer.isExtensionOrigin(ok), ok)
+        }
+        for bad in ["safari-web-extension://", "safari-web-extension://a/", "safari-web-extension://a b", "safari-web-extension://a\nSet-Cookie: x=1",
+                    "safari-web-extension://a\rb", "safari-web-extension://a:", "safari-web-extension://a:99999x", "safari-web-extension://é",
+                    "safari-web-extension://a:1:2", "safari-web-extension://a;b", "SAFARI-web-extension://a", "https://a"] {
+            XCTAssertFalse(PanelServer.isExtensionOrigin(bad), bad)
+        }
+        // 머리에 줄바꿈을 끼워 넣은 Origin — 403 이고, 끼운 머리는 응답에 나오지 않는다.
+        let (_, port) = try await start(StubBackend())
+        let raw = "GET /info HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nX-SA-Token: \(PanelTest.token)\r\nOrigin: safari-web-extension://abc\nSet-Cookie: x=1\r\n\r\n"
+        let text: String = await Task.detached {
+            let c = RawClient(port: port)!
+            c.send(raw)
+            return String(decoding: c.read(timeout: 5), as: UTF8.self)
+        }.value
+        XCTAssertTrue(text.hasPrefix("HTTP/1.1 403"), text)
+        XCTAssertFalse(text.contains("Set-Cookie"))
+        XCTAssertFalse(text.lowercased().contains("access-control-allow-origin"))
+    }
+
+    func testClientThatNeverFinishesTheHeadIsCutOffAfterTheReadTimeout() async throws {
+        let server = PanelServer(token: PanelTest.token, backend: StubBackend(), readTimeout: 0.4)
+        let port = try await server.start()
+        addTeardownBlock { server.stop() }
+        let started = Date()
+        let took: TimeInterval = await Task.detached {
+            let c = RawClient(port: port)!
+            c.send("GET /info HTTP/1.1\r\nHost:")   // 머리를 끝내지 않는다
+            _ = c.read(timeout: 5)                       // 서버가 끊으면 곧 돌아온다
+            return Date().timeIntervalSince(started)
+        }.value
+        XCTAssertLessThan(took, 3, "읽기 시간이 지나면 서버가 끊어야 해요")
+        XCTAssertGreaterThanOrEqual(took, 0.3)
+        let ok = await PanelTest.roundTrip(port: port, PanelTest.request("GET", "/info", port: port))
+        XCTAssertEqual(ok?.status, 200, "다른 손님은 영향 없음")
+    }
+
+    func testBodyThatNeverFillsIsCutOffAndReturnsItsAskSlot() async throws {
+        let backend = StubBackend()
+        let server = PanelServer(token: PanelTest.token, backend: backend, readTimeout: 0.4)
+        let port = try await server.start()
+        addTeardownBlock { server.stop() }
+        let c = try XCTUnwrap(RawClient(port: port))
+        c.send(PanelTest.request("POST", "/ask", port: port, body: Data("{\"quest".utf8), lengthOverride: 200))
+        let reserved = await PanelTest.waitUntil { server.activeAskCount == 1 }
+        XCTAssertTrue(reserved, "머리가 통과하면 자리를 잡는다")
+        let freed = await PanelTest.waitUntil(timeout: 3) { server.activeAskCount == 0 }
+        XCTAssertTrue(freed, "본문을 못 채운 연결은 시간이 지나면 자리를 돌려줘요")
+        XCTAssertEqual(backend.started, 0)
+        c.closeNow()
+    }
+
+    func testConnectionsOverTheCapAreDroppedAndSpaceFreesUp() async throws {
+        let server = PanelServer(token: PanelTest.token, backend: StubBackend(), maxConnections: 2)
+        let port = try await server.start()
+        addTeardownBlock { server.stop() }
+        let first = try XCTUnwrap(RawClient(port: port)), second = try XCTUnwrap(RawClient(port: port))
+        // 둘이 서버 목록에 올라갈 때까지(아무것도 안 보낸 채 붙어 있다).
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let third = try XCTUnwrap(RawClient(port: port))   // 연결은 되지만 서버가 바로 끊는다
+        let thirdData = await Task.detached { third.read(timeout: 2) }.value
+        XCTAssertTrue(thirdData.isEmpty)
+        // 하나를 닫으면 다시 받는다.
+        first.closeNow()
+        let ok = await PanelTest.waitUntil(timeout: 3) {
+            guard let c = RawClient(port: port) else { return false }
+            c.send(PanelTest.request("GET", "/info", port: port))
+            return HTTPReply.parse(c.read(timeout: 1))?.status == 200
+        }
+        XCTAssertTrue(ok)
+        second.closeNow()
     }
 }

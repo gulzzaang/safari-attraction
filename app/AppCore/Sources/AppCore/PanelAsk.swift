@@ -242,7 +242,10 @@ extension ChatViewModel {
             guard kind != .claude else { return currentPanelSelection(kind) }
             await refreshStatus(for: kind)
             let deadline = Date().addingTimeInterval(maxWait)
-            while status?.state(kind).isRefreshing == true, Date() < deadline { try? await Task.sleep(nanoseconds: 100_000_000) }
+            // 취소되면(손님이 끊음 · 서버가 멈춤) 바로 끝낸다 — 취소된 `Task.sleep` 은 곧바로 돌아와 메인 액터에서 바쁜 루프가 된다.
+            while status?.state(kind).isRefreshing == true, Date() < deadline, !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 100_000_000) } catch { break }
+            }
         } else if status != nil {
             Task { [self] in await refreshStatus(for: kind) }   // 기다리지 않는다 — 열자마자 보이는 이름이 늦지 않게
         }

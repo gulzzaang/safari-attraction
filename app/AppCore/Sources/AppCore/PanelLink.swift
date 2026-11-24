@@ -47,13 +47,12 @@ public enum PanelLink {
         unlink(fileURL(in: directory).path)
     }
 
-    /// 상수 시간 비교 — 길이가 달라도 끝까지 훑는다.
+    /// 길이가 다르면 false(토큰 길이 64 는 공개된 값이라 길이 비교는 새는 것이 없다), 같은 길이에서만 모든 바이트를 XOR 로 모아 본다(상수 시간).
     public static func constantTimeEquals(_ a: String, _ b: String) -> Bool {
         let x = Array(a.utf8), y = Array(b.utf8)
-        var diff = UInt8(truncatingIfNeeded: x.count ^ y.count)
-        for i in 0..<max(x.count, y.count) {
-            diff |= (i < x.count ? x[i] : 0) ^ (i < y.count ? y[i] : 0)
-        }
+        guard x.count == y.count else { return false }
+        var diff: UInt8 = 0
+        for i in 0..<x.count { diff |= x[i] ^ y[i] }
         return diff == 0
     }
 }
