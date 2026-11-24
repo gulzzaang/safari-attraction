@@ -49,7 +49,6 @@ final class TerminalLoginTests: XCTestCase {
         XCTAssertTrue(x.contains("'codex' 'login' '--device-auth'"))
         XCTAssertTrue(x.hasPrefix("#!/bin/zsh -l\n"))
         XCTAssertTrue(x.contains("끝나면 이 창을 닫으세요."))
-        XCTAssertThrowsError(try TerminalLogin.writeLoginFile(kind: .gemini, support: support))
     }
 }
 

@@ -64,9 +64,9 @@ final class CLIProviderTests: XCTestCase {
         for bad in ["", "-m", "a b", "a;b", "a$(x)", "한글", String(repeating: "a", count: 81)] { XCTAssertFalse(CLIModels.isSafeID(bad), bad) }
     }
 
-    func testEnabledModelsAndAgyNotCalled() {
-        XCTAssertEqual(ModelKind.enabled, [.claude, .chatgpt])
-        XCTAssertEqual(ModelKind.subscriptionCLIs, [.claude, .chatgpt])
+    func testAllFourCLIsAreEnabled() {
+        XCTAssertEqual(ModelKind.enabled, [.claude, .gemini, .chatgpt, .opencode])
+        XCTAssertEqual(ModelKind.subscriptionCLIs, [.claude, .gemini, .chatgpt, .opencode])
     }
 
     // MARK: 일 맡기기 모델

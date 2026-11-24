@@ -9,8 +9,14 @@ public struct UsageWindow: Equatable, Sendable {
     public var resetsAt: Date?
     /// 초기화 시각을 글로 받은 것(클로드 `/usage` 의 「Nov 24 at 6:30pm (Asia/Seoul)」).
     public var resetsText: String?
-    public init(name: String, usedFraction: Double?, resetsAt: Date? = nil, resetsText: String? = nil) {
+    /// 같은 CLI 안의 묶음(agy 「제미나이」 · 「클로드 · GPT」) — 옆 창 한 줄이 고른 모델의 묶음만 보이게.
+    public var group: String?
+    /// 초기화 시각이 1970-01-01 로 온 것 — 그 창이 아직 시작 안 됨(agy).
+    public var notStarted: Bool
+    public init(name: String, usedFraction: Double?, resetsAt: Date? = nil, resetsText: String? = nil,
+                group: String? = nil, notStarted: Bool = false) {
         self.name = name; self.usedFraction = usedFraction; self.resetsAt = resetsAt; self.resetsText = resetsText
+        self.group = group; self.notStarted = notStarted
     }
 }
 
@@ -35,6 +41,7 @@ public enum UsageFormat {
 
     /// 「초기화 오늘 18:30」 · 「초기화 11월 25일 18:30」 · 글로 받은 건 그대로. 모르면 nil.
     public static func resetText(_ w: UsageWindow, now: Date = Date(), calendar: Calendar = .autoupdatingCurrent) -> String? {
+        if w.notStarted { return "아직 시작 안 됨" }
         if let d = w.resetsAt {
             if d.timeIntervalSince(now) < 0 { return "이미 초기화됐어요" }
             var cal = calendar
@@ -46,6 +53,29 @@ public enum UsageFormat {
         }
         if let t = w.resetsText, !t.isEmpty { return "초기화 " + t }
         return nil
+    }
+
+    /// 옆 창 입력 칸 아래 한 줄 — 「5시간 23% 사용 · 주간 48%」. 5시간 · 주간 창이 있으면 그 둘, 없으면 앞의 둘. `group` 이 있고 그 묶음의 창이 있으면 그것만.
+    /// 사용 비율을 모르는 창은 뺀다. 보일 창이 없으면 nil(한 줄을 숨긴다).
+    public static func oneLine(_ snap: UsageSnapshot, group: String? = nil) -> String? {
+        var windows = snap.windows.filter { $0.usedFraction != nil }
+        if let group, windows.contains(where: { $0.group == group }) { windows = windows.filter { $0.group == group } }
+        guard !windows.isEmpty else { return nil }
+        func label(_ w: UsageWindow) -> String {
+            if let g = w.group, w.name.hasPrefix(g + " ") { return String(w.name.dropFirst(g.count + 1)) }
+            switch w.name {
+            case "현재 세션": return "5시간"
+            case "이번 주 · 전체 모델": return "주간"
+            default: return w.name
+            }
+        }
+        let five = windows.first { label($0) == "5시간" }, week = windows.first { label($0) == "주간" }
+        let picked: [UsageWindow] = (five != nil || week != nil) ? [five, week].compactMap { $0 } : Array(windows.prefix(2))
+        let parts = picked.enumerated().map { i, w -> String in
+            let pct = Int(((w.usedFraction ?? 0) * 100).rounded())
+            return "\(label(w)) \(pct)%" + (i == 0 ? " 사용" : "")
+        }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -66,6 +96,21 @@ public enum ClaudeUsageParser {
         let windows = head.compactMap(parseLine)
         if windows.isEmpty { return UsageSnapshot(rawLines: head) }
         return UsageSnapshot(windows: windows)
+    }
+
+    /// 답 도중의 `rate_limit_event` — `rate_limit_info.unifiedWindows.{five_hour, seven_day}.{utilization 0~1, resetsAt 초}`. 창이 없으면 nil.
+    /// 이름은 `/usage` 와 같게(「현재 세션」 · 「이번 주 · 전체 모델」) 써서 설정 창의 줄과 합쳐진다.
+    public static func parse(rateLimitEvent d: [String: Any]) -> UsageSnapshot? {
+        guard let info = d["rate_limit_info"] as? [String: Any], let uw = info["unifiedWindows"] as? [String: Any] else { return nil }
+        var windows: [UsageWindow] = []
+        for (key, name) in [("five_hour", "현재 세션"), ("seven_day", "이번 주 · 전체 모델")] {
+            guard let w = uw[key] as? [String: Any],
+                  let u = (w["utilization"] as? Double) ?? (w["utilization"] as? Int).map(Double.init) else { continue }
+            var at: Date?
+            if let secs = (w["resetsAt"] as? Double) ?? (w["resetsAt"] as? Int).map(Double.init), secs > 0 { at = Date(timeIntervalSince1970: secs) }
+            windows.append(UsageWindow(name: name, usedFraction: min(max(u, 0), 1), resetsAt: at))
+        }
+        return windows.isEmpty ? nil : UsageSnapshot(windows: windows)
     }
 
     /// 「Current session: 8% used · resets Nov 24 at 6:30pm (Asia/Seoul)」 · 「Current week (Fable): 47% used」
@@ -193,5 +238,144 @@ public struct CodexUsageClient: Sendable {
         let (result, failed) = state.snapshot
         guard !failed, let result else { return nil }
         return CodexUsageParser.parse(result: result)
+    }
+}
+
+
+/// agy `/usage` 읽기 — `agy -p "/usage" --output-format stream-json` 첫 줄의 `command_result.command.data.groups[].buckets[]`.
+/// `remaining_fraction`(남은 비율) → 사용 비율 = 1 − 남은 값. `reset_time` 이 `1970-01-01` 이면 「아직 시작 안 됨」.
+public enum AgyUsageParser {
+    public static let geminiGroup = "제미나이"
+    public static let otherGroup = "클로드 · GPT"
+
+    /// 고른 모델 id 가 어느 묶음인지(`gemini…` 면 제미나이, 그 밖은 클로드 · GPT). id 를 모르면 제미나이.
+    public static func group(forModelID id: String?) -> String {
+        guard let id, !id.isEmpty else { return geminiGroup }
+        return id.hasPrefix("gemini") ? geminiGroup : otherGroup
+    }
+
+    static func groupName(_ raw: String) -> String {
+        let low = raw.lowercased()
+        if low.contains("gemini") { return geminiGroup }
+        if low.contains("claude") || low.contains("gpt") { return otherGroup }
+        return raw
+    }
+
+    static func windowName(_ raw: String) -> String {
+        switch raw.lowercased() {
+        case "5h": return "5시간"
+        case "weekly", "7d": return "주간"
+        case "daily", "1d": return "하루"
+        case "monthly": return "월간"
+        default: return raw
+        }
+    }
+
+    private static func rank(_ raw: String) -> Int {
+        switch raw.lowercased() { case "5h": return 0; case "weekly", "7d": return 1; default: return 2 }
+    }
+
+    static func parseDate(_ text: String) -> Date? {
+        let a = ISO8601DateFormatter()
+        if let d = a.date(from: text) { return d }
+        let b = ISO8601DateFormatter()
+        b.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return b.date(from: text)
+    }
+
+    /// 못 읽으면(모양이 다름 · 로그인 안내) nil.
+    public static func parse(streamOutput: String) -> UsageSnapshot? {
+        for raw in streamOutput.split(whereSeparator: \.isNewline) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("{"), let data = line.data(using: .utf8),
+                  let d = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  (d["event"] as? String) == "command_result",
+                  let groups = ((d["command"] as? [String: Any])?["data"] as? [String: Any])?["groups"] as? [[String: Any]] else { continue }
+            var windows: [UsageWindow] = []
+            for g in groups {
+                let group = groupName((g["name"] as? String) ?? "")
+                let buckets = (g["buckets"] as? [[String: Any]] ?? []).enumerated()
+                    .sorted { (a, b) in
+                        let ra = rank((a.element["window"] as? String) ?? ""), rb = rank((b.element["window"] as? String) ?? "")
+                        return ra != rb ? ra < rb : a.offset < b.offset
+                    }.map(\.element)
+                for b in buckets {
+                    guard let remaining = (b["remaining_fraction"] as? Double) ?? (b["remaining_fraction"] as? Int).map(Double.init) else { continue }
+                    let win = (b["window"] as? String) ?? (b["id"] as? String) ?? ""
+                    var at: Date?, notStarted = false
+                    if let t = b["reset_time"] as? String, let date = parseDate(t) {
+                        if date.timeIntervalSince1970 <= 86_400 { notStarted = true } else { at = date }   // 1970-01-01 = 아직 시작 안 됨
+                    }
+                    windows.append(UsageWindow(name: "\(group) \(windowName(win))", usedFraction: min(max(1 - remaining, 0), 1),
+                                               resetsAt: at, group: group, notStarted: notStarted))
+                }
+            }
+            return windows.isEmpty ? nil : UsageSnapshot(windows: windows)
+        }
+        return nil
+    }
+}
+
+/// opencode 는 구독 남은 양을 알려 주는 명령이 없다. `opencode stats --json --days 7` 의 이 맥에서 쓴 토큰 · 비용 합만 읽는다.
+/// 모양을 모르므로 이름으로 느슨하게 찾고, 못 찾으면 nil(생략). 받은 글은 그대로 내보이지 않고 숫자만 고정 문구에 넣는다.
+public enum OpenCodeStatsParser {
+    public static let noteText = "구독 남은 양은 알 수 없어요 — 이 맥에서 쓴 양만"
+
+    static func number(_ any: Any?) -> Double? {
+        if let d = any as? Double { return d }
+        if let i = any as? Int { return Double(i) }
+        return nil
+    }
+
+    /// 깊이 우선(키 이름순)으로 처음 만나는 숫자.
+    static func firstNumber(in any: Any, keys: Set<String>) -> Double? {
+        if let dict = any as? [String: Any] {
+            for k in dict.keys.sorted() {
+                if keys.contains(k.lowercased()), let n = number(dict[k]) { return n }
+            }
+            for k in dict.keys.sorted() { if let n = firstNumber(in: dict[k] as Any, keys: keys) { return n } }
+        } else if let arr = any as? [Any] {
+            for e in arr { if let n = firstNumber(in: e, keys: keys) { return n } }
+        }
+        return nil
+    }
+
+    static func tokenTotal(_ root: Any) -> Double? {
+        if let t = firstNumber(in: root, keys: ["totaltokens", "total_tokens"]) { return t }
+        let parts = ["totalinputtokens", "totaloutputtokens", "totalreasoningtokens", "inputtokens", "outputtokens"]
+        let sum = parts.compactMap { firstNumber(in: root, keys: [$0]) }
+        if !sum.isEmpty { return sum.reduce(0, +) }
+        if let tokens = firstTokensDict(in: root) {
+            let cache = tokens["cache"] as? [String: Any]
+            let vals = [tokens["input"], tokens["output"], tokens["reasoning"], cache?["read"], cache?["write"]].compactMap(number)
+            if !vals.isEmpty { return vals.reduce(0, +) }
+        }
+        return nil
+    }
+
+    static func firstTokensDict(in any: Any) -> [String: Any]? {
+        if let dict = any as? [String: Any] {
+            if let t = dict["tokens"] as? [String: Any] { return t }
+            for k in dict.keys.sorted() { if let t = firstTokensDict(in: dict[k] as Any) { return t } }
+        } else if let arr = any as? [Any] {
+            for e in arr { if let t = firstTokensDict(in: e) { return t } }
+        }
+        return nil
+    }
+
+    public static func parse(jsonOutput: String, days: Int = 7) -> UsageSnapshot? {
+        guard let start = jsonOutput.firstIndex(where: { $0 == "{" || $0 == "[" }),
+              let data = String(jsonOutput[start...]).data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        let tokens = tokenTotal(root)
+        let cost = firstNumber(in: root, keys: ["totalcost", "total_cost"]) ?? firstNumber(in: root, keys: ["cost"])
+        var parts: [String] = []
+        if let t = tokens, t >= 0 {
+            let f = NumberFormatter(); f.numberStyle = .decimal; f.locale = Locale(identifier: "en_US")
+            parts.append("토큰 " + (f.string(from: NSNumber(value: Int(t))) ?? "\(Int(t))"))
+        }
+        if let c = cost, c >= 0 { parts.append("비용 $" + String(format: "%.2f", c)) }
+        guard !parts.isEmpty else { return nil }
+        return UsageSnapshot(rawLines: ["최근 \(days)일 이 맥에서 쓴 양 — " + parts.joined(separator: " · ")])
     }
 }

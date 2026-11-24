@@ -97,18 +97,24 @@ public final class ChatViewModel {
 
     // MARK: CLI · 모델 고르기
 
-    /// 고를 수 있는 모델 목록(클로드는 고정 · codex 는 로그인 뒤 불러온 것 — 못 불렀으면 빈 목록).
+    /// 고를 수 있는 모델 목록(클로드는 고정 · 나머지는 불러온 것 — 못 불렀으면 빈 목록).
     public func modelChoices(for kind: ModelKind) -> [ModelChoice] {
-        switch kind {
-        case .claude: return CLIModels.claudeChoices
-        case .chatgpt: return status?.models(for: .chatgpt) ?? []
-        case .gemini: return []
-        }
+        kind == .claude ? CLIModels.claudeChoices : (status?.models(for: kind) ?? [])
     }
 
-    /// 지금 쓸 모델 id — 저장해 둔 것이 목록에 있으면 그것, 아니면 목록의 첫 것(클로드는 sonnet). 목록이 비면 nil(codex 기본 모델에 맡김).
+    /// 지금 쓸 모델 id — 저장해 둔 것이 목록에 있으면 그것, 아니면 그 CLI 의 기본(클로드 sonnet · agy `gemini-3.8-flash-medium` · opencode 첫 `-free`…).
+    /// 목록이 비면 nil(codex · opencode 는 `-m` 없이 CLI 기본 모델에 맡기고, agy 는 기본 모델 이름으로).
     public func selectedModelID(for kind: ModelKind) -> String? {
-        CLIModels.resolve(selected: modelIDs[kind], in: modelChoices(for: kind))
+        CLIModels.resolve(kind: kind, selected: modelIDs[kind], in: modelChoices(for: kind))
+    }
+
+    /// 옆 창 입력 칸 아래 남은 양 한 줄(예: 「5시간 23% 사용 · 주간 48%」) — 고른 CLI 의 값. 못 읽었으면 nil(한 줄을 숨긴다).
+    /// opencode 는 구독 남은 양이 없어서 이 맥에서 쓴 양 한 줄. agy 는 고른 모델 묶음(제미나이 · 클로드 · GPT)의 창만.
+    public var remainingUsageText: String? {
+        guard let snap = status?.state(model).usage else { return nil }
+        if model == .opencode { return snap.rawLines.first }
+        let group = model == .gemini ? AgyUsageParser.group(forModelID: selectedModelID(for: .gemini)) : nil
+        return UsageFormat.oneLine(snap, group: group)
     }
 
     public func setModelID(_ id: String, for kind: ModelKind) {
@@ -271,6 +277,12 @@ public final class ChatViewModel {
                         outcome = Task.isCancelled ? .stopped : .failed("codex 로그인을 확인하지 못했어요")
                         break
                     }
+                    if job.model == .gemini, loginState(for: .gemini) == .loggedOut {
+                        // 로그인이 안 된 걸 이미 아는 agy 는 띄우지 않는다(로그인 안 된 채 -p 가 어떻게 끝나는지 모름).
+                        update(job.answerID) { $0.error = ModelKind.gemini.loginNeededMessage }
+                        outcome = .failed(ModelKind.gemini.loginNeededMessage)
+                        break
+                    }
                     let (exe, args) = CommandBuilder.build(request, workDir: p.dir)
                     let box = ReaderBox(model: job.model)
                     let (stream, cont) = AsyncStream.makeStream(of: StreamEvent.self)
@@ -338,6 +350,8 @@ public final class ChatViewModel {
             update(job.answerID) { if $0.error == nil { $0.error = msg } }
         case .usage(let u):
             update(job.answerID) { $0.usage = u }
+        case .rateLimits(let snap):
+            if job.model == .claude { status?.applyLiveUsage(.claude, snap) }   // 답과 함께 온 한도 — 옆 창 한 줄을 바로 갱신
         }
         return nil
     }

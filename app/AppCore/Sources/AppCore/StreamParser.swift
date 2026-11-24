@@ -11,6 +11,8 @@ public enum StreamEvent: Sendable, Equatable {
     case error(String)
     /// 이번 답에 쓴 양(토큰 수) — Claude 의 `result.usage` · codex 의 `turn.completed.usage`. 줄에 있을 때만 나온다.
     case usage(TokenUsage)
+    /// 클로드 답 도중에 알려 준 한도(`rate_limit_event.rate_limit_info.unifiedWindows` 가 있을 때만) — 옆 창 남은 양 한 줄을 갱신한다.
+    case rateLimits(UsageSnapshot)
 }
 
 public protocol StreamParsing: Sendable {
@@ -80,6 +82,8 @@ public struct ClaudeStreamParser: StreamParsing {
                 default: break // thinking 등
                 }
             }
+        case "rate_limit_event":
+            if let snap = ClaudeUsageParser.parse(rateLimitEvent: d) { events.append(.rateLimits(snap)) }
         case "result":
             let isError = (d["is_error"] as? Bool) ?? false
             let text = (d["result"] as? String) ?? ""
@@ -99,7 +103,7 @@ public struct ClaudeStreamParser: StreamParsing {
     }
 }
 
-/// 제미나이(agy) · ChatGPT(codex) 는 받은 글을 그대로 `.text` 로 낸다.
+/// 받은 글을 그대로 `.text` 로 낸다.
 /// 글자(UTF-8) 한가운데서 chunk 가 잘려도 깨지지 않게 끝의 덜 온 바이트는 다음 chunk 와 합친다.
 /// 받는 도중에는 글을 바꾸거나 막지 않는다 — 로그인 필요 판정은 끝난 뒤 `ModelOutputReader.finish` 가 한다.
 public struct PlainStreamParser: StreamParsing {
@@ -146,7 +150,8 @@ public struct ModelOutputReader: Sendable {
     private let model: ModelKind
     private var claude = ClaudeStreamParser()
     private var codex = CodexStreamParser()
-    private var plain: PlainStreamParser
+    private var agy = AgyStreamParser()
+    private var opencode = OpenCodeStreamParser()
     private var stderrText = ""
     private var stdoutHead = ""
     private var sawAnswer = false
@@ -154,7 +159,6 @@ public struct ModelOutputReader: Sendable {
 
     public init(model: ModelKind) {
         self.model = model
-        self.plain = PlainStreamParser(model: model)
     }
 
     public mutating func handle(_ event: RunEvent) -> [StreamEvent] {
@@ -190,7 +194,8 @@ public struct ModelOutputReader: Sendable {
         switch model {
         case .claude: return claude.feed(d)
         case .chatgpt: return codex.feed(d)
-        case .gemini: return plain.feed(d)
+        case .gemini: return agy.feed(d)
+        case .opencode: return opencode.feed(d)
         }
     }
 
@@ -198,7 +203,8 @@ public struct ModelOutputReader: Sendable {
         switch model {
         case .claude: return claude.finish()
         case .chatgpt: return codex.finish()
-        case .gemini: return plain.finish()
+        case .gemini: return agy.finish()
+        case .opencode: return opencode.finish()
         }
     }
 

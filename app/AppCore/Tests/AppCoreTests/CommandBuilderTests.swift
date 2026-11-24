@@ -51,7 +51,7 @@ final class CommandBuilderTests: XCTestCase {
     func testGeminiPlain() {
         let c = CommandBuilder.build(req(.gemini), workDir: work)
         XCTAssertEqual(c.executable, "agy")
-        XCTAssertEqual(c.arguments, ["-p", "질문", "--model", "gemini-3.8-flash-medium", "--print-timeout", "120s"])
+        XCTAssertEqual(c.arguments, ["-p", "질문", "--model", "gemini-3.8-flash-medium", "--output-format", "stream-json"])
     }
     func testGeminiWebSearchPrefix() {
         let c = CommandBuilder.build(req(.gemini, web: true), workDir: work)
@@ -162,7 +162,7 @@ final class CommandBuilderTests: XCTestCase {
         }
     }
     func testModelKindBasics() {
-        XCTAssertEqual(ModelKind.allCases, [.claude, .gemini, .chatgpt])
+        XCTAssertEqual(ModelKind.allCases, [.claude, .gemini, .chatgpt, .opencode])
         XCTAssertEqual(ModelKind.claude.koreanName, "클로드")
         XCTAssertEqual(ModelKind.gemini.koreanName, "제미나이")
         XCTAssertEqual(ModelKind.chatgpt.koreanName, "ChatGPT")

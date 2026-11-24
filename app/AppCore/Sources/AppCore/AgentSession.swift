@@ -434,8 +434,8 @@ public final class AgentSession {
         case .error(let msg):
             run.sawError = true
             if messages.last?.content != .error(msg) { append(.error(msg)) }
-        case .usage:
-            break   // 일 맡기기는 쓴 양을 보이지 않는다
+        case .usage, .rateLimits:
+            break   // 일 맡기기는 쓴 양 · 한도를 보이지 않는다
         }
     }
 
@@ -445,7 +445,7 @@ public final class AgentSession {
         case .text(let t):
             u.sawText = true
             if !Self.isBlank(t) { u.answerParts.append(t) }
-        case .toolUse, .sessionID, .usage:
+        case .toolUse, .sessionID, .usage, .rateLimits:
             break
         case .result(let isError, let text):
             u.sawResult = true

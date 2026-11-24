@@ -27,6 +27,66 @@ public enum CLIModels {
         }
     }
 
+    /// opencode 모델 id(`공급자/모델` · `공급자/모델#변형`) — `isSafeID` 의 글자에 `/` · `#` 를 더한다. `-` 나 `/` 로 시작하면 안 된다.
+    public static func isSafeProviderModelID(_ id: String) -> Bool {
+        guard !id.isEmpty, id.count <= 120, !id.hasPrefix("-"), !id.hasPrefix("/"), id.contains("/") else { return false }
+        return id.unicodeScalars.allSatisfy { s in
+            (s.value >= 0x30 && s.value <= 0x39) || (s.value >= 0x41 && s.value <= 0x5A)
+                || (s.value >= 0x61 && s.value <= 0x7A) || s == "." || s == "_" || s == "-" || s == ":" || s == "/" || s == "#"
+        }
+    }
+
+    /// `agy models` — 한 줄에 `id<TAB>이름`(탭이 없으면 공백으로 가른다). id 는 안전한 글자 · 하이픈이 든 것만(머리글 · 안내 줄은 버림).
+    /// 로그인 안내 글이 섞여 있으면 빈 목록.
+    public static func parseAgyModels(_ output: String) -> [ModelChoice] {
+        if LoginDetector.looksLikeLoginNeeded(output) { return [] }
+        var seen = Set<String>()
+        var out: [ModelChoice] = []
+        for raw in output.split(whereSeparator: \.isNewline) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty else { continue }
+            var id: String, name: String
+            if let tab = line.firstIndex(of: "\t") {
+                id = String(line[line.startIndex..<tab]).trimmingCharacters(in: .whitespaces)
+                name = String(line[line.index(after: tab)...]).trimmingCharacters(in: .whitespaces)
+            } else {
+                let parts = line.split(maxSplits: 1, whereSeparator: { $0 == " " })
+                id = parts.first.map(String.init) ?? ""
+                name = parts.count > 1 ? String(parts[1]).trimmingCharacters(in: .whitespaces) : ""
+            }
+            guard isSafeID(id), id.contains("-"), !id.hasSuffix(":"), seen.insert(id).inserted else { continue }
+            out.append(ModelChoice(id: id, label: name.isEmpty ? id : name))
+        }
+        return out
+    }
+
+    /// `opencode models` — 한 줄에 `공급자/모델`. 안전한 id 가 아닌 줄(안내 · 장식)은 버린다.
+    public static func parseOpenCodeModels(_ output: String) -> [ModelChoice] {
+        var seen = Set<String>()
+        var out: [ModelChoice] = []
+        for raw in output.split(whereSeparator: \.isNewline) {
+            let id = raw.trimmingCharacters(in: .whitespaces)
+            guard isSafeProviderModelID(id), seen.insert(id).inserted else { continue }
+            out.append(ModelChoice(id: id, label: id))
+        }
+        return out
+    }
+
+    /// CLI 마다 기본 모델 — 클로드 첫 것(sonnet) · codex 첫 것 · agy `gemini-3.8-flash-medium`(없으면 첫 것) · opencode `-free` 로 끝나는 첫 것(없으면 첫 것).
+    public static func defaultID(for kind: ModelKind, in choices: [ModelChoice]) -> String? {
+        switch kind {
+        case .claude, .chatgpt: return choices.first?.id
+        case .gemini: return choices.first(where: { $0.id == CommandBuilder.geminiModel })?.id ?? choices.first?.id
+        case .opencode: return choices.first(where: { $0.id.hasSuffix("-free") })?.id ?? choices.first?.id
+        }
+    }
+
+    /// 저장해 둔 모델이 목록에 있으면 그것, 아니면 그 CLI 의 기본. 목록이 비면 nil.
+    public static func resolve(kind: ModelKind, selected: String?, in choices: [ModelChoice]) -> String? {
+        if let s = selected, choices.contains(where: { $0.id == s }) { return s }
+        return defaultID(for: kind, in: choices)
+    }
+
     /// `codex debug models` 의 JSON — 맨 위가 배열이거나 배열 하나를 감싼 객체. `visibility == "list"` 만, 순서는 그대로.
     /// 앞뒤에 JSON 이 아닌 글이 붙어 있어도 첫 `[`·`{` 부터 읽는다. 못 읽으면 빈 목록.
     public static func parseCodexModels(_ output: String) -> [ModelChoice] {

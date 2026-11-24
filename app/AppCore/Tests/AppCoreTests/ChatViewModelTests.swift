@@ -140,17 +140,20 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isRunning)
     }
 
-    func testAppCallsOnlyClaudeAndCodexByDefault() async {
-        // 계획 10 — 클로드 + ChatGPT(codex). 제미나이(agy)는 계속 꺼 둔다.
-        XCTAssertEqual(ModelKind.enabled, [.claude, .chatgpt])
+    func testAppCallsAllFourCLIsByDefaultButNotDisabledOnes() async {
+        // 계획 10 조각 5 — 네 CLI 모두 켠다. `enabledModels` 에서 뺀 CLI 는 여전히 부르지 않는다.
+        XCTAssertEqual(ModelKind.enabled, [.claude, .gemini, .chatgpt, .opencode])
         let c = clock!
+        let all = ChatViewModel(runner: runner, bridge: bridge, loginPath: { "/test/bin" },
+                                workDirectory: { URL(fileURLWithPath: "/tmp/work-test") }, now: { c.date })
+        XCTAssertEqual(all.availableModels, [.claude, .gemini, .chatgpt, .opencode])
         let only = ChatViewModel(runner: runner, bridge: bridge, loginPath: { "/test/bin" },
-                                 workDirectory: { URL(fileURLWithPath: "/tmp/work-test") }, now: { c.date })
-        XCTAssertEqual(only.availableModels, [.claude, .chatgpt])
+                                 workDirectory: { URL(fileURLWithPath: "/tmp/work-test") }, now: { c.date },
+                                 enabledModels: [.claude, .chatgpt])
         runner.setScript { _, emit in emit(claudeResultLine(text: "ok")); return .finished(code: 0) }
         only.model = .gemini; only.input = "q"
         await only.send()?.value
-        XCTAssertEqual(runner.calls.map(\.executable), ["claude"], "agy 는 부르지 않는다")
+        XCTAssertEqual(runner.calls.map(\.executable), ["claude"], "꺼 둔 CLI 는 부르지 않는다")
         XCTAssertEqual(only.model, .claude)
     }
 

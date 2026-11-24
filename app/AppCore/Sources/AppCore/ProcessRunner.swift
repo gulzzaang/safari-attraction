@@ -57,11 +57,16 @@ public final class ProcessRunner: @unchecked Sendable {
 
     /// 자식 환경에 덮어쓸 값(사용자 환경에 같은 이름이 있어도 이 값이 이긴다) — 앱은 `CLAUDE_CONFIG_DIR` 하나를 넣는다.
     private let environmentOverrides: [String: String]
+    /// 띄우는 순간 실행 파일 이름(경로 없이)에 맞춰 더 덮어쓸 값 — agy(`HOME`) · opencode(`XDG_*`)처럼 한 CLI 에만 줄 환경, 그리고 바뀔 수 있는 설정.
+    /// `environmentOverrides` 위에 얹는다.
+    private let executableEnvironment: @Sendable (String) -> [String: String]
 
-    public init(killGrace: TimeInterval = 2, writeStallLimit: TimeInterval = 5, environmentOverrides: [String: String] = [:]) {
+    public init(killGrace: TimeInterval = 2, writeStallLimit: TimeInterval = 5, environmentOverrides: [String: String] = [:],
+                executableEnvironment: @escaping @Sendable (String) -> [String: String] = { _ in [:] }) {
         self.killGrace = killGrace
         self.writeStallLimit = writeStallLimit
         self.environmentOverrides = environmentOverrides
+        self.executableEnvironment = executableEnvironment
     }
 
     /// 앱이 띄우는 claude(묻기 · 일 맡기기 · 루틴)의 환경 덮어쓰기 — 앱 전용 클로드 설정 폴더.
@@ -263,7 +268,8 @@ public final class ProcessRunner: @unchecked Sendable {
         posix_spawn_file_actions_adddup2(&actions, errFds[1], 2)
         let chdirRC = posix_spawn_file_actions_addchdir_np(&actions, workDir.path)
 
-        let env = Self.childEnvironment(base: ProcessInfo.processInfo.environment, path: path, overrides: environmentOverrides)
+        let overrides = environmentOverrides.merging(executableEnvironment((executable as NSString).lastPathComponent)) { _, new in new }
+        let env = Self.childEnvironment(base: ProcessInfo.processInfo.environment, path: path, overrides: overrides)
         let argv = ([exe] + arguments).map { strdup($0) } + [nil]
         let envp = env.map { strdup("\($0.key)=\($0.value)") } + [nil]
         defer { argv.forEach { free($0) }; envp.forEach { free($0) } }

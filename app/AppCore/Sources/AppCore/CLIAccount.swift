@@ -20,6 +20,8 @@ public enum CLILoginState: Equatable, Sendable {
     case unknown
     case loggedOut
     case loggedIn(CLIAccountInfo)
+    /// 로그인은 안 했지만 쓸 수 있다(opencode 의 무료 모델) — 칩을 흐리게 하지도 막지도 않는다.
+    case freeOnly
 }
 
 /// 로그인 상태 출력 읽기 — 종료 코드가 먼저, 글은 이메일 · 플랜 · 고정 문구만 뽑고 나머지는 버린다.
@@ -44,6 +46,21 @@ public enum CLIAccountParser {
         if low.contains("chatgpt") { return .loggedIn(CLIAccountInfo(detail: "ChatGPT 계정")) }
         if low.contains("api key") { return .loggedIn(CLIAccountInfo(detail: "API 키 로그인(구독 아님)")) }
         return .loggedIn(CLIAccountInfo())
+    }
+
+    /// `agy models` — 로그인 전용 명령이 없어서 이것으로 본다. 출력(stdout · stderr 합쳐서)에 「Please sign in」 류가 있으면 안 됨,
+    /// 종료 0 이고 모델 목록이 나오면 됨. 그 밖(시간 초과 · 빈 목록 · 다른 오류)은 `.unknown`(막지 않음).
+    public static func parseAgyStatus(stdout: String, stderr: String, exitCode: Int32) -> (state: CLILoginState, models: [ModelChoice]) {
+        if LoginDetector.looksLikeLoginNeeded(stdout + "\n" + stderr) { return (.loggedOut, []) }
+        guard exitCode == 0 else { return (.unknown, []) }
+        let models = CLIModels.parseAgyModels(stdout)
+        return models.isEmpty ? (.unknown, []) : (.loggedIn(CLIAccountInfo()), models)
+    }
+
+    /// `opencode auth list --standalone` — 「No authenticated…」 이면 로그인 안 함(무료 모델은 됨 → `.freeOnly`), 종료 0 이면 로그인됨. 목록 글은 버린다.
+    public static func parseOpenCodeStatus(output: String, exitCode: Int32) -> CLILoginState {
+        if output.lowercased().contains("no authenticated") { return .freeOnly }
+        return exitCode == 0 ? .loggedIn(CLIAccountInfo()) : .unknown
     }
 
     static func safeEmail(_ any: Any?) -> String? {

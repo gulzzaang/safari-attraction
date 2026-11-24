@@ -95,6 +95,25 @@ public final class CLIStatusService {
         kind == .claude ? CLIModels.claudeChoices : state(kind).models
     }
 
+    /// 옆 창을 열 때 — **고른 CLI 만** 읽는다(5분 안이면 읽지 않음). 쓰지 않는 CLI 를 띄우지 않으려고(agy · opencode 는 상태를 읽는 것만으로도 프로세스를 띄운다).
+    /// 설정 창은 `refreshAll` 로 넷 모두 읽는다.
+    public func refreshForPanel(selected: ModelKind) async {
+        await refresh(selected, force: false)
+    }
+
+    /// 클로드 답 도중에 받은 한도(`rate_limit_event`)를 지금 값에 합친다 — 같은 이름의 창은 바꾸고, 없던 창은 더한다. 읽는 시각 · 5분 간격은 건드리지 않는다.
+    public func applyLiveUsage(_ kind: ModelKind, _ snapshot: UsageSnapshot) {
+        guard ModelKind.subscriptionCLIs.contains(kind), !snapshot.windows.isEmpty else { return }
+        var s = states[kind] ?? CLIState()
+        var merged = s.usage ?? UsageSnapshot()
+        for w in snapshot.windows {
+            if let i = merged.windows.firstIndex(where: { $0.name == w.name }) { merged.windows[i] = w } else { merged.windows.append(w) }
+        }
+        s.usage = merged
+        s.usageNote = nil
+        states[kind] = s
+    }
+
     public func refreshAll(force: Bool) async {
         await withTaskGroup(of: Void.self) { group in
             for k in ModelKind.subscriptionCLIs { group.addTask { await self.refresh(k, force: force) } }
@@ -120,7 +139,7 @@ public final class CLIStatusService {
         s.loginNote = result.loginNote
         s.usage = result.usage
         s.usageNote = result.usageNote
-        if kind == .chatgpt { s.models = result.models; s.modelsNote = result.modelsNote }
+        if kind != .claude { s.models = result.models; s.modelsNote = result.modelsNote }
         s.lastRefresh = now()
         states[kind] = s
     }
@@ -140,19 +159,32 @@ public final class CLIStatusService {
                                  runnerFactory: @Sendable () -> any CLIRunner, timeout: TimeInterval) async -> ReadResult {
         var r = ReadResult()
         let path = loginPath()
-        let name = kind == .claude ? "claude" : "codex"
+        let name = kind.cliName
         r.installedPath = ProcessRunner.resolve(name, path: path)
         guard r.installedPath != nil else {
             r.loginNote = "\(name) 를 찾지 못했어요 — 설치돼 있는지 확인해 주세요"
             r.usageNote = "알 수 없음"
-            if kind == .chatgpt { r.modelsNote = CLIModels.codexLoadFailureNote }
+            if kind != .claude { r.modelsNote = Self.modelsNote(kind) }
             return r
         }
         guard let dir = try? workDirectory() else {
             r.loginNote = "작업 폴더를 만들지 못했어요"; r.usageNote = "알 수 없음"
             return r
         }
+        switch kind {
+        case .claude, .chatgpt: await readClaudeOrCodex(kind, into: &r, path: path, dir: dir, runnerFactory: runnerFactory, timeout: timeout)
+        case .gemini: await readAgy(into: &r, path: path, dir: dir, runnerFactory: runnerFactory, timeout: timeout)
+        case .opencode: await readOpenCode(into: &r, path: path, dir: dir, runnerFactory: runnerFactory, timeout: timeout)
+        }
+        return r
+    }
 
+    nonisolated static func modelsNote(_ kind: ModelKind) -> String {
+        kind == .opencode ? "모델 목록을 불러오지 못했어요 — 새로 고침을 눌러 주세요" : CLIModels.codexLoadFailureNote
+    }
+
+    nonisolated static func readClaudeOrCodex(_ kind: ModelKind, into r: inout ReadResult, path: String, dir: URL,
+                                              runnerFactory: @Sendable () -> any CLIRunner, timeout: TimeInterval) async {
         // 1) 로그인 상태
         let statusCmd = kind == .claude ? CLICommands.claudeAuthStatus : CLICommands.codexLoginStatus
         let status = await CLICapture.run(runner: runnerFactory(), command: statusCmd, workDir: dir, path: path, timeout: timeout)
@@ -164,11 +196,11 @@ public final class CLIStatusService {
         case .timedOut: r.loginNote = "알 수 없음 — \(Int(timeout))초 안에 답이 없었어요"
         default: r.loginNote = "알 수 없음 — 상태를 읽지 못했어요"
         }
-        guard r.login != .unknown else { r.usageNote = "알 수 없음"; if kind == .chatgpt { r.modelsNote = CLIModels.codexLoadFailureNote }; return r }
+        guard r.login != .unknown else { r.usageNote = "알 수 없음"; if kind == .chatgpt { r.modelsNote = CLIModels.codexLoadFailureNote }; return }
         guard case .loggedIn = r.login else {
             r.usageNote = "로그인하면 보여요"
             if kind == .chatgpt { r.modelsNote = CLIModels.codexLoadFailureNote }
-            return r
+            return
         }
 
         // 2) 모델 목록(codex 만 — 로그인 뒤에 불러야 계정에 맞는 목록이 나온다)
@@ -190,6 +222,48 @@ public final class CLIStatusService {
             }
         }
         if r.usage == nil { r.usageNote = "알 수 없음" }
-        return r
+    }
+
+    /// agy — `agy models` 한 번이 로그인 상태이자 모델 목록이다. 로그인됐을 때만 `/usage`(모델 호출 아님)를 읽는다.
+    nonisolated static func readAgy(into r: inout ReadResult, path: String, dir: URL,
+                                    runnerFactory: @Sendable () -> any CLIRunner, timeout: TimeInterval) async {
+        let m = await CLICapture.run(runner: runnerFactory(), command: CLICommands.agyModels, workDir: dir, path: path, timeout: timeout)
+        switch m.outcome {
+        case .finished(let code):
+            let parsed = CLIAccountParser.parseAgyStatus(stdout: m.stdout, stderr: m.stderr, exitCode: code)
+            r.login = parsed.state
+            r.models = parsed.models
+            if parsed.state == .unknown { r.loginNote = "알 수 없음 — 모델 목록을 읽지 못했어요" }
+        case .timedOut: r.loginNote = "알 수 없음 — \(Int(timeout))초 안에 답이 없었어요"
+        default: r.loginNote = "알 수 없음 — 상태를 읽지 못했어요"
+        }
+        if r.models.isEmpty { r.modelsNote = CLIModels.codexLoadFailureNote }
+        guard case .loggedIn = r.login else {
+            r.usageNote = r.login == .loggedOut ? "로그인하면 보여요" : "알 수 없음"
+            return
+        }
+        let u = await CLICapture.run(runner: runnerFactory(), command: CLICommands.agyUsage, workDir: dir, path: path, timeout: timeout)
+        if case .finished(0) = u.outcome, let snap = AgyUsageParser.parse(streamOutput: u.stdout) { r.usage = snap }
+        if r.usage == nil { r.usageNote = "알 수 없음" }
+    }
+
+    /// opencode — 로그인 없이도 무료 모델은 되므로, 로그인 상태와 상관없이 모델 목록과 이 맥에서 쓴 양을 읽는다. 구독 남은 양은 못 얻는다.
+    nonisolated static func readOpenCode(into r: inout ReadResult, path: String, dir: URL,
+                                         runnerFactory: @Sendable () -> any CLIRunner, timeout: TimeInterval) async {
+        let a = await CLICapture.run(runner: runnerFactory(), command: CLICommands.opencodeAuthList, workDir: dir, path: path, timeout: timeout)
+        switch a.outcome {
+        case .finished(let code): r.login = CLIAccountParser.parseOpenCodeStatus(output: a.stdout + "\n" + a.stderr, exitCode: code)
+        case .timedOut: r.loginNote = "알 수 없음 — \(Int(timeout))초 안에 답이 없었어요"
+        default: r.loginNote = "알 수 없음 — 상태를 읽지 못했어요"
+        }
+        if r.login == .unknown, r.loginNote == nil { r.loginNote = "알 수 없음 — 상태를 읽지 못했어요" }
+
+        let m = await CLICapture.run(runner: runnerFactory(), command: CLICommands.opencodeModels, workDir: dir, path: path, timeout: timeout)
+        if case .finished(0) = m.outcome { r.models = CLIModels.parseOpenCodeModels(m.stdout) }
+        if r.models.isEmpty { r.modelsNote = modelsNote(.opencode) }
+
+        let st = await CLICapture.run(runner: runnerFactory(), command: CLICommands.opencodeStats, workDir: dir, path: path, timeout: timeout)
+        if case .finished(0) = st.outcome { r.usage = OpenCodeStatsParser.parse(jsonOutput: st.stdout) }
+        r.usageNote = OpenCodeStatsParser.noteText
     }
 }

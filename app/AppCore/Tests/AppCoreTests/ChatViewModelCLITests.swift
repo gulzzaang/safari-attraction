@@ -120,8 +120,11 @@ final class ChatViewModelCLITests: XCTestCase {
     }
 
     func testSettingsFileNamingAnUnavailableCLIFallsBackToClaude() throws {
-        try Data(#"{"selectedCLI":"gemini","models":{}}"#.utf8).write(to: settingsDir.appendingPathComponent("settings.json"))
+        // 계획 10 조각 5 — 제미나이도 이제 고를 수 있다. 목록에 없는 이름은 그대로 클로드로.
+        try Data(#"{"selectedCLI":"nonsense","models":{}}"#.utf8).write(to: settingsDir.appendingPathComponent("settings.json"))
         XCTAssertEqual(makeVM(settings: AppSettingsStore(directory: settingsDir)).model, .claude)
+        try Data(#"{"selectedCLI":"gemini","models":{}}"#.utf8).write(to: settingsDir.appendingPathComponent("settings.json"))
+        XCTAssertEqual(makeVM(settings: AppSettingsStore(directory: settingsDir)).model, .gemini)
     }
 
     func testCodexModelListChoiceReachesCommandAndStaleChoiceFallsToFirst() async throws {

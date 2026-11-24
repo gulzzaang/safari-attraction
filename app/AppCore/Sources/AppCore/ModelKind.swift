@@ -2,17 +2,17 @@ import Foundation
 
 /// 질문을 보낼 모델 — 각각 사용자 맥에 깔린 CLI 하나에 대응한다.
 public enum ModelKind: String, CaseIterable, Sendable, Equatable {
-    case claude, gemini, chatgpt
+    case claude, gemini, chatgpt, opencode
 
-    /// 앱이 실제로 부르는 CLI. 계획 10 — 클로드와 ChatGPT(codex)만(앱 전용 설정 폴더로 띄운다).
-    /// 제미나이(agy) · opencode 는 아직 부르지 않는다(코드는 남겨 두고 여기에 더하면 켜짐).
-    public static let enabled: [ModelKind] = [.claude, .chatgpt]
+    /// 앱이 실제로 부르는 CLI(옆 창 칩 순서). 계획 10 — 네 CLI 모두 앱 전용 환경으로 띄운다.
+    public static let enabled: [ModelKind] = [.claude, .gemini, .chatgpt, .opencode]
 
     public var koreanName: String {
         switch self {
         case .claude: return "클로드"
         case .gemini: return "제미나이"
         case .chatgpt: return "ChatGPT"
+        case .opencode: return "opencode"
         }
     }
 
@@ -22,16 +22,17 @@ public enum ModelKind: String, CaseIterable, Sendable, Equatable {
         case .claude: return "claude"
         case .gemini: return "agy"
         case .chatgpt: return "codex"
+        case .opencode: return "opencode"
         }
     }
 
     /// 로그인이 풀렸을 때 보여 줄 한 줄(고치는 법 포함).
-    /// agy 에는 `login` 하위 명령이 없어서(`agy --help` 확인) 「agy 를 열어」 로만 안내한다.
     public var loginNeededMessage: String {
         switch self {
         case .claude: return "앱 전용 클로드 로그인이 필요해요 — 터미널에서 한 번: CLAUDE_CONFIG_DIR=\"$HOME/Library/Application Support/SafariAttractionApp/claude-config\" claude auth login"
-        case .gemini: return "로그인이 필요해요 — 터미널에서 agy 를 열어 로그인해 주세요"
+        case .gemini: return "설정에서 제미나이 로그인을 해 주세요"
         case .chatgpt: return "설정에서 ChatGPT 로그인을 해 주세요"
+        case .opencode: return "설정에서 opencode 로그인을 해 주세요 — 무료 모델은 로그인 없이도 돼요"
         }
     }
 

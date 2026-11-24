@@ -101,7 +101,7 @@ final class StreamParserTests: XCTestCase {
     func testLoginMessagesPerModel() {
         XCTAssertEqual(ModelKind.claude.loginNeededMessage, "앱 전용 클로드 로그인이 필요해요 — 터미널에서 한 번: CLAUDE_CONFIG_DIR=\"$HOME/Library/Application Support/SafariAttractionApp/claude-config\" claude auth login")
         XCTAssertEqual(ModelKind.chatgpt.loginNeededMessage, "설정에서 ChatGPT 로그인을 해 주세요")
-        XCTAssertTrue(ModelKind.gemini.loginNeededMessage.hasPrefix("로그인이 필요해요 — 터미널에서 agy"))
+        XCTAssertEqual(ModelKind.gemini.loginNeededMessage, "설정에서 제미나이 로그인을 해 주세요")
         XCTAssertFalse(ModelKind.gemini.loginNeededMessage.contains("agy login"))
     }
     func testLoginDetectorPhrases() {

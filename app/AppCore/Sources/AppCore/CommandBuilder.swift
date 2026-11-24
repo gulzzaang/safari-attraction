@@ -40,16 +40,21 @@ public enum CommandBuilder {
             if let id = r.claudeSessionID, !id.isEmpty { args += ["--resume", id] }
             return ("claude", args)
         case .gemini:
-            return ("agy", ["-p", prompt, "--model", geminiModel, "--print-timeout", "120s"])
+            // 출력은 stream-json(NDJSON) — 답 글 · 쓴 양을 `AgyStreamParser` 가 읽는다. 모델은 목록에서 고른 것(없으면 기본).
+            let c = CLICommands.agyAsk(prompt: prompt, modelID: r.modelID)
+            return (c.executable, c.arguments)
         case .chatgpt:
             let c = CLICommands.codexExec(prompt: prompt, modelID: r.modelID)
+            return (c.executable, c.arguments)
+        case .opencode:
+            let c = CLICommands.opencodeRun(prompt: prompt, modelID: r.modelID)
             return (c.executable, c.arguments)
         }
     }
 
-    /// 사용자에게 먼저 보일 안내(없으면 nil). 지금은 ChatGPT 웹 검색 켬 한 가지.
+    /// 사용자에게 먼저 보일 안내(없으면 nil). 웹 검색을 못 하는 CLI(ChatGPT · opencode)에서 웹 검색을 켰을 때.
     public static func notice(for r: AskRequest) -> String? {
-        (r.model == .chatgpt && r.webSearch) ? chatgptNoWebNotice : nil
+        ((r.model == .chatgpt || r.model == .opencode) && r.webSearch) ? chatgptNoWebNotice : nil
     }
 
     /// 합친 프롬프트가 `maxPromptBytes`(UTF-8)를 넘는가.

@@ -7,41 +7,65 @@ public enum TerminalLogin {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// `#!/bin/zsh -l` + export 환경(이름순) + 명령 + 안내 한 줄.
-    public static func script(environment: [String: String], command: [String]) -> String {
+    /// `echo "글"` — 따옴표 · `$` · 역따옴표 · 역슬래시가 든 글이면 작은따옴표로 감싼다.
+    static func echoLine(_ text: String) -> String {
+        let special = CharacterSet(charactersIn: "\"$`\\")
+        return text.rangeOfCharacter(from: special) == nil ? "echo \"\(text)\"" : "echo \(shellQuote(text))"
+    }
+
+    /// `#!/bin/zsh -l` + export 환경(이름순) + (명령 전에 보일 안내) + 명령 + 안내 한 줄.
+    /// `beforeNote` 는 명령 **앞에** 찍는다 — agy 처럼 명령이 창을 통째로 차지하는 TUI 면 뒤에 찍은 안내는 늦게 보이기 때문이다.
+    public static func script(environment: [String: String], command: [String], beforeNote: String? = nil,
+                              closingNote: String = "끝나면 이 창을 닫으세요.") -> String {
         var lines = ["#!/bin/zsh -l", "# 사파리-어트랙션 — 앱 전용 로그인(이 창에서 한 번만 하면 돼요)"]
         for key in environment.keys.sorted() {
             lines.append("export \(key)=\(shellQuote(environment[key] ?? ""))")
         }
+        if let beforeNote {
+            lines.append(echoLine(beforeNote))
+            lines.append("echo")
+        }
         lines.append(command.map(shellQuote).joined(separator: " "))
         lines.append("echo")
-        lines.append("echo \"끝나면 이 창을 닫으세요.\"")
+        lines.append(echoLine(closingNote))
         return lines.joined(separator: "\n") + "\n"
     }
 
     /// 파일을 쓰고 실행 권한(0755)을 준다. 같은 이름이 있으면 바꾼다. 돌려주는 것은 파일 주소.
-    public static func writeCommandFile(directory: URL, name: String, environment: [String: String], command: [String]) throws -> URL {
+    public static func writeCommandFile(directory: URL, name: String, environment: [String: String], command: [String],
+                                        beforeNote: String? = nil, closingNote: String = "끝나면 이 창을 닫으세요.") throws -> URL {
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(name)
-        try script(environment: environment, command: command).write(to: url, atomically: true, encoding: .utf8)
+        try script(environment: environment, command: command, beforeNote: beforeNote, closingNote: closingNote)
+            .write(to: url, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         return url
     }
 
-    /// 이 CLI 의 로그인 `.command` 파일을 지원 폴더에 쓴다(클로드 `claude auth login --claudeai` · codex `codex login --device-auth`).
-    public static func writeLoginFile(kind: ModelKind, support: URL) throws -> URL {
+    /// agy 는 로그인 명령이 없어 `agy` 를 인자 없이 띄우면 TUI 가 창을 차지한다 — 띄우기 전에 끝내는 법을 알린다.
+    public static let agyBeforeNote = "제미나이(agy) 로그인 — 곧 agy 화면이 열려요. 로그인을 마친 뒤 /quit 을 입력해 끝내고 이 창을 닫으세요."
+    public static let agyClosingNote = "agy 를 끝냈다면 이 창을 닫으세요. 설정 창으로 돌아가면 로그인 상태를 새로 읽어요."
+
+    /// 이 CLI 의 로그인 `.command` 파일을 지원 폴더에 쓴다(클로드 `claude auth login --claudeai` · codex `codex login --device-auth` ·
+    /// 제미나이 `agy`(인자 없이, TUI) · opencode `opencode auth login --standalone`). 환경은 그 CLI 의 앱 전용 환경 그대로(`agyMode` 는 agy 에만).
+    public static func writeLoginFile(kind: ModelKind, support: URL, agyMode: AgyMode = .isolated) throws -> URL {
         let cmd: CLICommands.Command
         let name: String
+        var before: String?
+        var closing = "끝나면 이 창을 닫으세요."
         switch kind {
         case .claude: cmd = CLICommands.claudeLogin; name = "login-claude.command"
         case .chatgpt: cmd = CLICommands.codexDeviceLogin; name = "login-codex.command"
-        case .gemini: throw CocoaError(.featureUnsupported)
+        case .gemini:
+            cmd = CLICommands.agyLogin; name = "login-agy.command"
+            before = agyBeforeNote; closing = agyClosingNote
+        case .opencode: cmd = CLICommands.opencodeLogin; name = "login-opencode.command"
         }
         try CLIEnvironment.prepareDirectories(support: support)
         return try writeCommandFile(directory: support, name: name,
-                                    environment: CLIEnvironment.environment(for: kind, support: support),
-                                    command: [cmd.executable] + cmd.arguments)
+                                    environment: CLIEnvironment.environment(for: kind, support: support, agyMode: agyMode),
+                                    command: [cmd.executable] + cmd.arguments, beforeNote: before, closingNote: closing)
     }
 }
 

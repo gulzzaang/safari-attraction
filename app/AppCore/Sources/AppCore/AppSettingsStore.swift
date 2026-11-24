@@ -6,9 +6,19 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var selectedCLI: String
     /// CLI(`ModelKind.rawValue`) → 고른 모델 id.
     public var models: [String: String]
+    /// 제미나이(agy)를 띄우는 방식 — 앱 전용 폴더(시험판, 기본) · 내 설정 함께 쓰기.
+    public var agyMode: AgyMode
 
-    public init(selectedCLI: String = ModelKind.claude.rawValue, models: [String: String] = [:]) {
-        self.selectedCLI = selectedCLI; self.models = models
+    public init(selectedCLI: String = ModelKind.claude.rawValue, models: [String: String] = [:], agyMode: AgyMode = .isolated) {
+        self.selectedCLI = selectedCLI; self.models = models; self.agyMode = agyMode
+    }
+
+    /// 옛 파일(`agyMode` 가 없는)도 깨진 파일로 보지 않고 읽는다. 모르는 값은 기본으로.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        selectedCLI = try c.decodeIfPresent(String.self, forKey: .selectedCLI) ?? ModelKind.claude.rawValue
+        models = try c.decodeIfPresent([String: String].self, forKey: .models) ?? [:]
+        agyMode = (try? c.decodeIfPresent(String.self, forKey: .agyMode)).flatMap { $0 }.flatMap(AgyMode.init(rawValue:)) ?? .isolated
     }
 }
 
