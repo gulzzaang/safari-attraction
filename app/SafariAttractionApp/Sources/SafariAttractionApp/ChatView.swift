@@ -59,6 +59,9 @@ struct ChatView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.15)))
         .onExitCommand(perform: onClose)
+        .onChange(of: agent.hasPendingCard) { _, pending in
+            if pending { showingSites = false }   // 허락을 기다리는 카드가 생기면 사이트 허락 화면을 닫아 카드를 보이게
+        }
         .environment(\.openURL, OpenURLAction { url in
             if MarkdownBlocks.isOpenable(url) { openInSafari(url); return .handled }
             return .discarded
@@ -210,6 +213,8 @@ struct ChatView: View {
             HStack(spacing: 12) {
                 Button { showingSites = true } label: { Label("사이트 허락", systemImage: "checkmark.shield") }
                     .controlSize(.small)
+                    .disabled(agent.isRunning || agent.hasPendingCard)   // 일하는 중 · 카드가 기다리는 중엔 가리지 않게 끈다
+                    .help(agent.isRunning ? "일하는 중에는 고를 수 없어요" : "")
                 Toggle("고정", isOn: Binding(get: { vm.pinned }, set: { vm.setPinned($0) }))
                     .toggleStyle(.checkbox).controlSize(.small)
                     .help("켜면 사파리가 앞이 아니어도 옆 창이 숨지 않아요")
@@ -293,6 +298,12 @@ private struct MessageView: View {
 /// 답 글 그리기 — 문단 · 제목 · 목록 · 코드 상자. 줄 안 서식은 `AttributedString(markdown:)`.
 struct MarkdownView: View {
     let text: String
+    /// false 면 링크를 누를 수 없게(글로만) 보인다 — 계획 카드.
+    var links = true
+
+    private func inline(_ t: String) -> AttributedString {
+        links ? MarkdownBlocks.attributed(t) : MarkdownBlocks.attributedWithoutLinks(t)
+    }
 
     var body: some View {
         let blocks = MarkdownBlocks.parse(text)
@@ -300,13 +311,13 @@ struct MarkdownView: View {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .paragraph(let t):
-                    Text(MarkdownBlocks.attributed(t))
+                    Text(inline(t))
                 case .heading(let level, let t):
-                    Text(MarkdownBlocks.attributed(t)).font(level <= 1 ? .title3.bold() : .headline)
+                    Text(inline(t)).font(level <= 1 ? .title3.bold() : .headline)
                 case .listItem(let marker, let t):
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(marker).foregroundStyle(.secondary)
-                        Text(MarkdownBlocks.attributed(t))
+                        Text(inline(t))
                     }
                 case .code(_, let t):
                     ScrollView(.horizontal, showsIndicators: false) {
