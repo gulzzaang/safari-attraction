@@ -140,22 +140,18 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isRunning)
     }
 
-    func testAppCallsOnlyClaudeByDefault() async {
-        // 박정욱 11-23 「클로드만 기준으로잡고 다른 cli는 사용하지말고」
-        XCTAssertEqual(ModelKind.enabled, [.claude])
+    func testAppCallsOnlyClaudeAndCodexByDefault() async {
+        // 계획 10 — 클로드 + ChatGPT(codex). 제미나이(agy)는 계속 꺼 둔다.
+        XCTAssertEqual(ModelKind.enabled, [.claude, .chatgpt])
         let c = clock!
         let only = ChatViewModel(runner: runner, bridge: bridge, loginPath: { "/test/bin" },
                                  workDirectory: { URL(fileURLWithPath: "/tmp/work-test") }, now: { c.date })
-        XCTAssertEqual(only.availableModels, [.claude])
+        XCTAssertEqual(only.availableModels, [.claude, .chatgpt])
         runner.setScript { _, emit in emit(claudeResultLine(text: "ok")); return .finished(code: 0) }
-        for m in [ModelKind.gemini, .chatgpt] {
-            only.model = m; only.webSearch = true
-            only.input = "q"
-            await only.send()?.value
-        }
-        XCTAssertEqual(runner.calls.map(\.executable), ["claude", "claude"], "agy · codex 는 부르지 않는다")
+        only.model = .gemini; only.input = "q"
+        await only.send()?.value
+        XCTAssertEqual(runner.calls.map(\.executable), ["claude"], "agy 는 부르지 않는다")
         XCTAssertEqual(only.model, .claude)
-        XCTAssertNil(only.messages.last?.notice, "꺼 둔 ChatGPT 안내가 나오면 안 된다")
     }
 
     func testPlainModelsConcatenateChunksAsIs() async {
@@ -223,7 +219,10 @@ final class ChatViewModelTests: XCTestCase {
 
     func testChatGPTWebSearchShowsNotice() async {
         vm.model = .chatgpt; vm.webSearch = true
-        runner.setScript { _, emit in emit(.stdout(Data("답".utf8))); return .finished(code: 0) }
+        runner.setScript { call, emit in
+            if call.arguments.first == "exec" { emit(.stdout(jsonLine(["type": "item.completed", "item": ["type": "agent_message", "text": "답"]]))) }
+            return .finished(code: 0)
+        }
         await ask("q")
         XCTAssertEqual(vm.messages.last?.notice, CommandBuilder.chatgptNoWebNotice)
         XCTAssertEqual(vm.messages.last?.text, "답")

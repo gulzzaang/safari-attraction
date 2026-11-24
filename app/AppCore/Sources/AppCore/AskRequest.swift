@@ -25,9 +25,11 @@ public struct AskRequest: Sendable, Equatable {
     public var page: PageContext?
     public var history: [Turn]
     public var claudeSessionID: String?
+    /// 고른 모델 id(클로드 `sonnet` 등 · codex 슬러그). nil 이면 기본(클로드 sonnet · codex 는 `-m` 없이).
+    public var modelID: String?
     public init(question: String, model: ModelKind, webSearch: Bool = false, page: PageContext? = nil,
-                history: [Turn] = [], claudeSessionID: String? = nil) {
+                history: [Turn] = [], claudeSessionID: String? = nil, modelID: String? = nil) {
         self.question = question; self.model = model; self.webSearch = webSearch
-        self.page = page; self.history = history; self.claudeSessionID = claudeSessionID
+        self.page = page; self.history = history; self.claudeSessionID = claudeSessionID; self.modelID = modelID
     }
 }

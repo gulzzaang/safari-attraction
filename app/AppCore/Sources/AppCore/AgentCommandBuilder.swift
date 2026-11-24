@@ -18,10 +18,11 @@ public struct GateInfo: Sendable, Equatable {
 public enum AgentCommandBuilder {
     public static let mcpServerName = "safari-attraction"
 
+    /// `model` — 설정에서 고른 클로드 모델 id(없으면 기본). 루틴(`buildUnattended`)은 늘 기본 모델.
     public static func build(resources: URL, gate: GateInfo, memoryHome: URL,
-                             resumeSessionID: String?) -> (executable: String, arguments: [String]) {
+                             resumeSessionID: String?, model: String? = nil) -> (executable: String, arguments: [String]) {
         var args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-                    "--model", CommandBuilder.claudeModel,
+                    "--model", CommandBuilder.claudeModelArgument(model),
                     "--setting-sources", "", "--strict-mcp-config",
                     "--mcp-config", mcpConfigJSON(resources: resources, gate: gate, memoryHome: memoryHome),
                     "--tools", "ExitPlanMode,Write",

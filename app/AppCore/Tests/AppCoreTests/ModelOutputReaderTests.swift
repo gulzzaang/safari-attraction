@@ -36,7 +36,7 @@ final class ModelOutputReaderTests: XCTestCase {
     func testStderrEchoWithPhraseIgnoredWhenExitZeroAndAnswerExists() {
         var r = ModelOutputReader(model: .chatgpt)
         _ = r.handle(.stderr(Data("user\n페이지: Please log in to continue\n".utf8)))
-        var ev = r.handle(.stdout(Data("요약이에요".utf8)))
+        var ev = r.handle(.stdout(Data((#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"요약이에요"}}"# + "\n").utf8)))
         ev += r.finish(outcome: .finished(code: 0))
         XCTAssertEqual(ev, [.text("요약이에요")])
     }

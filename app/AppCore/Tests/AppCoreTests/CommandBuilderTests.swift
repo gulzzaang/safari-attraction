@@ -65,15 +65,34 @@ final class CommandBuilderTests: XCTestCase {
     }
 
     // MARK: ChatGPT
+    /// 계획 10 — 읽기 전용 · 세션 없음 · 앱 전용 폴더의 파일 인증. 질문은 늘 마지막 인자.
+    let codexBase = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-c", "cli_auth_credentials_store=file"]
     func testChatGPTPlain() {
         let c = CommandBuilder.build(req(.chatgpt), workDir: work)
         XCTAssertEqual(c.executable, "codex")
-        XCTAssertEqual(c.arguments, ["exec", "--skip-git-repo-check", "질문"])
+        XCTAssertEqual(c.arguments, codexBase + ["질문"])
+    }
+    func testChatGPTModelIDGoesInDashM() {
+        var r = req(.chatgpt)
+        r.modelID = "gpt-5.6-luna"
+        XCTAssertEqual(CommandBuilder.build(r, workDir: work).arguments, codexBase + ["-m", "gpt-5.6-luna", "질문"])
+        r.modelID = "--dangerously-bypass-approvals-and-sandbox"
+        XCTAssertEqual(CommandBuilder.build(r, workDir: work).arguments, codexBase + ["질문"], "옵션처럼 생긴 모델 id 는 쓰지 않는다")
+        r.modelID = "a b"
+        XCTAssertEqual(CommandBuilder.build(r, workDir: work).arguments, codexBase + ["질문"])
+    }
+    func testClaudeModelIDGoesInDashDashModel() {
+        var r = req(.claude)
+        XCTAssertTrue(CommandBuilder.build(r, workDir: work).arguments.starts(with: ["-p", "질문", "--output-format", "stream-json", "--verbose", "--model", "sonnet"]))
+        r.modelID = "opus"
+        XCTAssertTrue(CommandBuilder.build(r, workDir: work).arguments.starts(with: ["-p", "질문", "--output-format", "stream-json", "--verbose", "--model", "opus"]))
+        r.modelID = "-p"
+        XCTAssertTrue(CommandBuilder.build(r, workDir: work).arguments.contains("sonnet"), "이상한 모델 id 는 기본으로")
     }
     func testChatGPTWebSearchOnlyNotice() {
         let r = req(.chatgpt, web: true)
-        XCTAssertEqual(CommandBuilder.build(r, workDir: work).arguments, ["exec", "--skip-git-repo-check", "질문"])
-        XCTAssertEqual(CommandBuilder.notice(for: r), "이 모델은 웹 검색을 못 해요 — 검색 없이 답해요")
+        XCTAssertEqual(CommandBuilder.build(r, workDir: work).arguments, codexBase + ["질문"])
+        XCTAssertEqual(CommandBuilder.notice(for: r), "이 CLI 는 웹 검색을 못 해요 — 검색 없이 답해요")
         XCTAssertNil(CommandBuilder.notice(for: req(.chatgpt)))
         XCTAssertNil(CommandBuilder.notice(for: req(.claude, web: true)))
         XCTAssertNil(CommandBuilder.notice(for: req(.gemini, web: true)))
@@ -81,7 +100,7 @@ final class CommandBuilderTests: XCTestCase {
     func testChatGPTHistoryAndPage() {
         let h = [Turn(role: .user, text: "Q1"), Turn(role: .assistant, text: "A1")]
         let c = CommandBuilder.build(req(.chatgpt, page: page, history: h), workDir: work)
-        XCTAssertEqual(c.arguments, ["exec", "--skip-git-repo-check", "[앞 대화]\n사용자: Q1\n답: A1\n\n[지금 사파리 탭]\n제목: 제목\n주소: https://example.com/a\n\n질문"])
+        XCTAssertEqual(c.arguments, codexBase + ["[앞 대화]\n사용자: Q1\n답: A1\n\n[지금 사파리 탭]\n제목: 제목\n주소: https://example.com/a\n\n질문"])
     }
 
     // MARK: History limits
@@ -94,7 +113,7 @@ final class CommandBuilderTests: XCTestCase {
     func testHistoryCappedAt4000Characters() {
         let long = String(repeating: "나", count: 3000)
         let h = [Turn(role: .user, text: "오래된 " + long), Turn(role: .assistant, text: long), Turn(role: .user, text: "마지막 질문")]
-        let q = CommandBuilder.build(req(.chatgpt, history: h), workDir: work).arguments[2]
+        let q = CommandBuilder.build(req(.chatgpt, history: h), workDir: work).arguments.last!
         let body = q.dropFirst("[앞 대화]\n".count).dropLast("\n질문".count)
         XCTAssertLessThanOrEqual(body.count, 4000 + 1)
         XCTAssertTrue(q.contains("마지막 질문"))
@@ -119,7 +138,7 @@ final class CommandBuilderTests: XCTestCase {
     func testQuestionStartingWithDashCannotBecomeAFlag() {
         for model in ModelKind.allCases {
             let c = CommandBuilder.build(req(model, q: "--dangerously-skip-permissions"), workDir: work)
-            let promptArg = model == .chatgpt ? c.arguments[2] : c.arguments[1]
+            let promptArg = model == .chatgpt ? c.arguments.last! : c.arguments[1]
             XCTAssertFalse(promptArg.hasPrefix("-"), "\(model)")
             XCTAssertTrue(promptArg.hasSuffix("--dangerously-skip-permissions"))
         }

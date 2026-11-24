@@ -13,7 +13,13 @@ public enum CommandBuilder {
     /// 프롬프트(앞 대화 · 페이지 글 · 질문을 합친 것) 상한 — UTF-8 바이트 기준. 넘으면 CLI 를 띄우지 않는다.
     public static let maxPromptBytes = 200_000
     public static let promptTooLongMessage = "질문이 너무 길어요 — 줄여서 다시 보내 주세요(한글 약 6만 자 · 20만 바이트까지)"
-    public static let chatgptNoWebNotice = "이 모델은 웹 검색을 못 해요 — 검색 없이 답해요"
+    public static let chatgptNoWebNotice = "이 CLI 는 웹 검색을 못 해요 — 검색 없이 답해요"
+
+    /// 고른 클로드 모델 id — 안전한 글자뿐이고 비어 있지 않으면 그것, 아니면 기본(`claudeModel`).
+    public static func claudeModelArgument(_ id: String?) -> String {
+        if let id, CLIModels.isSafeID(id) { return id }
+        return claudeModel
+    }
 
     /// `workDir` 는 실행 쪽(ProcessRunner)이 작업 폴더로 쓴다 — 명령줄에는 들어가지 않는다.
     public static func build(_ r: AskRequest, workDir: URL) -> (executable: String, arguments: [String]) {
@@ -28,7 +34,7 @@ public enum CommandBuilder {
             // 그 자리에서 멈춘다(2026-11-23 시험에서 겪음). 로그인(구독)은 그대로 된다.
             let tools = r.webSearch ? claudeWebTools : ""
             var args = ["-p", prompt, "--output-format", "stream-json", "--verbose",
-                        "--model", claudeModel,
+                        "--model", claudeModelArgument(r.modelID),
                         "--tools", tools, "--allowedTools", tools,
                         "--strict-mcp-config", "--safe-mode"]
             if let id = r.claudeSessionID, !id.isEmpty { args += ["--resume", id] }
@@ -36,7 +42,8 @@ public enum CommandBuilder {
         case .gemini:
             return ("agy", ["-p", prompt, "--model", geminiModel, "--print-timeout", "120s"])
         case .chatgpt:
-            return ("codex", ["exec", "--skip-git-repo-check", prompt])
+            let c = CLICommands.codexExec(prompt: prompt, modelID: r.modelID)
+            return (c.executable, c.arguments)
         }
     }
 

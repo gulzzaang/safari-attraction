@@ -4,9 +4,9 @@ import Foundation
 public enum ModelKind: String, CaseIterable, Sendable, Equatable {
     case claude, gemini, chatgpt
 
-    /// 앱이 실제로 부르는 모델. 박정욱 11-23 「클로드만 기준으로잡고 다른 cli는 사용하지말고」 —
-    /// agy · codex 는 부르지 않는다. 제미나이 · ChatGPT 코드는 다시 켤 때를 위해 남겨 둔다(여기에 더하면 켜짐).
-    public static let enabled: [ModelKind] = [.claude]
+    /// 앱이 실제로 부르는 CLI. 계획 10 — 클로드와 ChatGPT(codex)만(앱 전용 설정 폴더로 띄운다).
+    /// 제미나이(agy) · opencode 는 아직 부르지 않는다(코드는 남겨 두고 여기에 더하면 켜짐).
+    public static let enabled: [ModelKind] = [.claude, .chatgpt]
 
     public var koreanName: String {
         switch self {
@@ -31,7 +31,7 @@ public enum ModelKind: String, CaseIterable, Sendable, Equatable {
         switch self {
         case .claude: return "앱 전용 클로드 로그인이 필요해요 — 터미널에서 한 번: CLAUDE_CONFIG_DIR=\"$HOME/Library/Application Support/SafariAttractionApp/claude-config\" claude auth login"
         case .gemini: return "로그인이 필요해요 — 터미널에서 agy 를 열어 로그인해 주세요"
-        case .chatgpt: return "로그인이 필요해요 — 터미널에서 codex login 으로 로그인해 주세요"
+        case .chatgpt: return "설정에서 ChatGPT 로그인을 해 주세요"
         }
     }
 

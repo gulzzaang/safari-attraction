@@ -9,6 +9,8 @@ public enum StreamEvent: Sendable, Equatable {
     /// 화면에는 `.text` 를 쌓고, `.result` 는 끝났다는 표시 · 오류 판단에만 쓴다(두 번 찍지 않기).
     case result(isError: Bool, text: String)
     case error(String)
+    /// 이번 답에 쓴 양(토큰 수) — Claude 의 `result.usage` · codex 의 `turn.completed.usage`. 줄에 있을 때만 나온다.
+    case usage(TokenUsage)
 }
 
 public protocol StreamParsing: Sendable {
@@ -86,6 +88,11 @@ public struct ClaudeStreamParser: StreamParsing {
             } else {
                 events.append(.result(isError: isError, text: text))
             }
+            if let u = d["usage"] as? [String: Any] {
+                events.append(.usage(TokenUsage(input: TokenUsage.int(u["input_tokens"]) + TokenUsage.int(u["cache_creation_input_tokens"]),
+                                                cachedInput: TokenUsage.int(u["cache_read_input_tokens"]),
+                                                output: TokenUsage.int(u["output_tokens"]))))
+            }
         default: break
         }
         return events
@@ -138,6 +145,7 @@ public struct ModelOutputReader: Sendable {
     private static let shortStdoutLimit = 400
     private let model: ModelKind
     private var claude = ClaudeStreamParser()
+    private var codex = CodexStreamParser()
     private var plain: PlainStreamParser
     private var stderrText = ""
     private var stdoutHead = ""
@@ -152,7 +160,7 @@ public struct ModelOutputReader: Sendable {
     public mutating func handle(_ event: RunEvent) -> [StreamEvent] {
         switch event {
         case .stdout(let d):
-            return track(model == .claude ? claude.feed(d) : plain.feed(d))
+            return track(feedStdout(d))
         case .stderr(let d):
             stderrText += String(decoding: d, as: UTF8.self)
             if stderrText.count > 4_000 { stderrText = String(stderrText.suffix(2_000)) }
@@ -162,7 +170,7 @@ public struct ModelOutputReader: Sendable {
 
     /// 실행이 끝났을 때 한 번 부른다. 남은 글 + 결과에 맞는 한국어 안내를 돌려준다.
     public mutating func finish(outcome: RunOutcome) -> [StreamEvent] {
-        var events = track(model == .claude ? claude.finish() : plain.finish())
+        var events = track(finishStdout())
         if sawError { return events }
         if case .finished(let code) = outcome, code != 0 || !sawAnswer {
             let shortStdout = stdoutHead.count <= Self.shortStdoutLimit ? stdoutHead : ""
@@ -176,6 +184,22 @@ public struct ModelOutputReader: Sendable {
             events.append(.error(msg))
         }
         return events
+    }
+
+    private mutating func feedStdout(_ d: Data) -> [StreamEvent] {
+        switch model {
+        case .claude: return claude.feed(d)
+        case .chatgpt: return codex.feed(d)
+        case .gemini: return plain.feed(d)
+        }
+    }
+
+    private mutating func finishStdout() -> [StreamEvent] {
+        switch model {
+        case .claude: return claude.finish()
+        case .chatgpt: return codex.finish()
+        case .gemini: return plain.finish()
+        }
     }
 
     private mutating func track(_ events: [StreamEvent]) -> [StreamEvent] {

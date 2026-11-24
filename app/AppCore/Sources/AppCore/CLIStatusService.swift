@@ -1,0 +1,195 @@
+import Foundation
+import Observation
+
+/// 한 번 실행해 나온 글을 모은 것(상태 · 목록 · 남은 양 읽기용).
+public struct CapturedRun: Sendable {
+    public var outcome: RunOutcome
+    public var stdout: String
+    public var stderr: String
+}
+
+private final class CaptureBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var out = Data(), err = Data()
+    func add(_ e: RunEvent) {
+        lock.withLock {
+            switch e {
+            case .stdout(let d): if out.count < 2_000_000 { out.append(d) }
+            case .stderr(let d): if err.count < 200_000 { err.append(d) }
+            }
+        }
+    }
+    var result: (String, String) { lock.withLock { (String(decoding: out, as: UTF8.self), String(decoding: err, as: UTF8.self)) } }
+}
+
+public enum CLICapture {
+    /// 명령을 한 번 돌려 글을 모은다(시간 상한 안에서 — 넘으면 `.timedOut`). 표준 입력은 `/dev/null`.
+    public static func run(runner: CommandRunning, command: CLICommands.Command, workDir: URL, path: String,
+                           timeout: TimeInterval = CLICommands.readTimeout) async -> CapturedRun {
+        let box = CaptureBox()
+        let outcome = await runner.run(executable: command.executable, arguments: command.arguments, workDir: workDir,
+                                       path: path, timeout: timeout) { box.add($0) }
+        let (o, e) = box.result
+        return CapturedRun(outcome: outcome, stdout: o, stderr: e)
+    }
+}
+
+/// 서비스가 띄울 실행기 — 읽기 작업마다 새로 만든다(`ProcessRunner` 는 한 번에 하나만 돌리므로, 돌고 있는 질문과 부딪히지 않게).
+public typealias CLIRunner = CommandRunning & InteractiveRunning
+
+/// CLI 하나의 지금 모습(설정 창 · 옆 창이 읽는다).
+public struct CLIState: Equatable, Sendable {
+    /// 로그인 셸 PATH 로 찾은 실행 파일 경로(없으면 nil — `installChecked` 로 「없음」 과 「아직」 을 가른다).
+    public var installedPath: String?
+    public var installChecked = false
+    public var login: CLILoginState = .unknown
+    /// 로그인 상태를 못 알아냈을 때의 이유(「알 수 없음」 옆 작은 글).
+    public var loginNote: String?
+    public var usage: UsageSnapshot?
+    public var usageNote: String?
+    /// 고를 수 있는 모델(codex 는 로그인 뒤 불러온 목록 · 클로드는 고정 목록).
+    public var models: [ModelChoice] = []
+    public var modelsNote: String?
+    public var isRefreshing = false
+    public var lastRefresh: Date?
+    public init() {}
+
+    public var isLoggedIn: Bool { if case .loggedIn = login { return true }; return false }
+    public var isLoggedOut: Bool { login == .loggedOut }
+}
+
+/// CLI 마다 설치 여부 · 로그인 상태 · 모델 목록 · 남은 양을 모은다. **앱을 켤 때는 부르지 않고**, 설정 창 · 옆 창을 열 때만 부른다.
+/// 읽기 하나당 20초 상한, 실패하면 「알 수 없음」. 같은 CLI 는 `minInterval`(5분) 안에 다시 읽지 않는다(`force` 면 읽는다).
+@MainActor @Observable
+public final class CLIStatusService {
+    public static let minInterval: TimeInterval = 300
+
+    public private(set) var states: [ModelKind: CLIState]
+
+    @ObservationIgnored private let loginPath: @Sendable () -> String
+    @ObservationIgnored private let runnerFactory: @Sendable () -> any CLIRunner
+    @ObservationIgnored private let workDirectory: @Sendable () throws -> URL
+    @ObservationIgnored private let now: @Sendable () -> Date
+    @ObservationIgnored private let timeout: TimeInterval
+    @ObservationIgnored private let minInterval: TimeInterval
+    @ObservationIgnored private var inFlight: Set<ModelKind> = []
+
+    public init(loginPath: @escaping @Sendable () -> String,
+                runnerFactory: @escaping @Sendable () -> any CLIRunner,
+                workDirectory: @escaping @Sendable () throws -> URL = { try AppPaths.workDirectory() },
+                now: @escaping @Sendable () -> Date = { Date() },
+                timeout: TimeInterval = CLICommands.readTimeout,
+                minInterval: TimeInterval = CLIStatusService.minInterval) {
+        self.loginPath = loginPath; self.runnerFactory = runnerFactory; self.workDirectory = workDirectory
+        self.now = now; self.timeout = timeout; self.minInterval = minInterval
+        var s: [ModelKind: CLIState] = [:]
+        for k in ModelKind.subscriptionCLIs { s[k] = CLIState() }
+        s[.claude]?.models = CLIModels.claudeChoices
+        states = s
+    }
+
+    public func state(_ kind: ModelKind) -> CLIState { states[kind] ?? CLIState() }
+
+    /// 고를 수 있는 모델 목록.
+    public func models(for kind: ModelKind) -> [ModelChoice] {
+        kind == .claude ? CLIModels.claudeChoices : state(kind).models
+    }
+
+    public func refreshAll(force: Bool) async {
+        await withTaskGroup(of: Void.self) { group in
+            for k in ModelKind.subscriptionCLIs { group.addTask { await self.refresh(k, force: force) } }
+        }
+    }
+
+    /// 한 CLI 를 새로 읽는다. 5분 안이면(force 가 아니면) 아무것도 하지 않는다. 이미 읽는 중이어도 마찬가지.
+    public func refresh(_ kind: ModelKind, force: Bool) async {
+        guard ModelKind.subscriptionCLIs.contains(kind), !inFlight.contains(kind) else { return }
+        if !force, let last = states[kind]?.lastRefresh, now().timeIntervalSince(last) < minInterval { return }
+        inFlight.insert(kind)
+        states[kind]?.isRefreshing = true
+        defer { inFlight.remove(kind); states[kind]?.isRefreshing = false }
+
+        let loginPath = self.loginPath, workDirectory = self.workDirectory, factory = self.runnerFactory, timeout = self.timeout
+        let result = await Task.detached(priority: .userInitiated) {
+            await Self.read(kind: kind, loginPath: loginPath, workDirectory: workDirectory, runnerFactory: factory, timeout: timeout)
+        }.value
+        var s = states[kind] ?? CLIState()
+        s.installChecked = true
+        s.installedPath = result.installedPath
+        s.login = result.login
+        s.loginNote = result.loginNote
+        s.usage = result.usage
+        s.usageNote = result.usageNote
+        if kind == .chatgpt { s.models = result.models; s.modelsNote = result.modelsNote }
+        s.lastRefresh = now()
+        states[kind] = s
+    }
+
+    struct ReadResult: Sendable {
+        var installedPath: String?
+        var login: CLILoginState = .unknown
+        var loginNote: String?
+        var usage: UsageSnapshot?
+        var usageNote: String?
+        var models: [ModelChoice] = []
+        var modelsNote: String?
+    }
+
+    /// 실제 읽기(메인 밖). 각 단계가 실패해도 다음 단계로 — 모두 「알 수 없음」 으로 끝난다.
+    nonisolated static func read(kind: ModelKind, loginPath: @Sendable () -> String, workDirectory: @Sendable () throws -> URL,
+                                 runnerFactory: @Sendable () -> any CLIRunner, timeout: TimeInterval) async -> ReadResult {
+        var r = ReadResult()
+        let path = loginPath()
+        let name = kind == .claude ? "claude" : "codex"
+        r.installedPath = ProcessRunner.resolve(name, path: path)
+        guard r.installedPath != nil else {
+            r.loginNote = "\(name) 를 찾지 못했어요 — 설치돼 있는지 확인해 주세요"
+            r.usageNote = "알 수 없음"
+            if kind == .chatgpt { r.modelsNote = CLIModels.codexLoadFailureNote }
+            return r
+        }
+        guard let dir = try? workDirectory() else {
+            r.loginNote = "작업 폴더를 만들지 못했어요"; r.usageNote = "알 수 없음"
+            return r
+        }
+
+        // 1) 로그인 상태
+        let statusCmd = kind == .claude ? CLICommands.claudeAuthStatus : CLICommands.codexLoginStatus
+        let status = await CLICapture.run(runner: runnerFactory(), command: statusCmd, workDir: dir, path: path, timeout: timeout)
+        switch status.outcome {
+        case .finished(let code):
+            r.login = kind == .claude
+                ? CLIAccountParser.parseClaudeStatus(stdout: status.stdout, exitCode: code)
+                : CLIAccountParser.parseCodexStatus(output: status.stdout + "\n" + status.stderr, exitCode: code)
+        case .timedOut: r.loginNote = "알 수 없음 — \(Int(timeout))초 안에 답이 없었어요"
+        default: r.loginNote = "알 수 없음 — 상태를 읽지 못했어요"
+        }
+        guard r.login != .unknown else { r.usageNote = "알 수 없음"; if kind == .chatgpt { r.modelsNote = CLIModels.codexLoadFailureNote }; return r }
+        guard case .loggedIn = r.login else {
+            r.usageNote = "로그인하면 보여요"
+            if kind == .chatgpt { r.modelsNote = CLIModels.codexLoadFailureNote }
+            return r
+        }
+
+        // 2) 모델 목록(codex 만 — 로그인 뒤에 불러야 계정에 맞는 목록이 나온다)
+        if kind == .chatgpt {
+            let m = await CLICapture.run(runner: runnerFactory(), command: CLICommands.codexModels, workDir: dir, path: path, timeout: timeout)
+            if case .finished(0) = m.outcome { r.models = CLIModels.parseCodexModels(m.stdout) }
+            if r.models.isEmpty { r.modelsNote = CLIModels.codexLoadFailureNote }
+        }
+
+        // 3) 남은 양
+        if kind == .claude {
+            let u = await CLICapture.run(runner: runnerFactory(), command: CLICommands.claudeUsage, workDir: dir, path: path, timeout: timeout)
+            if case .finished(0) = u.outcome, let snap = ClaudeUsageParser.parse(jsonOutput: u.stdout) { r.usage = snap }
+        } else {
+            r.usage = await CodexUsageClient().fetch(runner: runnerFactory(), path: path, workDir: dir, timeout: timeout)
+            if case .loggedIn(var info) = r.login, let plan = r.usage?.plan, info.plan == nil {
+                info.plan = plan
+                r.login = .loggedIn(info)
+            }
+        }
+        if r.usage == nil { r.usageNote = "알 수 없음" }
+        return r
+    }
+}

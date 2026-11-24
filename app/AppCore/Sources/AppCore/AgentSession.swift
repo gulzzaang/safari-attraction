@@ -77,6 +77,8 @@ public final class AgentSession {
     @ObservationIgnored private var lastNotifiedPending = false
 
     @ObservationIgnored private let runnerFactory: @Sendable () -> InteractiveRunning
+    /// 설정에서 고른 클로드 모델 id(없으면 기본) — 일 맡기기 명령줄의 `--model`. 루틴은 쓰지 않는다.
+    @ObservationIgnored private let claudeModel: @MainActor () -> String?
     @ObservationIgnored private let gateFactory: @MainActor () throws -> GateServing
     @ObservationIgnored private let siteModes: SiteModeStore
     @ObservationIgnored private let resources: URL
@@ -102,11 +104,12 @@ public final class AgentSession {
     public init(resources: URL, memoryHome: URL, siteModes: SiteModeStore,
                 gateFactory: @escaping @MainActor () throws -> GateServing,
                 runnerFactory: @escaping @Sendable () -> InteractiveRunning = { ProcessRunner() },
+                claudeModel: @escaping @MainActor () -> String? = { nil },
                 loginPath: @escaping @Sendable () -> String,
                 workDirectory: @escaping @Sendable () throws -> URL = { try AppPaths.workDirectory() },
                 sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }) {
         self.resources = resources; self.memoryHome = memoryHome; self.siteModes = siteModes
-        self.gateFactory = gateFactory; self.runnerFactory = runnerFactory
+        self.gateFactory = gateFactory; self.runnerFactory = runnerFactory; self.claudeModel = claudeModel
         self.loginPath = loginPath; self.workDirectory = workDirectory; self.sleep = sleep
     }
 
@@ -330,7 +333,8 @@ public final class AgentSession {
         }
 
         let (exe, args) = run.unattended == nil
-            ? AgentCommandBuilder.build(resources: resources, gate: gate.info, memoryHome: memoryHome, resumeSessionID: sessionID)
+            ? AgentCommandBuilder.build(resources: resources, gate: gate.info, memoryHome: memoryHome, resumeSessionID: sessionID,
+                                      model: claudeModel())
             : AgentCommandBuilder.buildUnattended(resources: resources, gate: gate.info, memoryHome: memoryHome)
         let limit = run.unattended == nil ? Self.jobTimeout : RoutinePolicy.timeout
         run.jobTimer = Task { [self] in
@@ -430,6 +434,8 @@ public final class AgentSession {
         case .error(let msg):
             run.sawError = true
             if messages.last?.content != .error(msg) { append(.error(msg)) }
+        case .usage:
+            break   // 일 맡기기는 쓴 양을 보이지 않는다
         }
     }
 
@@ -439,7 +445,7 @@ public final class AgentSession {
         case .text(let t):
             u.sawText = true
             if !Self.isBlank(t) { u.answerParts.append(t) }
-        case .toolUse, .sessionID:
+        case .toolUse, .sessionID, .usage:
             break
         case .result(let isError, let text):
             u.sawResult = true

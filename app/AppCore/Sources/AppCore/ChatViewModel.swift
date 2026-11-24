@@ -17,6 +17,8 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
     /// 빨간 한 줄.
     public var error: String?
     public var isStreaming: Bool
+    /// 이 답에 쓴 양(토큰 수) — CLI 가 알려 준 경우만.
+    public var usage: TokenUsage?
 
     public init(id: Int, role: Turn.Role, text: String = "", model: ModelKind? = nil, pageTitle: String? = nil,
                 notice: String? = nil, status: String? = nil, error: String? = nil, isStreaming: Bool = false) {
@@ -62,6 +64,11 @@ public final class ChatViewModel {
     @ObservationIgnored private let timeout: TimeInterval
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let enabledModels: [ModelKind]
+    @ObservationIgnored private let settings: AppSettingsStore?
+    /// CLI 마다 고른 모델 id(`settings.json` 과 같이 간다).
+    public private(set) var modelIDs: [ModelKind: String] = [:]
+    /// 로그인 상태 · 모델 목록(설정 창과 같은 것을 읽는다) — 없으면 고르기 칸은 고정 목록만.
+    @ObservationIgnored public let status: CLIStatusService?
 
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var nextID = 0
@@ -74,12 +81,68 @@ public final class ChatViewModel {
                 workDirectory: @escaping @Sendable () throws -> URL = { try AppPaths.workDirectory() },
                 timeout: TimeInterval = ProcessRunner.defaultTimeout,
                 now: @escaping @Sendable () -> Date = { Date() },
-                enabledModels: [ModelKind] = ModelKind.enabled) {
+                enabledModels: [ModelKind] = ModelKind.enabled,
+                settings: AppSettingsStore? = nil, status: CLIStatusService? = nil) {
         self.runner = runner; self.bridge = bridge; self.loginPath = loginPath
         self.workDirectory = workDirectory; self.timeout = timeout; self.now = now
+        self.settings = settings; self.status = status
         // 빈 목록은 부르는 쪽 실수 — 개발 중엔 바로 알리고, 출시 빌드에선 클로드로 둔다.
         assert(!enabledModels.isEmpty, "enabledModels 가 비어 있음")
         self.enabledModels = enabledModels.isEmpty ? [.claude] : enabledModels
+        if let saved = settings?.current {
+            for (k, v) in saved.models { if let kind = ModelKind(rawValue: k) { modelIDs[kind] = v } }
+            if let kind = ModelKind(rawValue: saved.selectedCLI), self.enabledModels.contains(kind) { model = kind }
+        }
+    }
+
+    // MARK: CLI · 모델 고르기
+
+    /// 고를 수 있는 모델 목록(클로드는 고정 · codex 는 로그인 뒤 불러온 것 — 못 불렀으면 빈 목록).
+    public func modelChoices(for kind: ModelKind) -> [ModelChoice] {
+        switch kind {
+        case .claude: return CLIModels.claudeChoices
+        case .chatgpt: return status?.models(for: .chatgpt) ?? []
+        case .gemini: return []
+        }
+    }
+
+    /// 지금 쓸 모델 id — 저장해 둔 것이 목록에 있으면 그것, 아니면 목록의 첫 것(클로드는 sonnet). 목록이 비면 nil(codex 기본 모델에 맡김).
+    public func selectedModelID(for kind: ModelKind) -> String? {
+        CLIModels.resolve(selected: modelIDs[kind], in: modelChoices(for: kind))
+    }
+
+    public func setModelID(_ id: String, for kind: ModelKind) {
+        guard modelChoices(for: kind).contains(where: { $0.id == id }) else { return }
+        modelIDs[kind] = id
+        persist { $0.models[kind.rawValue] = id }
+    }
+
+    /// 로그인 상태를 모르면 `.unknown`(막지 않는다).
+    public func loginState(for kind: ModelKind) -> CLILoginState { status?.state(kind).login ?? .unknown }
+
+    /// CLI 를 고른다. 로그인이 안 된 걸 아는 CLI 면 바꾸지 않고 안내만 띄운다. 바꿨으면 true.
+    @discardableResult
+    public func selectCLI(_ kind: ModelKind) -> Bool {
+        guard enabledModels.contains(kind), !isRunning else { return false }
+        if loginState(for: kind) == .loggedOut {
+            hint = "\(CLICommands.displayName(kind)) 로그인이 안 돼 있어요 — 메뉴 막대 「설정…」 에서 로그인해 주세요"
+            return false
+        }
+        model = kind
+        hint = nil
+        persist { $0.selectedCLI = kind.rawValue }
+        return true
+    }
+
+    private func persist(_ change: @escaping (inout AppSettings) -> Void) {
+        guard let settings else { return }
+        do { try settings.update(change) } catch { NSLog("사파리-어트랙션: 설정을 저장하지 못했어요 — %@", error.localizedDescription) }
+    }
+
+    /// 마지막 답에 쓴 양 한 줄(답이 끝났고 CLI 가 알려 준 경우).
+    public var lastUsageText: String? {
+        guard let m = messages.last, m.role == .assistant, !m.isStreaming, m.error == nil else { return nil }
+        return m.usage?.summary
     }
 
     /// 화면이 보여 줄 모델 목록(하나면 고르기 칸을 숨긴다).
@@ -100,7 +163,7 @@ public final class ChatViewModel {
 
         let job = Job(question: question, model: model, webSearch: webSearch, wantPage: attachPage,
                       history: makeHistory(), sessionID: model == .claude ? claudeSessionID : nil,
-                      userID: newID(), answerID: newID(), generation: generation)
+                      userID: newID(), answerID: newID(), generation: generation, modelID: selectedModelID(for: model))
         messages.append(ChatMessage(id: job.userID, role: .user, text: question))
         messages.append(ChatMessage(id: job.answerID, role: .assistant, model: model, isStreaming: true))
         isRunning = true
@@ -155,6 +218,7 @@ public final class ChatViewModel {
         var userID: Int
         var answerID: Int
         var generation: Int
+        var modelID: String?
     }
 
     /// 한 번의 실행 동안 CLI 가 내는 이벤트를 읽는 쪽(전용 큐에서 불리므로 잠근다).
@@ -179,7 +243,7 @@ public final class ChatViewModel {
 
         if !Task.isCancelled {
             let request = AskRequest(question: job.question, model: job.model, webSearch: job.webSearch,
-                                     page: page, history: job.history, claudeSessionID: job.sessionID)
+                                     page: page, history: job.history, claudeSessionID: job.sessionID, modelID: job.modelID)
             if let notice = CommandBuilder.notice(for: request) { update(job.answerID) { $0.notice = notice } }
 
             if CommandBuilder.exceedsPromptLimit(request) {
@@ -203,6 +267,10 @@ public final class ChatViewModel {
                     outcome = .failed("작업 폴더를 만들지 못했어요(\(e.localizedDescription))")
                     update(job.answerID) { $0.error = "작업 폴더를 만들지 못했어요 — \(e.localizedDescription)" }
                 case .success(let p):
+                    if job.model == .chatgpt, !(await codexReady(p, job: job)) {
+                        outcome = Task.isCancelled ? .stopped : .failed("codex 로그인을 확인하지 못했어요")
+                        break
+                    }
                     let (exe, args) = CommandBuilder.build(request, workDir: p.dir)
                     let box = ReaderBox(model: job.model)
                     let (stream, cont) = AsyncStream.makeStream(of: StreamEvent.self)
@@ -224,14 +292,34 @@ public final class ChatViewModel {
         finish(job, outcome: outcome, page: page, session: turnSession, started: started)
     }
 
+    /// codex 는 묻기 전에 늘 `codex login status`(같은 환경) — 로그인이 안 됐으면 프로세스를 띄우지 않는다
+    /// (로그인 안 된 채 `codex exec` 는 20초 넘게 재시도한다). 막았으면 그 답 말풍선에 한국어 한 줄을 달고 false.
+    private func codexReady(_ p: (path: String, dir: URL), job: Job) async -> Bool {
+        let c = CLICommands.codexLoginStatus
+        let o = await runner.run(executable: c.executable, arguments: c.arguments, workDir: p.dir, path: p.path,
+                                 timeout: CLICommands.readTimeout) { _ in }
+        if Task.isCancelled { return false }
+        let message: String
+        switch o {
+        case .finished(0): return true
+        case .finished(1): message = ModelKind.chatgpt.loginNeededMessage
+        case .finished(let code): message = "codex 로그인 상태를 확인하지 못했어요(종료 코드 \(code)) — 설정에서 확인해 주세요"
+        case .notFound: message = ModelKind.chatgpt.notFoundMessage
+        case .stopped: return false
+        case .timedOut, .failed: message = "codex 로그인 상태를 확인하지 못했어요 — 설정에서 확인해 주세요"
+        }
+        update(job.answerID) { $0.error = message }
+        return false
+    }
+
     /// 이벤트 하나를 답 말풍선에 반영한다. Claude session_id 가 나오면 돌려준다.
     private func apply(_ event: StreamEvent, to job: Job) -> String? {
         switch event {
         case .text(let t):
             activity = nil
             update(job.answerID) { m in
-                // Claude 는 말풍선 단위로 오니 사이를 한 줄 띄운다. agy · codex 는 받은 대로 이어 붙인다.
-                if job.model == .claude && !m.text.isEmpty { m.text += "\n\n" }
+                // Claude · codex 는 말풍선(메시지) 단위로 오니 사이를 한 줄 띄운다. agy 는 받은 대로 이어 붙인다.
+                if job.model != .gemini && !m.text.isEmpty { m.text += "\n\n" }
                 m.text += t
             }
         case .toolUse(let name):
@@ -248,6 +336,8 @@ public final class ChatViewModel {
             }
         case .error(let msg):
             update(job.answerID) { if $0.error == nil { $0.error = msg } }
+        case .usage(let u):
+            update(job.answerID) { $0.usage = u }
         }
         return nil
     }
