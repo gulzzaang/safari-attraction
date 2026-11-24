@@ -1,53 +1,7 @@
 import AppCore
 import SwiftUI
 
-/// 루틴 하나를 고치는 중인 값(아직 저장 전).
-private struct RoutineDraft: Equatable {
-    enum Kind: String, CaseIterable { case daily, weekdays, everyHours, siteAlert }
-
-    var id: UUID?                  // nil 이면 새 루틴
-    var taskID: UUID?
-    var kind: Kind = .daily
-    var hour = 9
-    var minute = 0
-    var weekdays: Set<Int> = [2, 3, 4, 5, 6]   // 월~금
-    var hours = 6
-    var alertHost = ""            // 사이트 알림 루틴 — 고치는 화면은 계획 12 의 다음 조각이 맡는다(지금은 그대로 보존만)
-    var alertKeyword: String?
-    var sites: [String] = []
-    var sitesEdited = false        // 사람이 목록을 손대면 일을 바꿔도 다시 뽑지 않는다
-    var enabled = true
-
-    var schedule: RoutineSchedule {
-        switch kind {
-        case .daily: return .daily(hour: hour, minute: minute)
-        case .weekdays: return .weekdays(weekdays, hour: hour, minute: minute)
-        case .everyHours: return .everyHours(hours)
-        case .siteAlert: return .siteAlert(host: alertHost, keyword: alertKeyword)
-        }
-    }
-
-    init(taskID: UUID?, taskText: String?) {
-        self.taskID = taskID
-        if let taskText { sites = SiteList.extractHosts(from: taskText) }
-    }
-
-    init(_ r: Routine) {
-        id = r.id
-        taskID = r.taskID
-        sites = r.sites
-        sitesEdited = true
-        enabled = r.enabled
-        switch r.schedule {
-        case let .daily(h, m): kind = .daily; hour = h; minute = m
-        case let .weekdays(d, h, m): kind = .weekdays; weekdays = d; hour = h; minute = m
-        case let .everyHours(n): kind = .everyHours; hours = n
-        case let .siteAlert(host, keyword): kind = .siteAlert; alertHost = host; alertKeyword = keyword
-        }
-    }
-}
-
-/// 「루틴」 — 저장한 일을 정해진 시각에 사람 없이 돌린다. 루틴 목록(다음 시각 · 켜기/끄기 · 지금 한 번 · 고치기 · 지우기) · 기록 · 「끝나면 알림」.
+/// 「루틴」 — 저장한 일을 정해진 시각이나 사이트 알림에 맞춰 사람 없이 돌린다. 루틴 목록(다음 시각 · 켜기/끄기 · 지금 한 번 · 고치기 · 지우기) · 기록 · 「끝나면 알림」.
 struct RoutinesView: View {
     let hub: RoutineHub
     let agent: AgentSession
@@ -93,7 +47,7 @@ struct RoutinesView: View {
     private var list: some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("저장한 일을 정해진 시각에 사람 없이 돌려요. 앱이 켜져 있을 때만 돌고, 사파리가 이미 켜져 있고 사파리 제어 허락이 이미 있을 때만 돌아요(없으면 묻지 않고 건너뛰어요).")
+                Text("저장한 일을 정해진 시각이나 사이트 알림에 맞춰 사람 없이 돌려요. 앱이 켜져 있을 때만 돌고, 사파리가 이미 켜져 있고 사파리 제어 허락이 이미 있을 때만 돌아요(없으면 묻지 않고 건너뛰어요).")
                 Text("루틴은 읽기만 하도록 막아 둬요 — 누르기 · 입력은 거절하고, 「갈 수 있는 사이트」 밖으로도 가지 않게 해요. 다만 실수와 보통의 속임을 막는 장치예요. 속임 글에 넘어간 클로드가 일부러 빠져나가면 못 막으니, 로그인해 둔 중요한 사이트(메일 · 은행 등)는 목록에 넣지 않는 것을 권해요.")
             }
             .font(.caption).foregroundStyle(.secondary)
@@ -234,17 +188,13 @@ struct RoutinesView: View {
     private var scheduleEditor: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("언제").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            if draft?.kind == .siteAlert {
-                // 사이트 알림 루틴은 계획 12 의 화면 조각이 고치는 칸을 만든다 — 그때까지는 호스트 · 키워드를 그대로 두고 보여 주기만 한다.
-                Text(draft?.schedule.summary ?? "").font(.callout)
-            } else {
-                Picker("", selection: Binding(get: { draft?.kind ?? .daily }, set: { draft?.kind = $0 })) {
-                    Text("매일").tag(RoutineDraft.Kind.daily)
-                    Text("요일").tag(RoutineDraft.Kind.weekdays)
-                    Text("N시간마다").tag(RoutineDraft.Kind.everyHours)
-                }
-                .pickerStyle(.segmented).labelsHidden()
+            Picker("", selection: Binding(get: { draft?.kind ?? .daily }, set: { draft?.setKind($0) })) {
+                Text("매일").tag(RoutineDraft.Kind.daily)
+                Text("요일").tag(RoutineDraft.Kind.weekdays)
+                Text("N시간마다").tag(RoutineDraft.Kind.everyHours)
+                Text("사이트 알림이 오면").tag(RoutineDraft.Kind.siteAlert)
             }
+            .labelsHidden()
             if draft?.kind == .weekdays {
                 HStack(spacing: 4) {
                     ForEach([2, 3, 4, 5, 6, 7, 1], id: \.self) { day in
@@ -263,7 +213,9 @@ struct RoutinesView: View {
                 }
                 .controlSize(.small)
                 Text("만든 시각 · 켠 시각부터 셉니다.").font(.caption).foregroundStyle(.secondary)
-            } else if draft?.kind != .siteAlert {
+            } else if draft?.kind == .siteAlert {
+                siteAlertFields
+            } else {
                 HStack(spacing: 4) {
                     Picker("", selection: Binding(get: { draft?.hour ?? 9 }, set: { draft?.hour = $0 })) {
                         ForEach(0..<24, id: \.self) { Text(String(format: "%02d시", $0)).tag($0) }
@@ -281,6 +233,29 @@ struct RoutinesView: View {
         }
     }
 
+    private var siteAlertFields: some View {
+        let options = draft?.alertHostOptions ?? []
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("알림을 볼 사이트").font(.caption).foregroundStyle(.secondary)
+            if options.isEmpty {
+                Label("먼저 아래 「갈 수 있는 사이트」 에 사이트를 추가해 주세요.", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            } else {
+                Picker("", selection: Binding(get: { draft?.alertHost ?? "" }, set: { draft?.alertHost = $0 })) {
+                    ForEach(options, id: \.self) { Text($0).tag($0) }
+                }
+                .labelsHidden()
+            }
+            Text("키워드 (선택)").font(.caption).foregroundStyle(.secondary)
+            TextField("비우면 그 사이트의 모든 알림", text: Binding(get: { draft?.alertKeyword ?? "" }, set: { draft?.alertKeyword = $0 }))
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+            Text(RoutineDraft.siteAlertHint)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var sitesEditor: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -288,8 +263,7 @@ struct RoutinesView: View {
                 Spacer()
                 if let id = draft?.taskID, let t = hub.store.savedTask(id: id) {
                     Button("글에서 다시 뽑기") {
-                        draft?.sites = SiteList.extractHosts(from: t.text)
-                        draft?.sitesEdited = false
+                        draft?.resetSites(from: t.text)
                         siteError = nil
                     }
                     .buttonStyle(.link).controlSize(.small)
@@ -305,7 +279,7 @@ struct RoutinesView: View {
                 HStack {
                     Text(site).font(.callout).lineLimit(1).truncationMode(.middle)
                     Spacer()
-                    Button { draft?.sites.removeAll { $0 == site }; draft?.sitesEdited = true } label: { Image(systemName: "trash") }
+                    Button { draft?.removeSite(site) } label: { Image(systemName: "trash") }
                         .buttonStyle(.borderless).help("목록에서 빼기")
                 }
             }
@@ -320,18 +294,12 @@ struct RoutinesView: View {
 
     // MARK: 동작
 
-    private var canSave: Bool {
-        guard let d = draft, d.taskID != nil else { return false }
-        if d.kind == .weekdays, d.weekdays.isEmpty { return false }
-        return true
-    }
+    private var canSave: Bool { draft?.canSave ?? false }
 
     private func setTask(_ id: UUID?) {
         guard draft != nil else { return }
-        draft?.taskID = id
-        if draft?.id == nil, draft?.sitesEdited == false, let id, let t = hub.store.savedTask(id: id) {
-            draft?.sites = SiteList.extractHosts(from: t.text)   // 새 루틴에서 일을 바꾸면(목록을 손대지 않았을 때) 사이트를 다시 뽑는다
-        }
+        let text = id.flatMap { hub.store.savedTask(id: $0)?.text }
+        draft?.applyTaskChange(taskID: id, taskText: text)
     }
 
     private func addSite() {
@@ -339,8 +307,7 @@ struct RoutinesView: View {
             siteError = "사이트 주소를 알아보지 못했어요 (예: coupang.com). co.kr 같은 끝 주소만으로는 추가할 수 없어요"
             return
         }
-        if !(draft?.sites.contains(host) ?? true) { draft?.sites.append(host) }
-        draft?.sitesEdited = true
+        draft?.addSite(host)
         newSite = ""
         siteError = nil
     }
@@ -357,7 +324,7 @@ struct RoutinesView: View {
             siteError = nil
             newSite = ""
         } catch {
-            self.error = "저장하지 못했어요 — \(error.localizedDescription)"
+            self.error = RoutineDraft.saveErrorMessage(for: error)
         }
     }
 
@@ -383,6 +350,7 @@ struct RoutinesView: View {
 
     private func nextText(_ r: Routine) -> String {
         guard r.enabled else { return "꺼져 있어요" }
+        if case .siteAlert = r.schedule { return "사이트 알림을 기다리는 중 (10분 쿨다운)" }
         let next = r.nextOccurrence(after: Date(), calendar: .current)
         guard next != .distantFuture else { return "다음 시각 없음" }
         return "다음: " + Self.timeText(next)
