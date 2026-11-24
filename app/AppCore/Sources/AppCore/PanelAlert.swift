@@ -22,12 +22,30 @@ public struct SiteAlert: Sendable, Equatable {
     public var title: String
     public var body: String
 
-    /// 글자 수 상한(제목 200 · 내용 500)에 맞춰 자르고, 호스트는 소문자 · 앞뒤 공백 · 끝 점을 뗀다.
+    /// 제목 · 내용을 상한(제목 200 · 내용 500)에 맞추고 한 줄로 편다. 호스트는 소문자 · 앞뒤 공백 · 끝 점을 뗀다.
+    /// 글은 사이트가 마음대로 정하니 ① 유니코드 스칼라 수로 먼저 자르고(기본 글자 하나에 결합 문자 수만 개를 붙여 「한 글자」 로 세게 하는 부풀리기를 막는다)
+    /// ② 줄바꿈 · 탭 · 제어 문자를 공백 하나로 펴고(일 글의 `사이트:` 같은 머리 줄을 위조하지 못하게) ③ 자소 단위로 다듬는다(글자가 중간에 잘리지 않게).
     public init(host: String, kind: Kind, title: String, body: String) {
         self.host = SiteList.normalize(host)
         self.kind = kind
-        self.title = String(title.prefix(Self.titleLimit))
-        self.body = String(body.prefix(Self.bodyLimit))
+        self.title = Self.limited(title, Self.titleLimit)
+        self.body = Self.limited(body, Self.bodyLimit)
+    }
+
+    private static func limited(_ text: String, _ limit: Int) -> String {
+        var scalars = String.UnicodeScalarView()
+        var lastWasBreak = false
+        for u in text.unicodeScalars.prefix(limit) {
+            let v = u.value
+            if v <= 0x1F || (0x7F...0x9F).contains(v) || v == 0x2028 || v == 0x2029 {
+                if !lastWasBreak { scalars.append(" ") }
+                lastWasBreak = true
+            } else {
+                scalars.append(u)
+                lastWasBreak = false
+            }
+        }
+        return String(String(scalars).prefix(limit))
     }
 
     /// 본문을 읽는다. JSON 객체가 아니거나 · `host` 가 없거나 이상하거나 · `kind` 가 둘 중 하나가 아니거나 · `title` · `body` 가 글이 아니면 nil.

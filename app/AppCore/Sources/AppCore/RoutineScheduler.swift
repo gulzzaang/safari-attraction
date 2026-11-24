@@ -65,6 +65,8 @@ public final class RoutineScheduler {
     @ObservationIgnored private var alertTask: Task<Void, Never>?
     /// 알림으로 남긴 건너뜀 기록의 마지막 시각(루틴마다) — 알림이 쏟아져도 같은 루틴의 건너뜀 기록은 `alertSkipInterval` 에 한 줄.
     @ObservationIgnored private var lastAlertSkip: [UUID: Date] = [:]
+    /// 알림으로 시도했다가 돌기 전 확인(사파리 · 허락)에서 건너뛴 마지막 시각(루틴마다) — 그 뒤 10분은 확인을 다시 하지 않는다(알림 폭주 때 매번 확인하지 않게).
+    @ObservationIgnored private var lastAlertPreflightSkip: [UUID: Date] = [:]
 
     public init(store: RoutineStore,
                 runner: RoutineRunning,
@@ -229,8 +231,15 @@ public final class RoutineScheduler {
     public func startAlertRun(routineID: UUID, note: String) -> Bool {
         guard !stopped, let routine = store.routine(id: routineID) else { return false }
         guard let task = store.savedTask(id: routine.taskID) else { return false }
+        if activeRoutineID == routine.id { return false }   // 이 루틴이 지금 도는 중 — 「다른 일」 이 아니니 기록 없이 조용히 버린다
         if Self.hasNoSites(routine) { return skipAlert(routine, taskName: task.name, reason: Self.noSitesSkipReason) }
-        if case .skip(let reason) = preflight.check() { return skipAlert(routine, taskName: task.name, reason: reason) }
+        let now = clock()
+        if let last = lastAlertPreflightSkip[routine.id], now.timeIntervalSince(last) < Self.alertSkipInterval { return false }
+        if case .skip(let reason) = preflight.check() {
+            lastAlertPreflightSkip[routine.id] = now
+            return skipAlert(routine, taskName: task.name, reason: reason)
+        }
+        lastAlertPreflightSkip[routine.id] = nil
         if runner.isBusy || alertClaimed { return skipAlert(routine, taskName: task.name, reason: AgentSession.routineBusyReason) }
         alertClaimed = true
         activeRoutineID = routine.id
@@ -250,6 +259,14 @@ public final class RoutineScheduler {
     public func waitForAlertRun() async {
         await alertTask?.value
     }
+
+    /// 루틴을 지웠을 때 — 알림 쪽에 남겨 둔 루틴별 메모를 비운다.
+    public func forgetAlertState(routineID: UUID) {
+        lastAlertSkip[routineID] = nil
+        lastAlertPreflightSkip[routineID] = nil
+    }
+
+    var alertStateKeyCountForTesting: Int { Set(lastAlertSkip.keys).union(lastAlertPreflightSkip.keys).count }
 
     private func skipAlert(_ routine: Routine, taskName: String, reason: String) -> Bool {
         let now = clock()

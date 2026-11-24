@@ -108,7 +108,9 @@ public final class RoutineHub {
     /// 저장한 일을 지운다 — 그 일의 루틴도 함께 지워진다. 켜진 루틴이 없어지면 시계를 끈다.
     public func deleteTask(id: UUID) throws {
         defer { revision += 1; reconcile() }
+        let routineIDs = store.routines.filter { $0.taskID == id }.map(\.id)
         try store.removeSavedTask(id: id)
+        routineIDs.forEach { scheduler.forgetAlertState(routineID: $0) }
     }
 
     // MARK: 루틴
@@ -130,6 +132,7 @@ public final class RoutineHub {
     public func deleteRoutine(id: UUID) throws {
         defer { revision += 1; reconcile() }
         try store.removeRoutine(id: id)
+        scheduler.forgetAlertState(routineID: id)
     }
 
     /// 「지금 한 번」 — 꺼진 루틴도 돌려 볼 수 있다. 시계가 꺼져 있으면(켜진 루틴이 없음) 잠깐 켰다가 끝나면 다시 맞춘다.
