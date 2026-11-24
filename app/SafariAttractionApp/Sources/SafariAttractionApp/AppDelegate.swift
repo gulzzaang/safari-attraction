@@ -55,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let loginRunner: CommandRunning = blocked ?? ProcessRunner(environmentOverrides: cliEnv)
         let deviceLogin = CodexDeviceLogin(runner: loginRunner, loginPath: { ShellPath.loginPath() })
         self.deviceLogin = deviceLogin
-        settingsWindow = SettingsWindowController(status: status, login: deviceLogin, support: support, settings: settings)
+        settingsWindow = SettingsWindowController(status: status, login: deviceLogin, support: support, settings: settings, blockedMessage: blocked?.message)
         // 일 맡기기 — 서버 묶음은 앱 안(Resources/safari-attraction), 기억 · 사이트 허락 · 관문 소켓은 앱 지원 폴더.
         // 이 시점엔 폴더만 준비하고 클로드 · 사파리는 건드리지 않는다(첫 일 맡기기 때 시작).
         let siteModes = SiteModeStore(directory: support)

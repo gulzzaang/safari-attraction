@@ -176,7 +176,10 @@ public struct ModelOutputReader: Sendable {
     public mutating func finish(outcome: RunOutcome) -> [StreamEvent] {
         var events = track(finishStdout())
         if sawError { return events }
-        if model == .opencode, OpenCodeStreamParser.looksLikeFreeLimit(stderrText) {
+        // 무료 사용량 거절은 답이 하나도 안 왔거나 종료 코드가 0 이 아닐 때만(정상 답 뒤 stderr 경고에는 안 붙인다).
+        var failedOrEmpty = !sawAnswer
+        if case .finished(let code) = outcome, code != 0 { failedOrEmpty = true }
+        if model == .opencode, failedOrEmpty, OpenCodeStreamParser.looksLikeFreeLimit(stderrText) {
             events.append(.error(ModelKind.opencodeFreeLimitMessage))
             return events
         }

@@ -10,9 +10,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let login: CodexDeviceLogin
     private let support: URL
     private let settings: AppSettingsStore
+    private let blockedMessage: String?
 
-    init(status: CLIStatusService, login: CodexDeviceLogin, support: URL, settings: AppSettingsStore) {
-        self.status = status; self.login = login; self.support = support; self.settings = settings
+    init(status: CLIStatusService, login: CodexDeviceLogin, support: URL, settings: AppSettingsStore, blockedMessage: String? = nil) {
+        self.status = status; self.login = login; self.support = support; self.settings = settings; self.blockedMessage = blockedMessage
         super.init()
         // 기기 코드 로그인이 끝나면 상태를 새로 읽는다.
         login.onFinished = { [status] success in
@@ -26,7 +27,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             w.title = "사파리-어트랙션 설정"
             w.isReleasedWhenClosed = false
-            w.contentView = NSHostingView(rootView: SettingsView(status: status, login: login, support: support, settings: settings))
+            w.contentView = NSHostingView(rootView: SettingsView(status: status, login: login, support: support, settings: settings, blockedMessage: blockedMessage))
             w.delegate = self
             w.center()
             window = w
@@ -49,6 +50,8 @@ struct SettingsView: View {
     @Bindable var login: CodexDeviceLogin
     let support: URL
     let settings: AppSettingsStore
+    /// 앱 전용 설정 폴더를 못 만들었을 때의 안내 — 있으면 터미널 로그인도 열지 않는다(임시 폴더로 로그인하는 길을 막는다).
+    var blockedMessage: String?
 
     /// 제미나이(agy)를 띄우는 방식 — 설정에서 읽어 오고, 바꾸면 저장한다.
     @State private var agyMode: AgyMode = .isolated
@@ -102,6 +105,7 @@ struct SettingsView: View {
 
     private func startLogin(_ kind: ModelKind) {
         notice = nil
+        if let blockedMessage { notice = blockedMessage; return }
         switch kind {
         case .chatgpt: login.start()
         case .claude, .gemini, .opencode: openTerminal(kind)
@@ -149,6 +153,7 @@ struct SettingsView: View {
 
     /// 지원 폴더에 `.command` 파일을 쓰고 연다(Apple 이벤트 없이 `NSWorkspace.open`). 끝나면 창으로 돌아와 새로 고침.
     private func openTerminal(_ kind: ModelKind) {
+        if let blockedMessage { notice = blockedMessage; return }   // 폴더를 못 만들었으면 터미널 로그인도 안 연다
         let support = self.support, mode = agyMode
         // 로그인 PATH 읽기는 로그인 셸을 돌려 몇 초 걸릴 수 있어서 메인 밖에서 — `.command` 가 그 PATH 와 찾은 절대 경로를 쓴다.
         Task {

@@ -50,6 +50,30 @@ final class RunnerBox: @unchecked Sendable {
         let rs = lock.withLock { () -> [any CLIRunner] in stopped = true; return runners }
         for r in rs { r.stop() }
     }
+    var isStopped: Bool { lock.withLock { stopped } }
+}
+
+/// 앱을 끝낸 뒤에는 **명령을 띄우기 직전에** 확인해 아무것도 띄우지 않는 실행기 껍데기.
+/// 아직 시작 전인 실행기는 `stop()` 이 아무 일도 안 하므로(예: 종료 뒤 이어지는 opencode `models` · `stats`, codex `app-server`), 띄우는 순간에 막는다.
+final class GuardedRunner: CLIRunner, @unchecked Sendable {
+    private let inner: any CLIRunner
+    private let box: RunnerBox
+    init(inner: any CLIRunner, box: RunnerBox) { self.inner = inner; self.box = box }
+
+    func run(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
+             onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+        if box.isStopped { return .stopped }
+        return await inner.run(executable: executable, arguments: arguments, workDir: workDir, path: path, timeout: timeout, onEvent: onEvent)
+    }
+    func runInteractive(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
+                        initialLines: [String], onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+        if box.isStopped { return .stopped }
+        return await inner.runInteractive(executable: executable, arguments: arguments, workDir: workDir, path: path, timeout: timeout,
+                                          initialLines: initialLines, onEvent: onEvent)
+    }
+    func write(_ line: String) throws { try inner.write(line) }
+    func closeInput() { inner.closeInput() }
+    func stop() { inner.stop() }
 }
 
 /// CLI 하나의 지금 모습(설정 창 · 옆 창이 읽는다).
@@ -166,7 +190,7 @@ public final class CLIStatusService {
         boxes[boxID] = box
         let loginPath = self.loginPath, workDirectory = self.workDirectory, timeout = self.timeout
         let base = self.runnerFactory
-        let factory: @Sendable () -> any CLIRunner = { let r = base(); box.add(r); return r }
+        let factory: @Sendable () -> any CLIRunner = { let r = base(); box.add(r); return GuardedRunner(inner: r, box: box) }
         let result = await Task.detached(priority: .userInitiated) {
             await Self.read(kind: kind, loginPath: loginPath, workDirectory: workDirectory, runnerFactory: factory, timeout: timeout)
         }.value
@@ -297,7 +321,7 @@ public final class CLIStatusService {
         if r.usage == nil { r.usageNote = "알 수 없음" }
     }
 
-    /// opencode — 로그인 없이도 무료 모델은 되므로, 로그인 상태와 상관없이 모델 목록과 이 맥에서 쓴 양을 읽는다. 구독 남은 양은 못 얻는다.
+    /// opencode — 로그인 상태와 상관없이 모델 목록과 이 맥에서 쓴 양을 읽는다(로그인이 없으면 무료 사용량이 금방 막히지만 목록 · 쓴 양은 읽힌다). 구독 남은 양은 못 얻는다.
     nonisolated static func readOpenCode(into r: inout ReadResult, path: String, dir: URL,
                                          runnerFactory: @Sendable () -> any CLIRunner, timeout: TimeInterval) async {
         let a = await CLICapture.run(runner: runnerFactory(), command: CLICommands.opencodeAuthList, workDir: dir, path: path, timeout: timeout)

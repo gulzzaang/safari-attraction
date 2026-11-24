@@ -32,44 +32,61 @@ public enum CLIManagedConfig {
         opencodeConfigDirectory(support: support).appendingPathComponent("opencode.json")
     }
 
-    /// `begin` 로 시작하는 줄부터 `end` 로 시작하는 줄까지(둘 다)를 뺀 글.
-    static func removeBlock(_ text: String, begin: String, end: String) -> String {
-        var out: [Substring] = []
-        var skipping = false
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if skipping { if t.hasPrefix(end) { skipping = false }; continue }
-            if t.hasPrefix(begin) { skipping = true; continue }
-            out.append(line)
-        }
-        return out.joined(separator: "\n")
+    /// 표 머리줄(`[이름]`)이면 그 안 글(`#` 앞 · 공백 뺀)을, 아니면 nil. `[features] # 설명` 도 같은 표로 읽는다.
+    static func tableHeader(_ trimmedLine: String) -> String? {
+        guard trimmedLine.hasPrefix("[") else { return nil }
+        let head = (trimmedLine.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? trimmedLine)
+            .trimmingCharacters(in: .whitespaces)
+        return head.hasPrefix("[") && head.hasSuffix("]") ? head : nil
     }
 
-    /// 표 머리줄(`[features]`)부터 다음 표 머리줄 앞까지를 뺀다 — 앱이 `[features]` 를 관리하므로 표시줄 밖에 있는 같은 표는 겹치지 않게 뺀다.
-    static func removeTable(_ text: String, header: String) -> String {
-        var out: [Substring] = []
-        var skipping = false
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if t.hasPrefix("[") { skipping = (t == header) }
-            if !skipping { out.append(line) }
-        }
-        return out.joined(separator: "\n")
+    /// `키 = 값` 줄의 키(앞뒤 공백 뺀). `=` 가 없으면 nil.
+    static func keyName(_ line: String) -> String? {
+        guard let eq = line.firstIndex(of: "=") else { return nil }
+        return line[line.startIndex..<eq].trimmingCharacters(in: .whitespaces)
     }
 
     /// 앱 전용 `config.toml` 글 — 맨 위에 `cli_auth_credentials_store = "file"`, 맨 아래에 `[features]`(도구 끄기).
-    /// 앱이 관리하는 두 덩어리(표시줄로 감쌈)만 맞추고 그 사이의 다른 줄은 그대로 둔다(단 `cli_auth_credentials_store` 를 따로 적은 줄은 겹치지 않게 뺀다).
+    /// 앱이 관리하는 두 덩어리(표시줄로 감쌈)만 맞추고 그 사이의 다른 줄은 그대로 둔다.
+    /// - 최상위의 `cli_auth_credentials_store = …` 줄(키 이름이 정확히 같은 것)은 겹치지 않게 뺀다.
+    /// - 사용자가 따로 둔 `[features]` 표(`[features] # …` 도 같은 표)의 **다른 키는 지우지 않고** 앱 관리 덩어리 안으로 옮겨 남긴다(앱 목록과 같은 이름이면 앱 값이 이긴다).
     public static func codexConfig(merging existing: String?) -> String {
-        var body = removeBlock(existing ?? "", begin: topBegin, end: topEnd)
-        body = removeBlock(body, begin: featuresBegin, end: featuresEnd)
-        body = removeTable(body, header: "[features]")
-        body = body.split(separator: "\n", omittingEmptySubsequences: false)
-            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("cli_auth_credentials_store") }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let appKeys = Set(codexDisabledFeatures)
+        var body: [String] = []
+        var userFeatures: [String] = []
+        // 0 보통 · 1 앱 top 덩어리 안 · 2 앱 features 덩어리 안 · 3 사용자 [features] 표 안
+        var mode = 0
+        var seenHeader = false
+        func collect(_ line: String) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.isEmpty { return }
+            if let k = keyName(t), appKeys.contains(k) { return }
+            userFeatures.append(line)
+        }
+        for line in (existing ?? "").split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if mode == 1 { if t.hasPrefix(topEnd) { mode = 0 }; continue }
+            if mode == 2 {
+                if t.hasPrefix(featuresEnd) { mode = 0 } else if tableHeader(t) != "[features]" { collect(line) }
+                continue
+            }
+            if t.hasPrefix(topBegin) { mode = 1; continue }
+            if t.hasPrefix(featuresBegin) { mode = 2; continue }
+            if let head = tableHeader(t) {
+                seenHeader = true
+                if head == "[features]" { mode = 3; continue }
+                mode = 0
+                body.append(line)
+                continue
+            }
+            if mode == 3 { collect(line); continue }
+            if !seenHeader, keyName(t) == "cli_auth_credentials_store" { continue }
+            body.append(line)
+        }
+        let bodyText = body.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         let top = [topBegin + note, "cli_auth_credentials_store = \"file\"", topEnd].joined(separator: "\n")
-        let features = ([featuresBegin + note, "[features]"] + codexDisabledFeatures.map { "\($0) = false" } + [featuresEnd]).joined(separator: "\n")
-        return ([top] + (body.isEmpty ? [] : [body]) + [features]).joined(separator: "\n\n") + "\n"
+        let features = ([featuresBegin + note, "[features]"] + codexDisabledFeatures.map { "\($0) = false" } + userFeatures + [featuresEnd]).joined(separator: "\n")
+        return ([top] + (bodyText.isEmpty ? [] : [bodyText]) + [features]).joined(separator: "\n\n") + "\n"
     }
 
     /// 두 파일을 쓴다(폴더는 `prepareDirectories` 가 먼저 만든다). 내용이 같으면 건드리지 않고, 쓰면 0600. 못 쓰면 던진다.

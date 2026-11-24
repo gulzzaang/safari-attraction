@@ -410,3 +410,101 @@ final class StatusFlowFixesTests: XCTestCase {
         for k in ModelKind.subscriptionCLIs { XCTAssertEqual(svc.state(k).login, .unknown, "\(k)") }
     }
 }
+
+// MARK: 검토 고침(I1 · M3 · M4)
+
+/// 첫 명령은 `stop()` 이 올 때까지 멈춰 있고, 그 뒤 실제로 실행된 명령을 모두 적는 가짜 실행기.
+final class FirstBlockingRunner: CommandRunning, InteractiveRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _executed: [String] = []
+    let gate = Gate()
+    var executed: [String] { lock.withLock { _executed } }
+    func run(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
+             onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+        let n = lock.withLock { () -> Int in _executed.append(([executable] + arguments).joined(separator: " ")); return _executed.count }
+        if n == 1 { await gate.wait(); return .stopped }
+        return .finished(code: 0)
+    }
+    func runInteractive(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
+                        initialLines: [String], onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+        lock.withLock { _executed.append(([executable] + arguments).joined(separator: " ")) }
+        return .stopped
+    }
+    func write(_ line: String) throws {}
+    func closeInput() {}
+    func stop() { Task { await gate.open() } }
+}
+
+@MainActor
+final class ShutdownGuardTests: XCTestCase {
+    func fakeBin(_ names: [String]) -> String {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("fakebin6-\(UUID().uuidString)")
+        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for n in names {
+            let f = dir.appendingPathComponent(n)
+            try! "#!/bin/sh\n".write(to: f, atomically: true, encoding: .utf8)
+            try! FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: f.path)
+        }
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir.path
+    }
+
+    func testShutdownDuringFirstCommandStopsTheRestOfTheReadFlow() async {
+        for kind in [ModelKind.opencode, .chatgpt, .gemini] {
+            let r = FirstBlockingRunner()
+            let bin = fakeBin(["claude", "codex", "agy", "opencode"])
+            let svc = CLIStatusService(loginPath: { bin }, runnerFactory: { r }, workDirectory: { URL(fileURLWithPath: "/tmp") }, timeout: 5)
+            let first = Task { await svc.refresh(kind, force: true) }
+            for _ in 0..<400 { if r.executed.count >= 1 { break }; try? await Task.sleep(nanoseconds: 5_000_000) }
+            XCTAssertEqual(r.executed.count, 1, "\(kind)")
+            svc.shutdown()
+            await first.value
+            XCTAssertEqual(r.executed.count, 1, "\(kind): 첫 명령 도중 shutdown → 같은 읽기의 다음 명령(models · stats · app-server …)은 실행되지 않는다: \(r.executed)")
+        }
+    }
+}
+
+final class FixWaveReviewTests: XCTestCase {
+    // M3 — free-limit 은 답이 없거나 종료 코드가 0 이 아닐 때만
+    func testFreeLimitOnStderrIsIgnoredAfterANormalAnswer() {
+        var r = ModelOutputReader(model: .opencode)
+        var ev = r.handle(.stdout(Data(opencodeSample.utf8)))
+        _ = r.handle(.stderr(Data("warning: provider.free-limit is near\n".utf8)))
+        ev += r.finish(outcome: .finished(code: 0))
+        XCTAssertFalse(ev.contains { if case .error = $0 { return true }; return false })
+        // 답이 하나도 없으면(종료 0 이어도) · 종료 코드가 0 이 아니면 붙는다.
+        var empty = ModelOutputReader(model: .opencode)
+        _ = empty.handle(.stderr(Data("provider.free-limit\n".utf8)))
+        XCTAssertEqual(empty.finish(outcome: .finished(code: 0)), [.error(ModelKind.opencodeFreeLimitMessage)])
+        var failed = ModelOutputReader(model: .opencode)
+        var ev2 = failed.handle(.stdout(Data(opencodeSample.utf8)))
+        _ = failed.handle(.stderr(Data("provider.free-limit\n".utf8)))
+        ev2 += failed.finish(outcome: .finished(code: 1))
+        XCTAssertTrue(ev2.contains(.error(ModelKind.opencodeFreeLimitMessage)))
+    }
+
+    // M4 — 사용자의 [features] 다른 키는 남기고, 머리줄 뒤 주석도 같은 표로
+    func testUserFeatureKeysAreKeptInsideTheManagedBlockAndAppWins() {
+        let user = "model = \"x\"\n[features] # 내 설정\nmy_flag = true\nshell_tool = true\n\n[projects]\ny = 1\n"
+        let merged = CLIManagedConfig.codexConfig(merging: user)
+        XCTAssertEqual(merged.components(separatedBy: "[features]").count - 1, 1, "표는 하나만")
+        XCTAssertTrue(merged.contains("my_flag = true"), "사용자 키는 지우지 않는다")
+        XCTAssertTrue(merged.contains("shell_tool = false"))
+        XCTAssertFalse(merged.contains("shell_tool = true"), "앱 목록과 같은 이름이면 앱 값")
+        XCTAssertTrue(merged.contains("[projects]") && merged.contains("model = \"x\""))
+        let lines = merged.components(separatedBy: "\n")
+        let begin = lines.firstIndex { $0.hasPrefix("# >>> safari-attraction:features") }!
+        let end = lines.firstIndex { $0.hasPrefix("# <<< safari-attraction:features") }!
+        XCTAssertTrue((begin..<end).contains(lines.firstIndex { $0 == "my_flag = true" }!), "앱 관리 덩어리 안")
+        XCTAssertEqual(CLIManagedConfig.codexConfig(merging: merged), merged, "두 번째 합치기에도 사용자 키가 남는다")
+    }
+
+    func testAuthStoreRemovalIsByExactKeyAndOnlyAtTopLevel() {
+        let user = "cli_auth_credentials_store_extra = 1\ncli_auth_credentials_store=\"keyring\"\n[other]\ncli_auth_credentials_store = \"x\"\n"
+        let merged = CLIManagedConfig.codexConfig(merging: user)
+        XCTAssertTrue(merged.contains("cli_auth_credentials_store_extra = 1"), "이름이 다른 키는 접두어가 같아도 둔다")
+        XCTAssertFalse(merged.contains("keyring"))
+        XCTAssertTrue(merged.contains("[other]\ncli_auth_credentials_store = \"x\""), "다른 표 안의 같은 이름 키는 둔다")
+        XCTAssertEqual(merged.components(separatedBy: "cli_auth_credentials_store = \"file\"").count - 1, 1)
+    }
+}
