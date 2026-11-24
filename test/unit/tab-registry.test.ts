@@ -47,6 +47,18 @@ class FakeSafari implements TabBackend {
     t.marker = a.key;
     return { status: 'navigated', tab };
   };
+  /** clearMark 로 지운 표시(자리와 키) 기록. */
+  cleared: string[] = [];
+  /** 켜 두면 clearMark 가 오류를 낸다. */
+  clearThrows = false;
+  clearMark = async (_w: number, index: number, key: string): Promise<boolean> => {
+    if (this.clearThrows) throw new SafariError('SAFARI_ERROR', '지우지 못함');
+    const t = this.tabs[index - 1];
+    if (!t || t.marker !== key) return false;
+    t.marker = '';
+    this.cleared.push(`${index}:${key}`);
+    return true;
+  };
   /** readMarkers 를 부른 묶음마다 자리 개수. */
   readCalls: number[] = [];
   /** readMarkers 로 들여다본 자리(`창:순번`) 전부. */
@@ -1230,6 +1242,106 @@ describe('TabRegistry', () => {
       await reg.closeTab(a);
       await reg.settle(b);
       expect(sf.settleShapes).toEqual([undefined]);
+    });
+  });
+
+  describe('남의 표시가 있는 사용자 탭 · 끝날 때 우리 표시 지우기', () => {
+    const FOREIGN = 't5.deadbeef';
+
+    test('spot 의 foreignOk 는 우리가 열지 않았고 표시를 안 한 탭에만 — 우리가 연 탭 · 표시를 적은 탭은 없다', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf, 'inst');
+      sf.tabs.push({ url: 'http://user/1', marker: '' });
+      const owned = openOwned(sf, reg, 'http://a/x');
+      const [seen] = await reg.sync(await sf.list());
+      expect(reg.spot(seen!.key)).toMatchObject({ unstamped: true, foreignOk: true, instance: 'inst' });
+      expect(reg.spot(owned).foreignOk).toBeUndefined();
+      await reg.withTab(seen!.key, async () => ({ value: 1 })); // 우리 표시를 적고 일했다
+      expect(reg.spot(seen!.key)).toMatchObject({ unstamped: false });
+      expect(reg.spot(seen!.key).foreignOk).toBeUndefined();
+    });
+
+    test('일이 stamped:false 로 끝나면(남의 표시가 있어 안 적음) 표시 안 한 탭으로 남아 목록을 다시 봐도 같은 키다', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf, 'inst');
+      sf.tabs.push({ url: 'http://user/1', marker: FOREIGN });
+      const [seen] = await reg.sync(await sf.list());
+      await reg.withTab(seen!.key, async () => ({ value: 1, stamped: false }));
+      expect(reg.spot(seen!.key).unstamped).toBe(true);
+      const [again] = await reg.sync(await sf.list());
+      expect(again!.key).toBe(seen!.key);
+      expect(sf.tabs[0]!.marker).toBe(FOREIGN);
+    });
+
+    test('adopt: 남의 표시가 있는 탭은 덮어쓰지 않고 표시 안 한 채 붙잡는다(같은 탭을 또 붙여도 같은 키)', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf, 'inst');
+      sf.tabs.push({ url: 'http://user/1', marker: FOREIGN });
+      const k = await reg.adopt(1, 1);
+      expect(sf.tabs[0]!.marker).toBe(FOREIGN);
+      expect(reg.spot(k).unstamped).toBe(true);
+      expect(await reg.adopt(1, 1)).toBe(k);
+      expect(reg.ownedKeys()).toEqual([]);
+    });
+
+    test('adopt: 같은 인스턴스의 다른 키 표시는 남의 것이 아니다(isForeignMarker)', () => {
+      const reg = new TabRegistry(new FakeSafari(), 'inst');
+      expect(reg.isForeignMarker('')).toBe(false);
+      expect(reg.isForeignMarker('t9.inst')).toBe(false);
+      expect(reg.isForeignMarker('t9.other')).toBe(true);
+      expect(reg.isForeignMarker('이상한표시')).toBe(true);
+    });
+
+    test('navTimedOut: 남의 표시가 남은 탭은 가는 중인 목적지를 적어 둔다', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf, 'inst');
+      sf.tabs.push({ url: 'http://user/1', marker: FOREIGN });
+      const [seen] = await reg.sync(await sf.list());
+      sf.tabs[0]!.url = 'http://user/going';
+      await reg.navTimedOut(seen!.key);
+      expect(reg.spot(seen!.key).altUrl).toBe('http://user/going');
+    });
+
+    test('releaseStamps: 우리가 사용자 탭에 적은 표시만 지운다(표시가 이미 남의 것이거나 우리가 연 탭이면 그대로)', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf, 'inst');
+      sf.tabs.push({ url: 'http://user/1', marker: '' }, { url: 'http://user/2', marker: '' }, { url: 'http://user/3', marker: FOREIGN });
+      const seen = await reg.sync(await sf.list());
+      for (const s of seen.slice(0, 2)) await reg.withTab(s.key, async () => { sf.tabs[s.raw.index - 1]!.marker = reg.markerOf(s.key); return { value: 1 }; });
+      await reg.withTab(seen[2]!.key, async () => ({ value: 1, stamped: false }));
+      const ours = openOwned(sf, reg, 'http://a/x');
+      sf.tabs[1]!.marker = FOREIGN; // 둘째 탭의 표시는 그 사이 남이 바꿔 놓았다
+      expect(await reg.releaseStamps()).toBe(1);
+      expect(sf.tabs.map((t) => t.marker)).toEqual(['', FOREIGN, FOREIGN, reg.markerOf(ours)]);
+      expect(reg.spot(seen[0]!.key).unstamped).toBe(true); // 지운 탭은 표시 안 한 탭으로 돌아간다
+    });
+
+    test('releaseStamps: 탭이 밀려도(같은 주소) 우리 표시를 찾아 지우고, 오류 · 지울 것 없음은 조용하다', async () => {
+      const sf = new FakeSafari();
+      const reg = new TabRegistry(sf, 'inst');
+      expect(await reg.releaseStamps()).toBe(0); // 지울 것 없음 — 사파리를 부르지도 않는다
+      sf.tabs.push({ url: 'http://user/1', marker: '' });
+      const [seen] = await reg.sync(await sf.list());
+      await reg.withTab(seen!.key, async () => { sf.tabs[0]!.marker = reg.markerOf(seen!.key); return { value: 1 }; });
+      sf.tabs.unshift({ url: 'http://user/front', marker: '' }); // 한 칸 밀림
+      expect(await reg.releaseStamps()).toBe(1);
+      expect(sf.tabs.map((t) => t.marker)).toEqual(['', '']);
+      sf.tabs[1]!.marker = reg.markerOf(seen!.key);
+      reg.confirm(seen!.key);
+      sf.clearThrows = true;
+      await expect(reg.releaseStamps()).resolves.toBe(0); // 오류는 삼킨다
+    });
+
+    test('releaseStamps: 시간 상한(budget)이 지났으면 그만둔다', async () => {
+      const sf = new FakeSafari();
+      let t = 1_000;
+      const reg = new TabRegistry(sf, 'inst', () => t);
+      sf.tabs.push({ url: 'http://user/1', marker: '' });
+      const [seen] = await reg.sync(await sf.list());
+      await reg.withTab(seen!.key, async () => { sf.tabs[0]!.marker = reg.markerOf(seen!.key); return { value: 1 }; });
+      sf.list = async () => { t += 5_000; return [{ windowId: 1, index: 1, title: '', url: 'http://user/1', isActive: true }]; }; // 목록을 읽는 데 상한을 넘겼다
+      expect(await reg.releaseStamps(1_500)).toBe(0);
+      expect(sf.cleared).toEqual([]);
     });
   });
 });

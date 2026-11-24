@@ -53,6 +53,32 @@ describe("buildGuardedSource(탭 확인 + 일을 한 스크립트로)", () => {
     expect(reading).toMatchObject({ ok: false, marker: "" });
   });
 
+  describe("남의 표시(foreignOk · instance)", () => {
+    const f = (o: Partial<{ unstamped: boolean; url: string; foreignOk: boolean; instance: string }> = {}) => spec({ unstamped: true, url: "http://x/a", foreignOk: true, instance: "abcd1234", ...o });
+
+    test("표시 안 한 사용자 탭에 남의 인스턴스 표시가 있어도 주소가 같으면 돌고, 덮어쓰지 않고 stamped:false 로 알린다", () => {
+      const { reading, dataset } = runPage(buildGuardedSource(f(), "7"), { marker: "t5.deadbeef", href: "http://x/a" });
+      expect(reading).toMatchObject({ ok: true, type: "number", value: "7", stamped: false });
+      expect(dataset.saTab).toBe("t5.deadbeef");
+    });
+
+    test("우리 표시가 적히면 stamped 가 빠진다(표시 없는 탭에는 전처럼 적는다)", () => {
+      const { reading, dataset } = runPage(buildGuardedSource(f(), "7"), { href: "http://x/a" });
+      expect(reading).toMatchObject({ ok: true, value: "7" });
+      expect(reading).not.toHaveProperty("stamped");
+      expect(dataset.saTab).toBe(KEY);
+    });
+
+    test("같은 인스턴스의 다른 키 표시 · 깃발 없음 · 표시한 탭 · 주소 다름은 소스를 돌리지 않는다", () => {
+      const own = runPage(buildGuardedSource(f(), "(globalThis.ran = 1)"), { marker: "t9.abcd1234", href: "http://x/a", globals: { ran: 0 } });
+      expect(own.reading).toMatchObject({ ok: false, marker: "t9.abcd1234" });
+      expect(own.ctx.ran).toBe(0);
+      expect(runPage(buildGuardedSource(f({ foreignOk: false }), "1"), { marker: "t5.deadbeef", href: "http://x/a" }).reading).toMatchObject({ ok: false });
+      expect(runPage(buildGuardedSource(f({ unstamped: false }), "1"), { marker: "t5.deadbeef", href: "http://x/a" }).reading).toMatchObject({ ok: false });
+      expect(runPage(buildGuardedSource(f(), "1"), { marker: "t5.deadbeef", href: "http://x/other" }).reading).toMatchObject({ ok: false });
+    });
+  });
+
   test("표시 안 한 탭: 표시가 없고 문서 주소가 기록한 주소와 같으면 표시를 적고 돈다", () => {
     const { reading, dataset } = runPage(buildGuardedSource(spec({ unstamped: true, url: "http://x/a" }), "7"), { href: "http://x/a" });
     expect(reading).toMatchObject({ ok: true, type: "number", value: "7" });

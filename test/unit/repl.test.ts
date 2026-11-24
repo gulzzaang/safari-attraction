@@ -240,6 +240,57 @@ describe("REPL 세부", () => {
     });
   });
 
+  describe("snapshot: 결과를 글자처럼도 쓴다(tree 에 넘긴다)", () => {
+    const TEXT = '- title: "a" [url=http://a/]\n- link "x" [ref=e1]\n- button "저장" [ref=e2]';
+    const start = async () => {
+      d.answer = () => TEXT;
+      await s.run('await openTab("http://a/")');
+    };
+    const out = async (code: string) => {
+      const r = await s.run(`const s = await snapshot(page, { interactive: true }); ${code}`);
+      expect(r.error).toBeUndefined();
+      return r.output;
+    };
+
+    test("match · matchAll · split · includes · indexOf · slice · replace · trim · startsWith · endsWith · search · at · length", async () => {
+      await start();
+      expect(await out("console.log(s.match(/ref=(e\\d+)/g).join(','))")).toBe("ref=e1,ref=e2");
+      expect(await out("console.log([...s.matchAll(/\\[ref=(e\\d+)\\]/g)].map((m) => m[1]).join(','))")).toBe("e1,e2");
+      expect(await out("console.log(s.split('\\n').length, s.split('\\n')[1])")).toBe('3 - link "x" [ref=e1]');
+      expect(await out("console.log(s.includes('저장'), s.indexOf('link'), s.slice(0, 7), s.startsWith('- title'), s.endsWith(']'), s.search(/button/))")).toBe(`true ${TEXT.indexOf("link")} - title true true ${TEXT.search(/button/)}`);
+      expect(await out("console.log(s.replace('저장', '확인').includes('확인'), s.trim() === s.tree, s.length === s.tree.length, s.at(0))")).toBe("true true true -");
+      expect(await out("console.log(s.toLowerCase() === s.tree.toLowerCase(), s.substring(2, 7), s.replaceAll('e', 'E').includes('E1'))")).toBe("true title true");
+    });
+
+    test("글자 자리에 그대로 들어간다: 문자열 이어 붙이기 · 템플릿 · String() · 정규식 test · toString · JSON", async () => {
+      await start();
+      expect(await out("console.log(`${s}` === s.tree, ('' + s) === s.tree, String(s) === s.tree, s.toString() === s.tree, s.valueOf() === s.tree, /ref=e2/.test(s))")).toBe("true true true true true true");
+    });
+
+    test("기존 모양은 그대로: .tree · .diff · 키 목록 · JSON · typeof", async () => {
+      await start();
+      expect(await out("console.log(s.tree === " + JSON.stringify(TEXT) + ", s.diff === s.tree, Object.keys(s).join(','), typeof s, JSON.stringify(s) === JSON.stringify({ tree: s.tree, diff: s.diff }))")).toBe("true true tree,diff object true");
+    });
+
+    test("글자 메서드로 읽는 것은 읽은 줄로 치지 않는다(.tree 와 같다) — console.log(s) 로 찍어야 읽은 것이 된다", async () => {
+      const mk = (y: number, nums: number[]) => `#sa-meta scroll=0,${y} doc=d1\n- title: "a" [url=http://a/]\n` + nums.map((n) => `- paragraph "문단 ${n} 문단 ${n} 문단 ${n}"`).join("\n");
+      let text = mk(0, [1, 2, 3]);
+      d.answer = () => text;
+      await s.run('await openTab("http://a/")');
+      await s.run("const q = await snapshot(page); console.log(q.match(/문단/g).length, q.includes('문단 1'), `${q}`.length, q.split('\\n').length)");
+      text = mk(1000, [3, 4, 5]);
+      const r = await s.run("console.log(await snapshot(page))");
+      expect(r.output).toContain("문단 3"); // 읽은 것으로 치지 않았으니 전체가 나온다
+      expect(r.output).not.toContain("내린 뒤 새로 보이는 곳만");
+    });
+
+    test("console.log(s) 는 여전히 바뀐 곳 글(diff)을 찍는다", async () => {
+      await start();
+      expect((await s.run("console.log(await snapshot(page))")).output).toBe(TEXT);
+      expect((await s.run("const s2 = await snapshot(page); console.log(s2.length > 0); console.log(s2)")).output).toBe("true\n변화 없음");
+    });
+  });
+
   test("snapshot 에 선택지가 JSON 소스로 전달된다", async () => {
     d.answer = () => "x";
     await s.run('await openTab("http://a/"); await snapshot(page, { interactive: true })');

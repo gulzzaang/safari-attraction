@@ -27,29 +27,38 @@ export interface GuardSpec {
   url: string;
   /** 표시 안 한 탭을 알아볼 때 url 말고 받아들일 주소. */
   altUrl?: string;
+  /** 우리가 열지 않은 탭(붙인 사용자 탭)이다 — 다른 서버의 표시가 남은 탭을 「표시 없음」과 같이 주소로 알아보고 표시는 덮어쓰지 않는다. instance 와 함께 준다. */
+  foreignOk?: boolean;
+  /** 이 서버 프로세스의 인스턴스 값(표시 `키.instanceId` 의 뒷부분). 같은 인스턴스의 다른 키 표시는 남의 것이 아니다. */
+  instance?: string;
 }
 
 /** 값 종류 꼬리표: 글 · 숫자 · 불리언은 typeof, null · undefined 는 "null", 그 밖(객체 · 함수 · 기호 · 큰 정수)은 typeof 그대로. */
 export type ValueType = "string" | "number" | "boolean" | "null" | "object" | "function" | "symbol" | "bigint";
 
 /** 한 번의 doJavaScript 가 돌려주는 글(JSON)의 꼴. */
-export type GuardedReading = { ok: true; type: ValueType; value: string; url: string; /** 문서를 떠나는 중인가(`window.__saLeaving`, beforeunload 때 Page 의 동작 코드가 세운 깃발). */ leaving: boolean } | { ok: false; marker: string; url: string };
+export type GuardedReading = { ok: true; type: ValueType; value: string; url: string; /** 남의 표시가 있어 우리 표시를 적지 않았다(false). 우리 표시가 적혀 있으면 빠진다. */ stamped?: false; /** 문서를 떠나는 중인가(`window.__saLeaving`, beforeunload 때 Page 의 동작 코드가 세운 깃발). */ leaving: boolean } | { ok: false; marker: string; url: string };
 
 export function buildGuardedSource(g: GuardSpec, source: string): string {
   // 문서 주소(location.href)는 기록한 주소와 꼴이 다를 수 있어(끝 슬래시 · 퍼센트 인코딩) 같은 주소의 여러 꼴 중 하나와 같으면 된다.
-  const here = g.unstamped ? `__saM === '' && ${JSON.stringify(urlForms([g.url, g.altUrl]))}.indexOf(location.href) >= 0` : "false";
+  // 남의 표시(foreignOk · instance): 비어 있지 않고 우리 인스턴스의 표시가 아니면 표시 없음과 같이 주소로 확인하고, 덮어쓰지 않는다(__saF).
+  const foreign = g.foreignOk === true && typeof g.instance === "string" && g.instance !== "" ? `(__saM !== '' && __saM.slice(-${g.instance.length + 1}) !== ${JSON.stringify("." + g.instance)})` : "false";
+  const here = g.unstamped ? `(__saM === '' || ${foreign}) && ${JSON.stringify(urlForms([g.url, g.altUrl]))}.indexOf(location.href) >= 0` : "false";
   return `(function(__saK){
 var __saM = '';
 try { __saM = String(document.documentElement.dataset.saTab || ''); } catch (__saE) {}
+var __saF = false;
 if (__saM !== __saK) {
   if (!(${here})) return JSON.stringify({ ok: false, marker: __saM, url: location.href });
-  try { document.documentElement.dataset.saTab = __saK; } catch (__saE) {}
+  if (__saM === '') { try { document.documentElement.dataset.saTab = __saK; } catch (__saE) {} } else { __saF = true; }
 }
 var __saV = (${source}
 );
 var __saT = __saV === null || __saV === undefined ? 'null' : typeof __saV;
 var __saS = __saT === 'null' ? '' : __saT === 'string' ? __saV : __saT === 'number' || __saT === 'boolean' ? String(__saV) : JSON.stringify(__saV);
-return JSON.stringify({ ok: true, type: __saT, value: typeof __saS === 'string' ? __saS : '', url: location.href, leaving: window.__saLeaving === true });
+var __saR = { ok: true, type: __saT, value: typeof __saS === 'string' ? __saS : '', url: location.href, leaving: window.__saLeaving === true };
+if (__saF) __saR.stamped = false;
+return JSON.stringify(__saR);
 })(${JSON.stringify(g.key)})`;
 }
 

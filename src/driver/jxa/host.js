@@ -124,6 +124,13 @@ function mayStamp(args, url) {
   }
 }
 
+// 다른 서버(다른 Claude 세션 · 끝난 세션)가 남긴 표시인가: 비어 있지 않고, 내 표시가 아니고, 내 인스턴스(args.instance)의 표시도 아니다(같은 인스턴스의 다른 키 표시는 「남의 것」이 아니라 우리 다른 탭이다).
+// args.foreignOk 는 Node 쪽이 우리가 열지 않은 탭(붙인 사용자 탭)이면서 아직 표시를 안 한 항목에만 싣는다 — 우리가 연 탭은 정확히 내 표시만 받는다(0.3.1 안전 규칙).
+// 남의 표시는 「표시 없음」과 같이 자리 · 주소로 확인하고, 덮어쓰지 않는다.
+function isForeignMarker(marker, args) {
+  return args.foreignOk === true && marker !== "" && marker !== args.key && typeof args.instance === "string" && args.instance !== "" && !String(marker).endsWith("." + args.instance);
+}
+
 function guardTab(args) {
   if (args.urlOnly) {
     let tab;
@@ -137,8 +144,17 @@ function guardTab(args) {
   const p = probeTab(args.windowId, args.index);
   if (!p) return null;
   if (p.marker === args.key) return p;
-  if (args.unstamped && p.marker === "" && urlIs(p.url, args)) return p;
+  if (args.unstamped && (p.marker === "" || isForeignMarker(p.marker, args)) && urlIs(p.url, args)) return p;
   return null;
+}
+
+// 확인을 통과한 탭에 우리 표시를 적는다 — 표시가 없을 때만. 남의 표시는 덮어쓰지 않는다(그 탭을 쓰는 다른 세션이 탭을 놓치지 않게).
+// 우리 표시가 적혀 있는가(적었거나 이미 있다)를 돌려준다.
+function stampIfBlank(g, args) {
+  if (g.marker === args.key) return true;
+  if (g.marker !== "") return false;
+  stampTab(g.tab, args.key);
+  return true;
 }
 
 // 탭 확인 · 표시 · 일을 한 번의 doJavaScript 로 한다(args.script = Node 쪽 buildGuardedSource 가 만든 글. 자리의 탭을 주소로 읽지 않는다).
@@ -178,7 +194,7 @@ function guardedRun(args) {
   }
   if (r && r.ok === false) return { kind: "fallback" }; // 스크립트가 표시 불일치를 알렸다 — 소스는 안 돌았다
   if (!r || r.ok !== true) return { kind: "ran", tab };
-  return { kind: "ok", tab, value: typeof r.value === "string" ? r.value : "", url: typeof r.url === "string" ? r.url : undefined, leaving: r.leaving === true, around: aroundOf(args.windowId, args.index) };
+  return { kind: "ok", tab, value: typeof r.value === "string" ? r.value : "", url: typeof r.url === "string" ? r.url : undefined, leaving: r.leaving === true, around: aroundOf(args.windowId, args.index), ...(r.stamped === false ? { stamped: false } : {}) };
 }
 
 // settle 의 빠른 길: 표시 · 떠나는 중 깃발 · 문서 자신의 주소 · 제목을 doJavaScript 한 번으로 읽는다(예전에는 tab.url() · 표시 읽기 · 깃발 읽기 · tab.name() 이 따로였다).
@@ -202,7 +218,10 @@ function settleFast(args) {
   } catch (e) {
     return null;
   }
-  if (!r || r.m !== args.key || typeof r.href !== "string" || r.href === "") return null;
+  if (!r || typeof r.href !== "string" || r.href === "") return null;
+  // 남의 표시가 남은 탭(표시 없는 탭과 같이 다룬다): 창 모습 · 주소가 그대로일 때만 같은 문서로 본다. 우리 표시를 적지 않는다.
+  const foreign = r.m !== args.key && isForeignMarker(r.m, args) && mayStamp(args, r.href);
+  if (r.m !== args.key && !foreign) return null;
   let isActive;
   try {
     isActive = args.index === Safari.windows.byId(args.windowId).currentTab().index();
@@ -214,6 +233,7 @@ function settleFast(args) {
     leaving: r.lv === true,
     tab: { windowId: args.windowId, index: args.index, title: str(r.t), url: r.href, isActive },
     around: aroundOf(args.windowId, args.index),
+    ...(foreign ? { stamped: false } : {}),
   };
 }
 
@@ -248,8 +268,10 @@ function finishRebind(args, tab) {
     }
     const again = probeTab(args.windowId, args.index);
     if (!again) return { status: "gone" };
-    if (again.marker !== "" && again.marker !== args.key) return { status: "other" };
+    // 남의 표시가 적힌 새 문서(다른 서버가 먼저 적었다)는 표시 없는 탭과 같이 자리 · 모습으로 확인하고, 덮어쓰지 않는다 — 표시를 못 적은 것(stamped:false)으로 돌려준다.
+    if (again.marker !== "" && again.marker !== args.key && !(isForeignMarker(again.marker, args) && mayStamp(args, again.url))) return { status: "other" };
     if (again.marker === "" && !mayStamp(args, again.url)) return { status: "gone" }; // 기다리는 사이 사용자 탭이 그 자리로 밀려 왔을 수 있다
+    if (again.marker !== "" && again.marker !== args.key) break;
     stampTab(tab, args.key);
     if (readMarker(tab) === args.key) {
       stamped = true;
@@ -544,15 +566,17 @@ const ops = {
   rebind(args) {
     const p0 = probeTab(args.windowId, args.index);
     if (!p0) return { status: "gone" };
-    if (p0.marker !== "" && p0.marker !== args.key) return { status: "other" };
+    // 남의 표시가 남은 탭은 표시 없는 탭과 같이 다룬다(자리 · 모습으로 확인) — 옛 문서가 아직 떠 있는 동안은 그 표시가 「옛 문서」의 신호다.
+    const foreign = p0.marker !== args.key && isForeignMarker(p0.marker, args);
+    if (p0.marker !== "" && p0.marker !== args.key && !(foreign && mayStamp(args, p0.url))) return { status: "other" };
     if (p0.marker === "" && !mayStamp(args, p0.url)) return { status: "gone" };
     const tab = p0.tab;
     const t0 = Date.now();
-    if (p0.marker === args.key) {
+    if (p0.marker === args.key || foreign) {
       // 아직 옛 문서 — 새 문서로 바뀌어 표시가 사라질 때까지 기다린다. 주소가 바뀌었는데 표시가 남아 있으면 이동이 시작된 것이니
       // 더 기다리고(최대 5초), 주소도 안 바뀌면(1.5초) 같은 문서로 본다(주소 이동이 없었거나 같은 문서 안 이동).
       for (;;) {
-        let m = args.key;
+        let m = p0.marker;
         let u = args.url;
         try {
           u = str(tab.url());
@@ -560,7 +584,7 @@ const ops = {
         } catch (e) {
           if (isJsOffError(e)) throw e;
         }
-        if (m !== args.key) break;
+        if (m !== p0.marker) break;
         const waited = Date.now() - t0;
         if (waited > (u !== args.url ? 5000 : 1500)) break;
         nap(0.05);
@@ -578,8 +602,9 @@ const ops = {
     if (quick) return quick;
     const p0 = probeTab(args.windowId, args.index);
     if (!p0) return { status: "gone" };
-    if (p0.marker !== "" && p0.marker !== args.key) return { status: "other" };
-    if (p0.marker === args.key) {
+    const foreign = p0.marker !== args.key && isForeignMarker(p0.marker, args) && mayStamp(args, p0.url); // 남의 표시가 남은 탭은 표시 없는 탭과 같이 자리 · 모습으로 확인한다
+    if (p0.marker !== "" && p0.marker !== args.key && !foreign) return { status: "other" };
+    if (p0.marker === args.key || foreign) {
       const win = Safari.windows.byId(args.windowId);
       let leaving = false; // 문서를 떠나는 중인가(beforeunload — Page 가 동작 때 심는 깃발)
       // 아직 옛 문서의 주소는 그 문서 자신의 location.href 로 읽는다. 이동이 진행 중일 때 사파리의 tab.url() 은 가는 중인 목적지를 돌려주므로
@@ -597,6 +622,7 @@ const ops = {
         leaving,
         tab: { windowId: args.windowId, index: args.index, title: str(p0.tab.name()), url, isActive: args.index === win.currentTab().index() },
         around: aroundOf(args.windowId, args.index),
+        ...(foreign ? { stamped: false } : {}),
       };
     }
     if (!mayStamp(args, p0.url)) return { status: "gone" }; // 표시 없는 탭이 우리 탭이라는 증거가 없다 — 사용자 탭이 밀려 왔을 수 있어 아무것도 적지 않는다
@@ -609,6 +635,16 @@ const ops = {
     const tab = tabOf(args);
     tab.url(); // 없는 탭이면 여기서 오류
     return stampTab(tab, args.key);
+  },
+
+  // 서버가 끝날 때 사용자 탭에 적어 둔 우리 표시를 지운다. 그 탭의 표시가 아직 정확히 args.key 일 때만(비교와 지우기가 페이지 안에서 한 번에 일어난다). 지웠으면 true.
+  unstamp(args) {
+    const tab = tabOf(args);
+    const r = Safari.doJavaScript(
+      "(function(k){ var d = document.documentElement; if (d && d.dataset.saTab === k) { delete d.dataset.saTab; return true; } return false; })(" + JSON.stringify(String(args.key)) + ")",
+      { in: tab },
+    );
+    return r === true;
   },
 
   // 활성 탭은 바꾸지 않고 맨 뒤에 새 탭을 만든다. 페이지를 쓸 수 있을 때까지(최대 loadBudgetMs) 기다린다(load 까지는 아니다).
@@ -821,7 +857,7 @@ const ops = {
   runJs(args) {
     const g = guardTab(args);
     if (!g) return { stale: true };
-    if (g.marker !== args.key) stampTab(g.tab, args.key); // 표시 없던 탭(붙잡기 전, 새로고침 뒤)에 지금 적는다
+    const stamped = stampIfBlank(g, args); // 표시 없던 탭(붙잡기 전, 새로고침 뒤)에 지금 적는다(남의 표시는 덮어쓰지 않는다)
     const res = Safari.doJavaScript(args.source, { in: g.tab });
     let value;
     if (res === null || res === undefined) value = "";
@@ -833,7 +869,7 @@ const ops = {
       // 이동했을 수 있으니 지금 주소도 돌려준다(Node 쪽 기록을 새로 한다). 문서 자신의 주소 — tab.url() 은 이동 중이면 가는 중인 목적지다.
       url = str(Safari.doJavaScript("location.href", { in: g.tab }));
     } catch (e) {}
-    return { value, url, around: aroundOf(args.windowId, args.index) };
+    return { value, url, around: aroundOf(args.windowId, args.index), ...(stamped ? {} : { stamped: false }) };
   },
 
   // runJs 의 빠른 길: 탭 확인 · 표시 · 일이 doJavaScript 한 번이다(args.script). 소스가 안 돈 게 확실할 때만 {fallback: true}(느린 길 runJs 가 소스를 보낸다).
@@ -841,12 +877,12 @@ const ops = {
   // 자리 확인이 실패했을 때는 문서가 JS 를 못 도는지만 가린다(JS 를 못 도는 문서면 소스가 안 돈 것이니 stale).
   runJsFast(args) {
     const f = guardedRun(args);
-    if (f.kind === "ok") return { value: f.value, url: f.url, leaving: f.leaving, around: f.around };
+    if (f.kind === "ok") return { value: f.value, url: f.url, leaving: f.leaving, around: f.around, ...(f.stamped === false ? { stamped: false } : {}) };
     if (f.kind === "ran") {
       const g = guardTab(args);
       if (g) {
-        if (g.marker !== args.key) stampTab(g.tab, args.key); // 문법 오류로 글이 안 돌았으면 표시도 안 적혔다
-        return { value: "" };
+        const stamped = stampIfBlank(g, args); // 문법 오류로 글이 안 돌았으면 표시도 안 적혔다(남의 표시는 덮어쓰지 않는다)
+        return stamped ? { value: "" } : { value: "", stamped: false };
       }
       // 자리가 키의 탭이 아니다. 문서가 JS 를 못 돌면(시작 페이지 · 특수 페이지) null 은 소스가 돌지 않은 것이니 stale 로 돌려 Node 가 탭을 다시 찾게 한다.
       // JS 를 돌 수 있는 문서면 소스는 돌았을 수 있으니 다시 돌리지 않게 빈 값.
@@ -872,14 +908,14 @@ const ops = {
       }
       if (f.kind === "ok") {
         Safari.windows.byId(args.windowId).currentTab = f.tab;
-        return { value: null, around: f.around };
+        return { value: null, around: f.around, ...(f.stamped === false ? { stamped: false } : {}) };
       }
     }
     const g = guardTab(args);
     if (!g) return { stale: true };
     const w = Safari.windows.byId(args.windowId);
     w.currentTab = g.tab;
-    return { value: null, around: aroundOf(args.windowId, args.index) };
+    return { value: null, around: aroundOf(args.windowId, args.index), ...(g.marker === args.key ? {} : { stamped: false }) };
   },
 
   closeTab(args) {
