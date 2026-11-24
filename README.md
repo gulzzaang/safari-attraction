@@ -233,6 +233,10 @@ Finder 에서 `사파리-어트랙션` 폴더를 열어 파일을 메모장이�
 - **되돌릴 수 없음 판정**은 모델의 판단이 아니라 서버가 한다: 버튼 글 · 폼 제출 단추 글(Enter 로 제출할 때) · Enter · `fetch` 메서드(GET · HEAD 가 아니면)로 본다. 글에 `결제 · 구매 · 주문 · 보내기 · 삭제 · pay · buy · submit · delete` 같은 낱말이 있으면 되돌릴 수 없음이다. 비밀 칸(`type=password`, `autocomplete` 가 `current-password` · `new-password` · `one-time-code` · `cc-number` · `cc-csc` · `cc-exp`)의 값은 관문 줄에 「(비밀)」 로만 간다.
 - **`evaluate` 는 읽기 전용으로 확실한 식(허락 목록)만 묻지 않고**, 그 밖은 「알 수 없음」(`null`)으로 묻는다. 그래서 `typeof window` 같은 읽기 식도 묻는 쪽으로 갈 수 있다. 메서드 이름만 보는 한계도 있다(페이지가 정의한 `get` · `has` 등은 읽기로 잘못 볼 수 있다).
 - **관문은 실수와 보통의 속임**(페이지 글에 속아 「결제하기」 를 누르는 것)**을 막는 장치이고, 일부러 빠져나가는 코드까지 막는 벽은 아니다.** repl 은 vm 안에서 돌지만 노출된 함수로 호스트에 닿을 수 있다.
+  - repl 코드는 런타임에서 `Page` 의 비공개 멤버나 심볼(`Object.getOwnPropertySymbols`)로 관문을 건너뛸 수 있다(일부러 가린 코드의 한계 — 일부러 빠져나가려는 코드는 못 막는다).
+  - `reload` · 뒤로 · 앞으로 는 늘 허락(이동)이라, POST 로 받은 결과 페이지를 `reload` 하면 폼이 다시 보내질 수 있다.
+  - 사이트 모드(읽기만 · 묻고 하기 · 다 허락)는 호스트가 정확히 같을 때만 적용된다(`coupang.com` 과 `www.coupang.com` 은 다른 사이트).
+  - `goto` · `openTab` · `openAiWindow` 로 `javascript:` · `data:` · `file:` · `blob:` 같은 웹 주소가 아닌 곳을 열려 하면 이동이 아니라 `evaluate`(`irreversible: null`)로 묻는다. `evaluate` 식에 결제 · 삭제 낱말이 있으면 `irreversible: true` 로 묻는다(다 허락인 사이트에서도 카드가 뜬다).
 
 ## 사파리 앱(시험판)
 
