@@ -90,7 +90,7 @@ struct RoutinesView: View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("저장한 일을 정해진 시각에 사람 없이 돌려요. 앱이 켜져 있을 때만 돌고, 사파리가 이미 켜져 있고 사파리 제어 허락이 이미 있을 때만 돌아요(없으면 묻지 않고 건너뛰어요).")
-                Text("루틴은 읽기만 해요 — 누르기 · 입력은 거절돼요. 「갈 수 있는 사이트」 밖으로는 이동도 못 해요.")
+                Text("루틴은 읽기만 하도록 막아 둬요 — 누르기 · 입력은 거절하고, 「갈 수 있는 사이트」 밖으로도 가지 않게 해요. 다만 실수와 보통의 속임을 막는 장치예요. 속임 글에 넘어간 클로드가 일부러 빠져나가면 못 막으니, 로그인해 둔 중요한 사이트(메일 · 은행 등)는 목록에 넣지 않는 것을 권해요.")
             }
             .font(.caption).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -144,7 +144,7 @@ struct RoutinesView: View {
             }
             Text(r.schedule.summary).font(.caption)
             Text(nextText(r)).font(.caption).foregroundStyle(.secondary)
-            Text(r.sites.isEmpty ? "갈 수 있는 사이트: 없음 — 이 루틴은 아무 데도 갈 수 없어요" : "갈 수 있는 사이트: " + r.sites.joined(separator: ", "))
+            Text(r.sites.isEmpty ? "갈 수 있는 사이트: 없음 — 이 루틴은 돌 때마다 건너뛰어요" : "갈 수 있는 사이트: " + r.sites.joined(separator: ", "))
                 .font(.caption).foregroundStyle(r.sites.isEmpty ? Color.orange : Color.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if active {
@@ -286,10 +286,10 @@ struct RoutinesView: View {
                     .buttonStyle(.link).controlSize(.small)
                 }
             }
-            Text("저장한 일 글에서 자동으로 뽑았어요. 맞는지 확인하고 고쳐 주세요. 목록의 coupang.com 은 www.coupang.com 같은 아래 주소도 허락해요. 이 밖으로는 읽는 것도 이동도 못 해요.")
+            Text("저장한 일 글에서 자동으로 뽑았어요. 맞는지 확인하고 고쳐 주세요. 목록의 coupang.com 은 www.coupang.com 같은 아래 주소도 허락해요. 이 밖의 사이트는 가지 않도록 막아 둬요(실수와 보통의 속임을 막는 장치예요). 로그인해 둔 중요한 사이트(메일 · 은행 등)는 넣지 않는 것을 권해요.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if draft?.sites.isEmpty ?? true {
-                Label("사이트가 없으면 이 루틴은 어디에도 갈 수 없어서 아무 일도 못 해요", systemImage: "exclamationmark.triangle")
+                Label("사이트가 없으면 이 루틴은 클로드를 부르지 않고 돌 때마다 건너뛰어요", systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             ForEach(draft?.sites ?? [], id: \.self) { site in
