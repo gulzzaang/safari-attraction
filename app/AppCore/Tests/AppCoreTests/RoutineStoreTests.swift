@@ -75,6 +75,35 @@ final class RoutineStoreTests: XCTestCase {
         XCTAssertEqual(s.routines.first?.sites, ["coupang.com", "naver.com"])
     }
 
+    func testSitesDropBareWordsAndPublicSuffixes() throws {
+        let s = RoutineStore(directory: dir)
+        let task = try s.upsertSavedTask(SavedTask(name: "t", text: "x"))
+        let saved = try s.upsertRoutine(makeRoutine(task, sites: ["co.kr", "com", "CO.UK.", "shop.co.kr", "localhost", "naver.com"]))
+        XCTAssertEqual(saved.sites, ["shop.co.kr", "naver.com"])
+        let updated = try s.updateRoutine(id: saved.id) { $0.sites = ["com", "a.com"] }
+        XCTAssertEqual(updated.sites, ["a.com"])
+    }
+
+    func testLastHandledIsSavedSeparatelyFromLastRunAndOldFilesStillLoad() throws {
+        let s = RoutineStore(directory: dir)
+        let task = try s.upsertSavedTask(SavedTask(name: "t", text: "x"))
+        let r = try s.upsertRoutine(makeRoutine(task))
+        XCTAssertNil(r.lastHandled)
+        let handled = t0.addingTimeInterval(9 * 3600)
+        try s.updateRoutine(id: r.id) { $0.lastHandled = handled }   // 건너뜀: lastRun 은 그대로
+        let back = RoutineStore(directory: dir).routine(id: r.id)
+        XCTAssertEqual(back?.lastHandled, handled)
+        XCTAssertNil(back?.lastRun)
+        // lastHandled 키가 없던 예전 파일도 읽힌다.
+        var obj = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
+        var routines = obj["routines"] as! [[String: Any]]
+        routines[0].removeValue(forKey: "lastHandled")
+        obj["routines"] = routines
+        try JSONSerialization.data(withJSONObject: obj).write(to: file)
+        XCTAssertEqual(RoutineStore(directory: dir).routines.count, 1)
+        XCTAssertNil(RoutineStore(directory: dir).routines.first?.lastHandled)
+    }
+
     func testUpdateRoutineChangesOneFieldAndKeepsTheRest() throws {
         let s = RoutineStore(directory: dir)
         let task = try s.upsertSavedTask(SavedTask(name: "t", text: "x"))

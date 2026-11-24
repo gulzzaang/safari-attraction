@@ -73,4 +73,47 @@ final class SiteListTests: XCTestCase {
         XCTAssertFalse(SiteList.allows(host: "coupang.com", list: []))
         XCTAssertFalse(SiteList.allows(host: "coupang.com", list: ["", " ", "."]))
     }
+
+    // 공개 접미사 · 속임 주소
+
+    func testPublicSuffixesAreNeitherExtractedNorAllowed() {
+        XCTAssertEqual(SiteList.extractHosts(from: "co.kr 사이트 와 www.co.kr 와 m.co.uk 와 com.au"), [])
+        for suffix in ["co.kr", "or.kr", "go.kr", "ne.kr", "re.kr", "pe.kr", "ac.kr", "co.uk", "org.uk", "ac.uk", "com.au", "net.au",
+                       "co.jp", "ne.jp", "or.jp", "com.cn", "com.tw", "com.hk", "com.sg", "co.nz", "com.br"] {
+            XCTAssertFalse(SiteList.allows(host: "evil.\(suffix)", list: [suffix]), suffix)
+            XCTAssertFalse(SiteList.allows(host: suffix, list: [suffix]), suffix)
+            XCTAssertFalse(SiteList.allows(host: "evil.\(suffix)", list: [suffix.uppercased() + "."]), suffix)
+            XCTAssertEqual(SiteList.extractHosts(from: "https://\(suffix)/x"), [], suffix)
+        }
+        XCTAssertEqual(SiteList.extractHosts(from: "https://shop.co.kr 과 coupang.co.kr"), ["shop.co.kr", "coupang.co.kr"], "그 아래 사이트는 뽑힌다")
+        XCTAssertTrue(SiteList.allows(host: "www.shop.co.kr", list: ["shop.co.kr"]))
+        XCTAssertFalse(SiteList.allows(host: "other.co.kr", list: ["shop.co.kr"]))
+    }
+
+    func testSingleWordEntriesAreIgnored() {
+        XCTAssertFalse(SiteList.allows(host: "evil.com", list: ["com"]))
+        XCTAssertFalse(SiteList.allows(host: "com", list: ["com"]))
+        XCTAssertFalse(SiteList.allows(host: "localhost", list: ["localhost"]))
+        XCTAssertTrue(SiteList.allows(host: "evil.com", list: ["com", "evil.com"]))
+    }
+
+    func testHostsWithSeparatorsOrSpacesAreRejected() {
+        let list = ["coupang.com"]
+        for bad in ["coupang.com/x", "coupang.com?x", "coupang.com#x", "evil.com@coupang.com", "coupang.com@evil.com", "coupang.com:8080",
+                    "coupang.com evil", "coupang.com\nevil.com", "https://coupang.com", "a.coupang.com/path"] {
+            XCTAssertFalse(SiteList.allows(host: bad, list: list), bad)
+        }
+        XCTAssertTrue(SiteList.allows(host: " Coupang.com. ", list: list), "앞뒤 공백 · 끝 점은 무시")
+    }
+
+    func testUserinfoUrlGivesTheRealHost() {
+        XCTAssertEqual(SiteList.extractHosts(from: "https://coupang.com@evil.com/"), ["evil.com"])
+        XCTAssertEqual(SiteList.extractHosts(from: "http://user:pw@www.example.org:8080/x"), ["example.org"])
+        XCTAssertEqual(SiteList.extractHosts(from: "쿠팡 https://www.coupang.com@evil.com/path 그리고 naver.com"), ["evil.com", "naver.com"])
+        XCTAssertEqual(SiteList.extractHosts(from: "coupang.com@evil.com"), [], "스킴 없는 `a@b` 꼴은 어느 쪽도 뽑지 않는다")
+    }
+
+    func testMoreFileNamesAreNotHosts() {
+        XCTAssertEqual(SiteList.extractHosts(from: "index.html style.css main.php lib.rs App.kt Main.java Cargo.toml a.rtf b.xml c.cpp x.htm"), [])
+    }
 }

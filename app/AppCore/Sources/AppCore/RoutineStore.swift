@@ -21,22 +21,31 @@ public struct Routine: Codable, Equatable, Sendable, Identifiable {
     /// 갈 수 있는 사이트(호스트). 비교는 `SiteList.allows`.
     public var sites: [String]
     public var enabled: Bool
+    /// 실제로 돈 마지막 시각(화면 표시용).
     public var lastRun: Date?
+    /// 돌렸거나 건너뛴 마지막 **예정 시각** — 일정 판단의 기준(`RoutineSchedule.decide`). 없으면 `createdAt` 부터 센다.
+    public var lastHandled: Date?
     public var createdAt: Date
 
-    public init(id: UUID = UUID(), taskID: UUID, schedule: RoutineSchedule, sites: [String], enabled: Bool = true, lastRun: Date? = nil, createdAt: Date = Date()) {
+    public init(id: UUID = UUID(), taskID: UUID, schedule: RoutineSchedule, sites: [String], enabled: Bool = true, lastRun: Date? = nil, lastHandled: Date? = nil, createdAt: Date = Date()) {
         self.id = id
         self.taskID = taskID
         self.schedule = schedule
         self.sites = sites
         self.enabled = enabled
         self.lastRun = lastRun
+        self.lastHandled = lastHandled
         self.createdAt = createdAt
     }
 
-    /// 다음에 돌 시각(`RoutineSchedule.nextFire`).
-    public func nextFire(after: Date, calendar: Calendar) -> Date {
-        schedule.nextFire(after: after, lastRun: lastRun, createdAt: createdAt, calendar: calendar)
+    /// 지금 무엇을 할지(`RoutineSchedule.decide`) — 기준은 `lastHandled ?? createdAt`.
+    public func decide(now: Date, calendar: Calendar) -> ScheduleDecision {
+        schedule.decide(now: now, lastHandled: lastHandled, createdAt: createdAt, calendar: calendar)
+    }
+
+    /// 화면에 보일 다음 예정 시각(지금 뒤 첫 칸).
+    public func nextOccurrence(after now: Date, calendar: Calendar) -> Date {
+        schedule.nextOccurrence(after: now, anchor: lastHandled ?? createdAt, calendar: calendar)
     }
 }
 
@@ -75,6 +84,7 @@ public enum RoutineStoreError: Error, Equatable {
 /// `<앱 지원 폴더>/routines.json`(저장한 일 + 루틴)과 `<앱 지원 폴더>/routines/history.jsonl`(결과 기록, 최근 200개) 저장소.
 /// 쓰기는 모두 atomic. 파일이 없으면 빈 것, 깨졌거나 못 읽은 파일도 빈 것으로 보고(앱이 죽지 않는다) 처음 덮어쓰기 전에 `.bak` 으로 남긴다
 /// (`.bak` 도 못 남기면 덮어쓰지 않고 실패). `directory` 는 앱 지원 폴더 — 시험은 임시 폴더를 넣는다.
+/// **앱에서는 한 폴더에 인스턴스 하나만 쓴다**: 잠금과 메모리 사본이 인스턴스 안에만 있어서, 같은 폴더를 두 인스턴스가 쓰면 서로의 변경을 덮어쓴다.
 public final class RoutineStore: @unchecked Sendable {
     public static let fileName = "routines.json"
     public static let historyDirectoryName = "routines"
@@ -151,7 +161,7 @@ public final class RoutineStore: @unchecked Sendable {
         doc = next
     }
 
-    /// 새로 넣거나 고친다. 가리키는 저장한 일이 없으면 `unknownTask`. 사이트는 소문자 · 끝 점 떼기 · 빈 것과 중복 빼기로 맞춘다.
+    /// 새로 넣거나 고친다. 가리키는 저장한 일이 없으면 `unknownTask`. 사이트는 소문자 · 끝 점 떼기 · 빈 것 · 점 없는 낱말 · 공개 접미사(`co.kr`) · 중복 빼기로 맞춘다.
     @discardableResult
     public func upsertRoutine(_ routine: Routine) throws -> Routine {
         var r = routine
@@ -194,7 +204,7 @@ public final class RoutineStore: @unchecked Sendable {
         var out: [String] = []
         for s in sites {
             let n = SiteList.normalize(s)
-            if !n.isEmpty, seen.insert(n).inserted { out.append(n) }
+            if SiteList.isUsableEntry(n), seen.insert(n).inserted { out.append(n) }   // 점 없는 낱말 · 공개 접미사(co.kr)는 저장하지 않는다
         }
         return out
     }

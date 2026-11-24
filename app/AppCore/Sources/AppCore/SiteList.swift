@@ -11,7 +11,7 @@ public enum SiteList {
         for m in hostPattern.matches(in: text, range: range) {
             guard m.numberOfRanges > 1, let r = Range(m.range(at: 1), in: text) else { continue }
             let host = stripPrefixes(normalize(String(text[r])))
-            guard let tld = host.split(separator: ".").last, !fileExtensions.contains(String(tld)) else { continue }
+            guard isUsableEntry(host), let tld = host.split(separator: ".").last, !fileExtensions.contains(String(tld)) else { continue }
             if seen.insert(host).inserted { out.append(host) }
         }
         return out
@@ -19,17 +19,31 @@ public enum SiteList {
 
     /// `host` 가 목록의 어느 항목과 같거나 그 아래 도메인이면 true.
     /// 목록의 `coupang.com` 은 `coupang.com` · `www.coupang.com` · `m.coupang.com` 을 허락하고 `evilcoupang.com` 은 허락하지 않는다.
-    /// 대소문자 · 끝 점은 무시하고, 빈 호스트는 언제나 false.
+    /// 대소문자 · 끝 점은 무시하고, 빈 호스트 · `/ ? # @ :` 나 공백이 든 호스트는 언제나 false.
+    /// 점 없는 낱말(`com`)과 흔한 공개 접미사(`co.kr` 등)인 목록 항목은 허락에 쓰지 않는다(`*.co.kr` 전부가 열리지 않게).
     public static func allows(host: String, list: [String]) -> Bool {
         let h = normalize(host)
-        guard !h.isEmpty else { return false }
+        guard !h.isEmpty, h.rangeOfCharacter(from: forbiddenHostCharacters) == nil else { return false }
         for entry in list {
             let e = normalize(entry)
-            if e.isEmpty { continue }
+            guard isUsableEntry(e) else { continue }
             if h == e || h.hasSuffix("." + e) { return true }
         }
         return false
     }
+
+    /// 목록 항목으로 쓸 수 있는지 — 비어 있거나 · 점 없는 한 낱말이거나 · 흔한 공개 접미사면 false. (`normalize` 를 거친 값을 받는다)
+    static func isUsableEntry(_ entry: String) -> Bool {
+        !entry.isEmpty && entry.contains(".") && !publicSuffixes.contains(entry)
+    }
+
+    private static let forbiddenHostCharacters = CharacterSet(charactersIn: "/?#@:").union(.whitespacesAndNewlines)
+
+    /// 한 사이트 전체가 아니라 나라별 묶음을 통째로 여는 흔한 두 낱말 공개 접미사(짧은 목록 — 완전한 공개 접미사 목록은 아니다).
+    private static let publicSuffixes: Set<String> = [
+        "co.kr", "or.kr", "go.kr", "ne.kr", "re.kr", "pe.kr", "ac.kr", "co.uk", "org.uk", "ac.uk", "com.au", "net.au",
+        "co.jp", "ne.jp", "or.jp", "com.cn", "com.tw", "com.hk", "com.sg", "co.nz", "com.br",
+    ]
 
     /// 소문자 · 앞뒤 공백 · 끝 점 떼기(목록 저장 때도 같은 모양으로 맞춘다).
     static func normalize(_ host: String) -> String {
@@ -51,13 +65,16 @@ public enum SiteList {
     private static let fileExtensions: Set<String> = [
         "txt", "pdf", "png", "jpg", "jpeg", "gif", "webp", "svg", "md", "json", "csv", "xlsx", "xls", "docx", "doc",
         "pptx", "zip", "mp4", "mp3", "mov", "swift", "js", "ts", "py", "sh", "log", "yml", "yaml", "plist",
+        "html", "htm", "css", "php", "rs", "kt", "java", "toml", "rtf", "xml", "cpp",
     ]
 
     // 주소(스킴 · 호스트 · 포트 · 길 전부) 한 덩어리로 먹어서 길 안의 도메인을 또 뽑지 않는다. 캡처 1 = 호스트.
     // 앞에 영문 · 숫자 · @ · . · _ · - 가 붙어 있으면(이메일 · 긴 낱말 한가운데) 뽑지 않는다.
+    // `https://coupang.com@evil.com/` 처럼 스킴 뒤에 사용자 정보(`…@`)가 있으면 그것을 건너뛰고 실제 호스트(`evil.com`)를 뽑는다.
+    // 스킴 없이 `coupang.com@evil.com` 이면 둘 다 뽑지 않는다(호스트 뒤에 @ 가 오면 안 뽑음).
     private static let hostPattern: NSRegularExpression = {
         let label = "[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
-        let pattern = "(?<![A-Za-z0-9@._-])(?:https?://)?((?:\(label)\\.)+[a-z]{2,24})(?![A-Za-z0-9-])(?::\\d{1,5})?(?:[/?#]\\S*)?"
+        let pattern = "(?<![A-Za-z0-9@._-])(?:https?://(?:[^\\s/?#@]*@)?)?((?:\(label)\\.)+[a-z]{2,24})(?![A-Za-z0-9@-])(?::\\d{1,5})?(?:[/?#]\\S*)?"
         return try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     }()
 }
