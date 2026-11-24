@@ -102,6 +102,8 @@ final class SidePanelController {
         activateOnNextShow = true
         viewModel.requestFocus()
         follower.setOpen(true)
+        // 로그인 상태 · 모델 목록 · 남은 양은 옆 창을 열 때 읽는다(5분 안에는 다시 읽지 않는다 — 메인 밖).
+        if let status = viewModel.status { Task { await status.refreshAll(force: false) } }
     }
 
     func close() {

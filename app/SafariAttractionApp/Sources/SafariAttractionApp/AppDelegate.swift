@@ -10,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hub: RoutineHub?
     private var controller: SidePanelController?
     private var hotKeys: HotKeys?
+    private var settingsWindow: SettingsWindowController?
+    private var deviceLogin: CodexDeviceLogin?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 로그인 셸 PATH(`zsh -lic` 는 사용자 rc 를 실행한다)는 앱이 켜질 때 읽지 않는다 —
@@ -18,17 +20,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 앱이 띄우는 모든 claude(묻기 · 일 맡기기 · 루틴)는 앱 전용 설정 폴더(CLAUDE_CONFIG_DIR)를 쓴다 —
         // 사용자 클로드 설정이 문서 폴더 경로를 가리켜 맥이 문서 폴더 허락 창을 띄우는 것을 피한다.
         // 같은 값을 묻기 · 일 맡기기(루틴은 일 맡기기 세션을 탄다)가 함께 쓴다.
+        // 클로드(`CLAUDE_CONFIG_DIR`)와 codex(`CODEX_HOME`)의 앱 전용 폴더 — 같은 사전을 모든 실행기가 쓴다(폴더는 0700).
+        let support = (try? AppPaths.supportDirectory()) ?? FileManager.default.temporaryDirectory
         let claudeEnv: [String: String]
-        if let dir = try? AppPaths.claudeConfigDirectory() {
-            claudeEnv = ProcessRunner.claudeEnvironmentOverrides(configDirectory: dir)
-        } else {
+        do {
+            try CLIEnvironment.prepareDirectories(support: support)
+            claudeEnv = CLIEnvironment.overrides(support: support)
+        } catch {
             claudeEnv = [:]
-            NSLog("사파리-어트랙션: 앱 전용 클로드 설정 폴더를 만들지 못했어요 — 사용자 클로드 설정을 그대로 써요")
+            NSLog("사파리-어트랙션: 앱 전용 CLI 설정 폴더를 만들지 못했어요 — 사용자 CLI 설정을 그대로 써요")
         }
-        let vm = ChatViewModel(runner: ProcessRunner(environmentOverrides: claudeEnv), bridge: bridge, loginPath: { ShellPath.loginPath() })
+        let cliEnv = claudeEnv
+        // 로그인 상태 · 모델 목록 · 남은 양은 읽는 일마다 새 실행기로(질문이 도는 중에도 부딪히지 않게). 앱을 켤 때는 읽지 않는다.
+        let status = CLIStatusService(loginPath: { ShellPath.loginPath() },
+                                      runnerFactory: { ProcessRunner(environmentOverrides: cliEnv) })
+        let settings = AppSettingsStore(directory: support)
+        let vm = ChatViewModel(runner: ProcessRunner(environmentOverrides: claudeEnv), bridge: bridge, loginPath: { ShellPath.loginPath() },
+                               settings: settings, status: status)
+        let deviceLogin = CodexDeviceLogin(runner: ProcessRunner(environmentOverrides: cliEnv), loginPath: { ShellPath.loginPath() })
+        self.deviceLogin = deviceLogin
+        settingsWindow = SettingsWindowController(status: status, login: deviceLogin, support: support)
         // 일 맡기기 — 서버 묶음은 앱 안(Resources/safari-attraction), 기억 · 사이트 허락 · 관문 소켓은 앱 지원 폴더.
         // 이 시점엔 폴더만 준비하고 클로드 · 사파리는 건드리지 않는다(첫 일 맡기기 때 시작).
-        let support = (try? AppPaths.supportDirectory()) ?? FileManager.default.temporaryDirectory
         let siteModes = SiteModeStore(directory: support)
         let agent = AgentSession(
             resources: Bundle.main.resourceURL ?? URL(fileURLWithPath: Bundle.main.bundlePath),
@@ -36,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             siteModes: siteModes,
             gateFactory: { try GateServer(directory: try AppPaths.supportDirectory()) },
             runnerFactory: { ProcessRunner(environmentOverrides: claudeEnv) },
+            claudeModel: { [vm] in vm.selectedModelID(for: .claude) },   // 일 맡기기 명령줄의 --model(루틴은 늘 기본)
             loginPath: { ShellPath.loginPath() })
         // 자주 하는 일 · 루틴 — 저장소는 폴더당 인스턴스 하나(화면과 시계가 같은 것을 쓴다). 시계는 루틴이 하나라도 켜져 있을 때만 돈다.
         // 알림 허락은 여기서 묻지 않는다(「끝나면 알림」 을 켤 때만).
@@ -66,6 +80,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggle.target = self
         menu.addItem(toggle)
         toggleItem = toggle
+        let settingsItem = NSMenuItem(title: "설정…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "종료", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
@@ -105,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func togglePanel() { controller?.toggle() }
+    @objc private func openSettings() { settingsWindow?.show() }
     @objc private func quitApp() { NSApplication.shared.terminate(nil) }
 
     // MARK: 끝낼 때
@@ -129,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hub?.shutdown()
         viewModel?.shutdown()
         agent?.shutdown()
+        settingsWindow?.shutdown()   // 도는 기기 코드 로그인을 멈춘다
         controller?.shutdown()
         hotKeys?.shutdown()
     }

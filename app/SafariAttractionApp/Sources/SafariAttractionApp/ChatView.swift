@@ -121,15 +121,60 @@ struct ChatView: View {
                     .help("닫기 (\(HotKeys.toggleLabel))")
             }
             if mode == .ask, vm.availableModels.count > 1 {
-                Picker("모델", selection: $vm.model) {
-                    ForEach(vm.availableModels, id: \.self) { Text($0.pickerLabel).tag($0) }
+                cliPicker
+            } else if mode == .agent {
+                // 일 맡기기는 지금 클로드만 — 묻기에서 고른 CLI 는 그대로 두고(돌아오면 그대로), 여기서는 클로드로 고정해 보인다.
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) { cliChip(.claude, selected: true, dimmed: false, action: {}) }
+                    Text("일 맡기기는 지금 클로드만 돼요").font(.caption).foregroundStyle(.secondary)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .disabled(vm.isRunning)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
+    }
+
+    /// 옆 창 위쪽 — CLI 고르기. 로그인이 안 된 걸 아는 CLI 는 흐리게, 누르면 「설정에서 로그인」 안내.
+    private var cliPicker: some View {
+        HStack(spacing: 6) {
+            ForEach(vm.availableModels, id: \.self) { kind in
+                cliChip(kind, selected: vm.model == kind, dimmed: vm.loginState(for: kind) == .loggedOut) { vm.selectCLI(kind) }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .disabled(vm.isRunning)
+    }
+
+    private func cliChip(_ kind: ModelKind, selected: Bool, dimmed: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(kind.pickerLabel)
+                .font(.callout.weight(selected ? .semibold : .regular))
+                .padding(.horizontal, 12).padding(.vertical, 4)
+                .background(selected ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.07), in: Capsule())
+                .overlay(Capsule().strokeBorder(selected ? Color.accentColor : Color.clear))
+        }
+        .buttonStyle(.plain)
+        .opacity(dimmed ? 0.4 : 1)
+        .help(dimmed ? "로그인이 안 돼 있어요 — 설정에서 로그인" : "")
+    }
+
+    /// 입력 칸 아래 — 모델 고르기 · 마지막 답에 쓴 양(작게). 남은 양은 설정 창에만 둔다.
+    private func modelRow(kind: ModelKind, disabled: Bool, usage: String?) -> some View {
+        HStack(spacing: 8) {
+            let choices = vm.modelChoices(for: kind)
+            if choices.isEmpty {
+                Text(CLIModels.codexLoadFailureNote).font(.caption).foregroundStyle(.secondary)
+            } else {
+                Picker("모델", selection: Binding(get: { vm.selectedModelID(for: kind) ?? "" },
+                                                 set: { vm.setModelID($0, for: kind) })) {
+                    ForEach(choices) { Text($0.label).tag($0.id) }
+                }
+                .pickerStyle(.menu).labelsHidden().controlSize(.small).fixedSize()
+                .disabled(disabled)
+            }
+            Spacer(minLength: 0)
+            if let usage { Text(usage).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail) }
+        }
     }
 
     // MARK: 대화
@@ -141,7 +186,7 @@ struct ChatView: View {
                     if vm.messages.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("무엇이든 물어보세요").font(.subheadline.weight(.semibold))
-                            Text("질문을 입력하면 클로드의 답이 흘러나와요. 「이 페이지 함께」를 켜면 지금 보는 사파리 탭의 제목 · 주소 · 고른 글을 같이 보내요.")
+                            Text("질문을 입력하면 고른 CLI 의 답이 흘러나와요. 「이 페이지 함께」를 켜면 지금 보는 사파리 탭의 제목 · 주소 · 고른 글을 같이 보내요.")
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                         .padding(.top, 8)
@@ -211,6 +256,7 @@ struct ChatView: View {
                         .disabled(vm.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+            modelRow(kind: vm.model, disabled: vm.isRunning, usage: vm.lastUsageText)
         }
     }
 
@@ -322,6 +368,7 @@ struct ChatView: View {
                         .disabled(agent.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+            modelRow(kind: .claude, disabled: agent.isRunning || inputBlocked, usage: nil)
         }
     }
 
