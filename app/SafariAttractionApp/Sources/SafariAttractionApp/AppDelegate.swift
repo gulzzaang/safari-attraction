@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var toggleItem: NSMenuItem?
     private var viewModel: ChatViewModel?
     private var agent: AgentSession?
+    private var hub: RoutineHub?
     private var controller: SidePanelController?
     private var hotKey: HotKey?
 
@@ -25,13 +26,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             siteModes: siteModes,
             gateFactory: { try GateServer(directory: try AppPaths.supportDirectory()) },
             loginPath: { ShellPath.loginPath() })
-        let controller = SidePanelController(viewModel: vm, agent: agent, siteModes: siteModes, bridge: bridge)
+        // 자주 하는 일 · 루틴 — 저장소는 폴더당 인스턴스 하나(화면과 시계가 같은 것을 쓴다). 시계는 루틴이 하나라도 켜져 있을 때만 돈다.
+        // 알림 허락은 여기서 묻지 않는다(「끝나면 알림」 을 켤 때만).
+        let routineStore = RoutineStore(directory: support)
+        let scheduler = RoutineScheduler(store: routineStore, runner: agent)
+        let hub = RoutineHub(store: routineStore, scheduler: scheduler, notifier: SystemRoutineNotifier(), preference: DefaultsNotifyPreference())
+        let controller = SidePanelController(viewModel: vm, agent: agent, siteModes: siteModes, hub: hub, bridge: bridge)
         agent.onPendingCardChange = { [weak self] waiting in
             self?.controller?.setCardWaiting(waiting)
             self?.setWaitingIcon(waiting)
         }
         self.viewModel = vm
         self.agent = agent
+        self.hub = hub
         self.controller = controller
 
         hotKey = HotKey(keyCode: HotKey.toggleKeyCode, modifiers: HotKey.toggleModifiers) { [weak self] in
@@ -54,6 +61,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = menu
         statusItem = item
         // 사파리는 여기서 읽지 않는다 — 옆 창을 처음 연 뒤에야 읽기 시작한다(맥의 자동화 허락 창이 그때 뜬다).
+
+        // 잠에서 깰 때 — 켜진 루틴이 있으면 놓친 시각을 한 번 살핀다(60분 안이면 돌고, 넘으면 건너뜀 기록).
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in await self?.hub?.handleWake() }
+        }
+        // 앱을 켤 때 — 켜진 루틴이 있으면 시계를 시작하고 곧바로 한 번 살핀다.
+        hub.launch()
     }
 
     private static let idleSymbol = "safari"
@@ -85,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 답하는 중(묻기 · 일 맡기기)이면 CLI 를 먼저 멈춘다 — 멈춤은 SIGTERM, 2초 뒤 SIGKILL 이라 정리될 때까지 잠깐(최대 3초) 기다린다.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        hub?.shutdown()   // 끝내는 중에 새 루틴이 시작되지 않게 시계부터 끈다
         let vm = viewModel, agent = agent
         guard (vm?.isRunning ?? false) || (agent?.isRunning ?? false) else { return .terminateNow }
         vm?.shutdown()
@@ -99,6 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        hub?.shutdown()
         viewModel?.shutdown()
         agent?.shutdown()
         controller?.shutdown()

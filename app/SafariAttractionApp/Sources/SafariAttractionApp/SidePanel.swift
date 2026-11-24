@@ -45,7 +45,7 @@ final class SidePanelController {
     private var userPinned = false
     private var cardWaiting = false
 
-    init(viewModel: ChatViewModel, agent: AgentSession, siteModes: SiteModeStore, bridge: SafariBridging) {
+    init(viewModel: ChatViewModel, agent: AgentSession, siteModes: SiteModeStore, hub: RoutineHub, bridge: SafariBridging) {
         self.viewModel = viewModel
         self.agent = agent
         let hosting = NSHostingView(rootView: AnyView(EmptyView()))
@@ -57,7 +57,7 @@ final class SidePanelController {
             DispatchQueue.main.async { MainActor.assumeIsolated { box.value?.apply(cmd) } }
         }
         box.value = self
-        hosting.rootView = AnyView(ChatView(vm: viewModel, agent: agent, siteModes: siteModes,
+        hosting.rootView = AnyView(ChatView(vm: viewModel, agent: agent, siteModes: siteModes, hub: hub,
                                             onClose: { [weak self] in self?.close() }))
         viewModel.onPinnedChange = { [weak self, panel] pinned in
             panel.level = SidePanel.windowLevel(pinned: pinned)

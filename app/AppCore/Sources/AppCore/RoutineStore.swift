@@ -175,6 +175,19 @@ public final class RoutineStore: @unchecked Sendable {
         return r
     }
 
+    /// 화면에서 루틴을 만들거나 고쳐 저장한다 — `upsertRoutine` 에 「켜는 순간 기준 맞추기」 를 더한 것.
+    /// 켜진 채 새로 만들거나, 꺼져 있던 것을 켜거나, 켜진 채 일정을 바꾸면 `lastHandled = now` 로 맞춘다
+    /// (그렇지 않으면 옛 기준 뒤에 지나간 칸이 있어 켜자마자 「건너뜀(지나침)」 한 줄이 생긴다). 꺼진 채 저장하면 기준을 건드리지 않는다.
+    @discardableResult
+    public func saveRoutine(_ routine: Routine, now: Date) throws -> Routine {
+        var r = routine
+        let old = self.routine(id: r.id)
+        if r.enabled, old == nil || old?.enabled == false || old?.schedule != r.schedule {
+            r.lastHandled = now
+        }
+        return try upsertRoutine(r)
+    }
+
     /// 한 루틴을 읽고 고쳐 저장한다(예: 실행 뒤 `lastRun` 갱신 — 화면에서 다른 칸을 고친 것을 덮어쓰지 않는다). 없는 id 면 `unknownRoutine`.
     @discardableResult
     public func updateRoutine(id: UUID, _ change: (inout Routine) -> Void) throws -> Routine {

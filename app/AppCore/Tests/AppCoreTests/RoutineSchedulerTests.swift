@@ -445,6 +445,107 @@ final class RoutineSchedulerTests: XCTestCase {
         XCTAssertFalse(rig.scheduler.isTicking)
     }
 
+    // MARK: 계획 9 Task 5 판정 R4 — 저장 실패 · 약한 참조 · 끈 뒤
+
+    /// 저장소 폴더를 같은 이름의 파일로 바꿔 쓰기가 모두 실패하게 한다(메모리 사본은 그대로).
+    private func breakStorage() throws {
+        try FileManager.default.removeItem(at: dir)
+        try Data("x".utf8).write(to: dir)
+    }
+
+    @MainActor
+    func testStorageFailureDoesNotRerunSameSlotAndIsReported() async throws {
+        let r = try addRoutine()
+        try breakStorage()
+        let rig = makeRig(now: nine.addingTimeInterval(600))   // 09:10
+        var finished: [RoutineRecord] = []
+        rig.scheduler.onFinished = { finished.append($0) }
+        await rig.scheduler.checkNow()
+        XCTAssertEqual(rig.runner.calls.count, 1)
+        // 원래 기록 하나 + 저장 실패 알림 기록 하나
+        XCTAssertEqual(finished.count, 2)
+        XCTAssertEqual(finished[0].status, RoutineRecord.statusDone)
+        XCTAssertEqual(finished[1].status, RoutineRecord.statusFailed)
+        XCTAssertTrue(finished[1].answer.contains("저장 실패"))
+        XCTAssertNil(store.routine(id: r.id)?.lastHandled)   // 정말로 저장은 안 됐다
+        // 다음 틱들에서도 같은 칸이 또 돌지 않는다
+        rig.clock.now = rig.clock.now.addingTimeInterval(30)
+        await rig.scheduler.checkNow()
+        rig.clock.now = rig.clock.now.addingTimeInterval(30)
+        await rig.scheduler.checkNow()
+        XCTAssertEqual(rig.runner.calls.count, 1)
+        XCTAssertEqual(finished.count, 2)
+    }
+
+    @MainActor
+    func testStorageFailureOnSkippedSlotAlsoDoesNotRepeat() async throws {
+        try addRoutine()
+        safari.running = false
+        try breakStorage()
+        let rig = makeRig(now: nine)
+        var finished: [RoutineRecord] = []
+        rig.scheduler.onFinished = { finished.append($0) }
+        await rig.scheduler.checkNow()
+        await rig.scheduler.checkNow()
+        XCTAssertEqual(rig.runner.calls.count, 0)
+        XCTAssertEqual(finished.filter { $0.status.hasPrefix("건너뜀") }.count, 1)   // 건너뜀 기록은 한 번만
+        XCTAssertEqual(finished.filter { $0.answer.contains("저장 실패") }.count, 1)
+    }
+
+    @MainActor
+    func testNextSlotStillRunsAfterStorageFailure() async throws {
+        try addRoutine()
+        try breakStorage()
+        let rig = makeRig(now: nine)
+        await rig.scheduler.checkNow()
+        XCTAssertEqual(rig.runner.calls.count, 1)
+        rig.clock.now = nine.addingTimeInterval(24 * 3600)   // 다음 날 09:00
+        await rig.scheduler.checkNow()
+        XCTAssertEqual(rig.runner.calls.count, 2)
+    }
+
+    @MainActor
+    func testTickTaskDoesNotRetainScheduler() async throws {
+        weak var weakScheduler: RoutineScheduler?
+        do {
+            let rig = makeRig(now: t0)   // 09:00 전 — 할 일 없음
+            weakScheduler = rig.scheduler
+            rig.scheduler.start()
+            XCTAssertTrue(rig.scheduler.isTicking)
+        }
+        for _ in 0..<500 where weakScheduler != nil { await Task.yield() }
+        XCTAssertNil(weakScheduler)   // 시계를 안 끄고 놓아도 스케줄러가 풀려난다
+    }
+
+    @MainActor
+    func testStopMakesCheckNowAndRunNowDoNothingUntilStartedAgain() async throws {
+        let r = try addRoutine()
+        let rig = makeRig(now: nine)
+        rig.scheduler.start()
+        rig.scheduler.stop()
+        await rig.scheduler.checkNow()
+        let rec = await rig.scheduler.runNow(routineID: r.id)
+        XCTAssertNil(rec)
+        XCTAssertEqual(rig.runner.calls.count, 0)
+        XCTAssertEqual(store.history(), [])
+        XCTAssertEqual(safari.calls, 0)
+        rig.scheduler.start()    // 다시 켜면 다시 일한다
+        await rig.scheduler.checkNow()
+        XCTAssertEqual(rig.runner.calls.count, 1)
+        rig.scheduler.stop()
+    }
+
+    @MainActor
+    func testStopDuringBusyWaitEndsWithoutRecord() async throws {
+        try addRoutine()
+        let rig = makeRig(now: nine)
+        rig.runner.busy = true
+        rig.sleeps.onSleep = { n in if n == 2 { rig.scheduler.stop() } }
+        await rig.scheduler.checkNow()
+        XCTAssertEqual(rig.runner.calls.count, 0)
+        XCTAssertEqual(store.history(), [])
+    }
+
     // MARK: 돌기 전 확인(순수)
 
     func testPreflightOrderAndTexts() {

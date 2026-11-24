@@ -10,6 +10,8 @@ struct InputTextView: NSViewRepresentable {
     /// 바뀔 때마다 입력 칸에 커서를 둔다.
     var focusTick: Int
     var onSubmit: () -> Void
+    /// `.disabled(true)` 이면 글을 고칠 수 없게 한다(루틴이 도는 동안 일 맡기기 입력을 막는다).
+    @Environment(\.isEnabled) private var isEnabled
 
     static let minHeight: CGFloat = 30
     static let maxHeight: CGFloat = 130
@@ -54,6 +56,7 @@ struct InputTextView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let tv = scroll.documentView as? NSTextView else { return }
+        tv.isEditable = isEnabled
         // 조합 중에는 글을 덮어쓰지 않는다(조합이 깨진다).
         if tv.string != text && !tv.hasMarkedText() { tv.string = text }
         if context.coordinator.lastFocusTick != focusTick {

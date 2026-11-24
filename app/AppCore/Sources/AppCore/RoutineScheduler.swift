@@ -34,6 +34,7 @@ public final class RoutineScheduler {
     public static let busyWaitSkipReason = "다른 일이 길어져 건너뛰었어요"
     public static let missedSkipReason = "지나침"
     public static let missingTaskReason = "저장한 일을 찾을 수 없어요"
+    public static let storageFailedAnswer = "저장 실패 — 루틴 기록을 쓰지 못했어요"
 
     /// 지금 루틴을 돌고 있으면 그 루틴(화면 표시용). 기다리는 중에는 비어 있다.
     public private(set) var activeRoutineID: UUID?
@@ -52,6 +53,10 @@ public final class RoutineScheduler {
     @ObservationIgnored private let sleep: @MainActor (TimeInterval) async -> Void
     @ObservationIgnored private var calendar: Calendar
     @ObservationIgnored private var tickTask: Task<Void, Never>?
+    /// `stop()` 을 부른 뒤(다시 `start()` 하기 전)에는 `checkNow` · `runNow` 가 아무것도 하지 않는다.
+    @ObservationIgnored private var stopped = false
+    /// 루틴마다 마지막으로 **처리한** 예정 시각 — 저장소 쓰기가 실패해도(`lastHandled` 가 안 남아도) 같은 칸이 다음 틱에 또 돌지 않게 메모리에서도 거른다.
+    @ObservationIgnored private var lastScheduled: [UUID: Date] = [:]
 
     public init(store: RoutineStore,
                 runner: RoutineRunning,
@@ -72,17 +77,28 @@ public final class RoutineScheduler {
     /// 시계를 켠다 — 곧바로 한 번 살피고(앱 켬), 그 뒤 `tickInterval` 마다 살핀다. 이미 켜져 있으면 아무 일도 없다.
     public func start() {
         guard tickTask == nil else { return }
-        tickTask = Task { [self] in
+        stopped = false
+        let sleep = self.sleep
+        // 틱 Task 가 스케줄러를 붙들어 두지 않게 — 한 번 돌 때만 잠깐 강하게 쥔다.
+        tickTask = Task { [weak self] in
             while !Task.isCancelled {
-                await checkNow()
+                guard await Self.checkIfAlive(self) else { return }   // 스케줄러가 없어졌으면 끝낸다
                 if Task.isCancelled { break }
-                await sleep(Self.tickInterval)
+                await sleep(Self.tickInterval)   // 자는 동안에는 스케줄러를 쥐고 있지 않는다
             }
         }
     }
 
-    /// 시계를 끈다. 이미 돌고 있는 루틴은 멈추지 않는다(`AgentSession.stop()` 몫).
+    private static func checkIfAlive(_ scheduler: RoutineScheduler?) async -> Bool {
+        guard let scheduler else { return false }
+        await scheduler.checkNow()
+        return true
+    }
+
+    /// 시계를 끈다. 이미 돌고 있는 루틴은 멈추지 않는다(`AgentSession.stop()` 몫). 끈 뒤에는 `start()` 하기 전까지
+    /// `checkNow()` · `runNow(routineID:)` 가 아무것도 하지 않는다.
     public func stop() {
+        stopped = true
         tickTask?.cancel()
         tickTask = nil
     }
@@ -94,11 +110,11 @@ public final class RoutineScheduler {
     /// 지금 켜진 루틴을 살펴 때가 된 것을 처리한다 — 앱을 켤 때 · 잠에서 깰 때(`NSWorkspace.didWakeNotification`) 부른다.
     /// 처리가 끝날 때까지(루틴을 도는 동안 포함) 돌아오지 않는다. 이미 점검 중이면 바로 돌아온다.
     public func checkNow() async {
-        guard !isChecking else { return }
+        guard !stopped, !isChecking else { return }
         isChecking = true
         defer { isChecking = false }
         var handled = Set<UUID>()   // 한 점검에서 루틴마다 한 번만 — 저장이 실패해도 되풀이로 돌지 않게
-        while !Task.isCancelled, let (routine, decision) = nextDue(excluding: handled) {
+        while !Task.isCancelled, !stopped, let (routine, decision) = nextDue(excluding: handled) {
             handled.insert(routine.id)
             switch decision {
             case .skipMissed(let scheduled):
@@ -117,7 +133,9 @@ public final class RoutineScheduler {
             let d = r.decide(now: now, calendar: calendar)
             switch d {
             case .notYet: continue
-            case .run, .skipMissed: return (r, d)
+            case .run(let scheduled), .skipMissed(let scheduled):
+                if let done = lastScheduled[r.id], scheduled <= done { continue }   // 저장은 못 됐어도 이 칸은 이미 처리했다
+                return (r, d)
             }
         }
         return nil
@@ -139,7 +157,7 @@ public final class RoutineScheduler {
                     return
                 }
                 await sleep(Self.busyPollInterval)
-                if Task.isCancelled { return }   // 시계를 껐다 — 기록 없이 둔다(다시 켜면 처음부터 판단)
+                if Task.isCancelled || stopped { return }   // 시계를 껐다 — 기록 없이 둔다(다시 켜면 처음부터 판단)
             }
             if case .skip(let reason) = preflight.check() {   // 기다린 사이 사파리가 꺼졌을 수 있다
                 finish(routine: routine, status: RoutineRecord.statusSkipped(reason), answer: "", scheduled: scheduled)
@@ -165,7 +183,7 @@ public final class RoutineScheduler {
     /// 일정 기준(`lastHandled`)은 건드리지 않는다. 루틴 · 저장한 일이 없으면 nil.
     @discardableResult
     public func runNow(routineID: UUID) async -> RoutineRecord? {
-        guard let routine = store.routine(id: routineID) else { return nil }
+        guard !stopped, let routine = store.routine(id: routineID) else { return nil }
         guard let task = store.savedTask(id: routine.taskID) else {
             return finish(routine: routine, status: RoutineRecord.statusSkipped(Self.missingTaskReason), answer: "", scheduled: nil)
         }
@@ -182,20 +200,34 @@ public final class RoutineScheduler {
     // MARK: 기록
 
     /// 기록을 남기고 `lastHandled`(예정 시각이 있을 때) · `lastRun`(실제로 돈 경우만)을 저장한 뒤 `onFinished` 를 부른다.
+    /// 저장소 쓰기가 실패하면 삼키지 않고 `실패` 상태 · 「저장 실패」 답의 기록을 `onFinished` 로 한 번 더 알린다(저장소에는 못 넣는다).
+    /// 예정 시각은 저장이 실패해도 메모리(`lastScheduled`)에 남겨 같은 칸이 다음 틱에 또 돌지 않게 한다.
     @discardableResult
     private func finish(routine: Routine, taskName: String? = nil, status: String, answer: String, scheduled: Date?) -> RoutineRecord {
         let now = clock()
         let name = taskName ?? store.savedTask(id: routine.taskID)?.name ?? "(지운 일)"
         let record = RoutineRecord(at: now, routineID: routine.id, name: name, status: status, answer: answer)
-        try? store.appendHistory(record)
+        if let scheduled { lastScheduled[routine.id] = max(scheduled, lastScheduled[routine.id] ?? scheduled) }
+        var storageError: Error?
+        do { try store.appendHistory(record) } catch { storageError = error }
         let ran = !status.hasPrefix("건너뜀")
         if scheduled != nil || ran {
-            _ = try? store.updateRoutine(id: routine.id) { r in
-                if let scheduled { r.lastHandled = scheduled }
-                if ran { r.lastRun = now }
+            do {
+                try store.updateRoutine(id: routine.id) { r in
+                    if let scheduled { r.lastHandled = scheduled }
+                    if ran { r.lastRun = now }
+                }
+            } catch RoutineStoreError.unknownRoutine {
+                // 그사이 루틴을 지웠다 — 저장할 것이 없다(실패 아님).
+            } catch {
+                storageError = storageError ?? error
             }
         }
         onFinished?(record)
+        if let storageError {
+            onFinished?(RoutineRecord(at: now, routineID: routine.id, name: name, status: RoutineRecord.statusFailed,
+                                      answer: "\(Self.storageFailedAnswer) (\(storageError.localizedDescription))"))
+        }
         return record
     }
 }

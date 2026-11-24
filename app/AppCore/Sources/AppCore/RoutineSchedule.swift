@@ -82,3 +82,24 @@ public enum ScheduleDecision: Equatable, Sendable {
 
 /// 지나침 규칙 — 정해진 시각에서 60분(정각 포함) 안이면 돈다.
 public let routineMissedLimit: TimeInterval = 60 * 60
+
+extension RoutineSchedule {
+    private static let weekdayNames = ["일", "월", "화", "수", "목", "금", "토"]
+
+    /// 화면에 보일 한 줄 — 「매일 09:00」 · 「매주 월 · 수 09:00」 · 「3시간마다」. 요일이 하나도 없으면 「요일을 고르지 않았어요」.
+    public var summary: String {
+        func clock(_ h: Int, _ m: Int) -> String {
+            String(format: "%02d:%02d", min(23, max(0, h)), min(59, max(0, m)))
+        }
+        switch self {
+        case let .daily(h, m):
+            return "매일 \(clock(h, m))"
+        case let .weekdays(days, h, m):
+            let names = days.filter { (1...7).contains($0) }.sorted().map { Self.weekdayNames[$0 - 1] }
+            guard !names.isEmpty else { return "요일을 고르지 않았어요" }
+            return "매주 \(names.joined(separator: " · ")) \(clock(h, m))"
+        case let .everyHours(n):
+            return "\(min(24, max(1, n)))시간마다"
+        }
+    }
+}

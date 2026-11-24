@@ -31,14 +31,25 @@ enum ChatMode: String, CaseIterable {
     var label: String { self == .ask ? "묻기" : "일 맡기기" }
 }
 
+/// 일 맡기기 칸에서 입력 대신 보이는 화면.
+enum AgentScreen: Equatable {
+    case none, sites, saved
+    /// 루틴 화면 — 「루틴으로」 로 들어오면 그 일로 새 루틴을 시작한다.
+    case routines(startWith: UUID?)
+}
+
 struct ChatView: View {
     @Bindable var vm: ChatViewModel
     @Bindable var agent: AgentSession
     let siteModes: SiteModeStore
+    let hub: RoutineHub
     var onClose: () -> Void
 
     @State private var mode: ChatMode = .ask
-    @State private var showingSites = false
+    @State private var screen: AgentScreen = .none
+    /// 「저장」 을 눌러 이름을 받는 중이면 그 이름(nil 이면 아님).
+    @State private var savingName: String?
+    @State private var saveNotice: String?
 
     private var busy: Bool { vm.isRunning || agent.isRunning }
 
@@ -46,8 +57,8 @@ struct ChatView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            if mode == .agent && showingSites {
-                SiteModesView(store: siteModes, onClose: { showingSites = false })
+            if mode == .agent && screen != .none {
+                agentScreenView
             } else {
                 if mode == .ask { messageList } else { agentMessageList }
                 Divider()
@@ -60,12 +71,38 @@ struct ChatView: View {
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.15)))
         .onExitCommand(perform: onClose)
         .onChange(of: agent.hasPendingCard) { _, pending in
-            if pending { showingSites = false }   // 허락을 기다리는 카드가 생기면 사이트 허락 화면을 닫아 카드를 보이게
+            if pending { screen = .none }   // 허락을 기다리는 카드가 생기면 사이트 허락 · 저장한 일 · 루틴 화면을 닫아 카드를 보이게
         }
         .environment(\.openURL, OpenURLAction { url in
             if MarkdownBlocks.isOpenable(url) { openInSafari(url); return .handled }
             return .discarded
         })
+    }
+
+    @ViewBuilder
+    private var agentScreenView: some View {
+        switch screen {
+        case .none:
+            EmptyView()
+        case .sites:
+            SiteModesView(store: siteModes, onClose: { screen = .none })
+        case .saved:
+            SavedTasksView(hub: hub, agent: agent, onClose: { screen = .none },
+                           onLoad: { task in
+                               if !agent.isRunning { agent.input = task.text }
+                               screen = .none
+                           },
+                           onMakeRoutine: { task in screen = .routines(startWith: task.id) })
+        case .routines(let startWith):
+            RoutinesView(hub: hub, agent: agent, startWithTaskID: startWith, onClose: { screen = .none })
+        }
+    }
+
+    /// 루틴이 도는 중이면 그 루틴의 이름 — 도는 중에는 일 맡기기 입력을 막고 한 줄로 알린다.
+    private var runningRoutineName: String? {
+        guard agent.isRoutineRunning else { return nil }
+        if let id = hub.scheduler.activeRoutineID, let r = hub.store.routine(id: id), let t = hub.store.savedTask(id: r.taskID) { return t.name }
+        return "…"
     }
 
     // MARK: 머리줄
@@ -191,7 +228,7 @@ struct ChatView: View {
                         .padding(.top, 8)
                     }
                     ForEach(agent.messages) { AgentMessageView(message: $0, agent: agent) }
-                    if agent.isRunning, !agent.hasPendingCard {
+                    if agent.isRunning, !agent.isRoutineRunning, !agent.hasPendingCard {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
                             Text(agent.activity ?? "일하는 중이에요…").font(.caption).foregroundStyle(.secondary)
@@ -209,30 +246,70 @@ struct ChatView: View {
     }
 
     private var agentComposer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                Button { showingSites = true } label: { Label("사이트 허락", systemImage: "checkmark.shield") }
+        let routineName = runningRoutineName
+        let inputBlocked = agent.isRoutineRunning
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Button { screen = .sites } label: { Label("사이트 허락", systemImage: "checkmark.shield") }
                     .controlSize(.small)
                     .disabled(agent.isRunning || agent.hasPendingCard)   // 일하는 중 · 카드가 기다리는 중엔 가리지 않게 끈다
                     .help(agent.isRunning ? "일하는 중에는 고를 수 없어요" : "")
+                Button("저장한 일") { screen = .saved }
+                    .controlSize(.small)
+                    .disabled(agent.hasPendingCard)
+                Button("루틴") { screen = .routines(startWith: nil) }
+                    .controlSize(.small)
+                    .disabled(agent.hasPendingCard)
                 Toggle("고정", isOn: Binding(get: { vm.pinned }, set: { vm.setPinned($0) }))
                     .toggleStyle(.checkbox).controlSize(.small)
                     .help("켜면 사파리가 앞이 아니어도 옆 창이 숨지 않아요")
                 Spacer(minLength: 0)
+            }
+            if let routineName {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("루틴 '\(routineName)' 도는 중").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Spacer(minLength: 0)
+                    if agent.isStopping {
+                        Text("멈추는 중…").font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Button("멈추기", action: agent.stop).controlSize(.small)
+                    }
+                }
+            }
+            if let name = savingName {
+                HStack(spacing: 6) {
+                    TextField("저장할 이름", text: Binding(get: { name }, set: { savingName = $0 }))
+                        .textFieldStyle(.roundedBorder).onSubmit(commitSave)
+                    Button("저장", action: commitSave)
+                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("취소") { savingName = nil }
+                }
+                .controlSize(.small)
+            } else if let saveNotice {
+                Text(saveNotice).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             HStack(alignment: .bottom, spacing: 8) {
                 InputTextView(text: $agent.input, focusTick: vm.focusTick, onSubmit: { agent.send() })
                     .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                     .overlay(alignment: .topLeading) {
                         if agent.input.isEmpty {
-                            Text("맡길 일을 입력하세요 (Return 보내기 · Option+Return 줄바꿈)")
+                            Text(inputBlocked ? "루틴이 도는 동안에는 일을 맡길 수 없어요" : "맡길 일을 입력하세요 (Return 보내기 · Option+Return 줄바꿈)")
                                 .font(.system(size: 13)).foregroundStyle(.tertiary)
                                 .padding(.horizontal, InputTextView.insetX + InputTextView.linePadding)
                                 .padding(.vertical, InputTextView.insetY)
                                 .allowsHitTesting(false)
                         }
                     }
-                if agent.isStopping {
+                    .disabled(inputBlocked)
+                    .opacity(inputBlocked ? 0.5 : 1)
+                Button("저장") { startSave() }
+                    .controlSize(.small)
+                    .disabled(inputBlocked || agent.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("지금 입력한 글을 이름 붙여 저장해요(보내지는 않아요)")
+                if inputBlocked {
+                    EmptyView()
+                } else if agent.isStopping {
                     HStack(spacing: 4) { ProgressView().controlSize(.small); Text("멈추는 중…").font(.caption) }
                         .foregroundStyle(.secondary)
                 } else if agent.isRunning {
@@ -244,6 +321,25 @@ struct ChatView: View {
                         .disabled(agent.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+        }
+    }
+
+    private func startSave() {
+        let text = agent.input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        savingName = String(text.split(whereSeparator: \.isNewline).first?.prefix(20) ?? "")
+        saveNotice = nil
+    }
+
+    private func commitSave() {
+        guard let name = savingName else { return }
+        do {
+            let saved = try hub.saveTask(SavedTask(name: name, text: agent.input))
+            savingName = nil
+            saveNotice = "「\(saved.name)」 으로 저장했어요 — 「저장한 일」 에서 다시 부르고 「루틴으로」 정해진 시각에 돌릴 수 있어요"
+        } catch {
+            saveNotice = "저장하지 못했어요 — \(error.localizedDescription)"
+            savingName = nil
         }
     }
 }
