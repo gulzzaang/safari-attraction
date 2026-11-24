@@ -146,7 +146,8 @@ public enum CLICommands {
         return #"{"permissions":{"deny":["# + denies.map { "\"\($0)\"" }.joined(separator: ",") + "]}}"
     }
 
-    public static let agyModels: Command = ("agy", ["models", "--settings", agySettingsJSON(webSearch: false)])
+    /// `agy models` 는 `--settings` 를 모르는 플래그로 거절(종료 1)하고 도구도 안 쓰므로 붙이지 않는다.
+    public static let agyModels: Command = ("agy", ["models"])
     public static let agyUsage: Command = ("agy", ["-p", "/usage", "--output-format", "stream-json", "--settings", agySettingsJSON(webSearch: false)])
     /// 로그인은 터미널에서 `agy` 를 인자 없이(TUI).
     public static let agyLogin: Command = ("agy", [])

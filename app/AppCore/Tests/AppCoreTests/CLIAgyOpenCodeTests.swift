@@ -130,7 +130,7 @@ final class CLIEnvironmentFourTests: XCTestCase {
 
     // MARK: 명령줄
     func testAgyCommands() {
-        XCTAssertEqual(CLICommands.agyModels.arguments, ["models", "--settings", CLICommands.agySettingsJSON(webSearch: false)])
+        XCTAssertEqual(CLICommands.agyModels.arguments, ["models"], "agy models 는 --settings 를 받지 않는다")
         XCTAssertEqual(CLICommands.agyUsage.arguments, ["-p", "/usage", "--output-format", "stream-json", "--settings", CLICommands.agySettingsJSON(webSearch: false)])
         XCTAssertEqual(CLICommands.agyLogin.arguments, [])
         XCTAssertEqual(CLICommands.agyAsk(prompt: "질문", modelID: "gemini-4-neon-low").arguments,

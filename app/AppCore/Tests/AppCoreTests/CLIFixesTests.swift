@@ -121,10 +121,11 @@ final class AgySettingsTests: XCTestCase {
         }
     }
 
-    func testEveryAgyCommandCarriesTheSettings() {
+    func testAgyAskAndUsageCarryTheSettingsButModelsDoesNot() {
         let off = CLICommands.agySettingsJSON(webSearch: false), on = CLICommands.agySettingsJSON(webSearch: true)
         func settings(_ a: [String]) -> String? { a.firstIndex(of: "--settings").map { a[$0 + 1] } }
-        XCTAssertEqual(settings(CLICommands.agyModels.arguments), off)
+        XCTAssertNil(settings(CLICommands.agyModels.arguments), "agy models 는 --settings 가 정의돼 있지 않아 종료 1")
+        XCTAssertEqual(CLICommands.agyModels.arguments, ["models"])
         XCTAssertEqual(settings(CLICommands.agyUsage.arguments), off)
         XCTAssertEqual(settings(CLICommands.agyAsk(prompt: "q", modelID: nil).arguments), off)
         XCTAssertEqual(settings(CLICommands.agyAsk(prompt: "q", modelID: nil, webSearch: true).arguments), on)
