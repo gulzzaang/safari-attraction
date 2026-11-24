@@ -39,14 +39,15 @@ final class ManagedConfigTests: XCTestCase {
         XCTAssertEqual(CLIManagedConfig.codexDisabledFeatures, expectedFeatures)
     }
 
-    func testCodexExecDisablesEveryFeatureAndKeepsPromptLast() {
+    func testCodexExecDisablesEveryFeatureViaDashCAndKeepsPromptLast() {
         let a = CLICommands.codexExec(prompt: "질문", modelID: "gpt-6-luna").arguments
         for f in expectedFeatures {
-            let i = a.firstIndex(of: f)
+            let i = a.firstIndex(of: "features.\(f)=false")
             XCTAssertNotNil(i, f)
-            if let i { XCTAssertEqual(a[i - 1], "--disable", f) }
+            if let i { XCTAssertEqual(a[i - 1], "-c", f) }
         }
-        XCTAssertEqual(a.filter { $0 == "--disable" }.count, expectedFeatures.count)
+        XCTAssertEqual(a.filter { $0.hasPrefix("features.") }.count, expectedFeatures.count)
+        XCTAssertFalse(a.contains("--disable"), "--disable 은 모르는 기능 이름이면 종료 1 이라 쓰지 않는다")
         XCTAssertEqual(a.last, "질문")
         XCTAssertTrue(a.contains("cli_auth_credentials_store=file"), "exec 의 -c 는 그대로(이중)")
     }

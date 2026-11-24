@@ -131,7 +131,8 @@ public enum CLICommands {
     public static func codexExec(prompt: String, modelID: String?) -> Command {
         var args = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only",
                     "-c", "cli_auth_credentials_store=file"]
-        for feature in CLIManagedConfig.codexDisabledFeatures { args += ["--disable", feature] }   // 도구 끄기(config.toml 의 [features] 와 이중)
+        // 도구 끄기(config.toml 의 [features] 와 이중). `--disable <이름>` 은 모르는 이름이면 종료 1 이라 쓰지 않고, `-c features.<이름>=false` 는 모르는 이름도 오류 없이 넘어간다.
+        for feature in CLIManagedConfig.codexDisabledFeatures { args += ["-c", "features.\(feature)=false"] }
         if let id = modelID, CLIModels.isSafeID(id) { args += ["-m", id] }
         args.append(prompt)
         return ("codex", args)

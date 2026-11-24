@@ -67,9 +67,9 @@ final class CommandBuilderTests: XCTestCase {
 
     // MARK: ChatGPT
     /// 계획 10 — 읽기 전용 · 세션 없음 · 앱 전용 폴더의 파일 인증. 질문은 늘 마지막 인자.
-    /// 도구를 끄는 `--disable` 이 기능마다 붙는다(`CLIManagedConfig.codexDisabledFeatures`).
+    /// 도구를 끄는 `-c features.<이름>=false` 가 기능마다 붙는다(`CLIManagedConfig.codexDisabledFeatures`).
     let codexBase = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "-c", "cli_auth_credentials_store=file"]
-        + CLIManagedConfig.codexDisabledFeatures.flatMap { ["--disable", $0] }
+        + CLIManagedConfig.codexDisabledFeatures.flatMap { ["-c", "features.\($0)=false"] }
     func testChatGPTPlain() {
         let c = CommandBuilder.build(req(.chatgpt), workDir: work)
         XCTAssertEqual(c.executable, "codex")

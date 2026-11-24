@@ -3,7 +3,7 @@ import Foundation
 /// 앱이 앱 전용 폴더 안에 직접 쓰는 설정 파일 — codex `config.toml`(인증 저장 · 도구 끄기)과 opencode `opencode.json`(도구 · 권한 끄기).
 /// 앱은 대화만 시키므로 CLI 가 셸 · 파일 · 브라우저 같은 도구를 쓰지 못하게 한다.
 public enum CLIManagedConfig {
-    /// codex 가 도구를 못 쓰게 끄는 기능 이름들 — `codex exec --disable <이름>` 과 `config.toml` 의 `[features]` 가 같은 목록을 쓴다.
+    /// codex 가 도구를 못 쓰게 끄는 기능 이름들 — `codex exec -c features.<이름>=false` 와 `config.toml` 의 `[features]` 가 같은 목록을 쓴다.
     /// (박정욱 codex 로 확인: 모두 끄면 답은 되고 「파일 목록을 명령으로」 는 「못 합니다」.)
     public static let codexDisabledFeatures: [String] = [
         "shell_tool", "unified_exec", "unified_exec_tty", "shell_snapshot", "computer_use", "browser_use", "browser_use_external",
