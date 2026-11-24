@@ -76,6 +76,23 @@ final class SiteModeStoreTests: XCTestCase {
         XCTAssertEqual(SiteModeStore(directory: dir).mode(for: "a.com"), .readOnly)
     }
 
+    func testUnreadableFileIsEmptyAndNeverOverwrittenWithoutABackup() throws {
+        let original = Data(#"{"a.com":"allowAll"}"#.utf8)
+        try original.write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: file.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path) }
+        let s = SiteModeStore(directory: dir)
+        XCTAssertEqual(s.mode(for: "a.com"), .ask, "못 읽었으면 빈 것으로")
+        // 읽을 수 없어 .bak 도 못 남기면 덮어쓰지 않고 실패한다.
+        XCTAssertThrowsError(try s.setMode(.readOnly, for: "b.com"))
+        XCTAssertEqual(s.mode(for: "b.com"), .ask)
+        // 읽을 수 있게 되면 덮어쓰기 전에 .bak 으로 남긴다.
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+        try s.setMode(.readOnly, for: "b.com")
+        XCTAssertEqual(try Data(contentsOf: bak), original)
+        XCTAssertEqual(SiteModeStore(directory: dir).mode(for: "b.com"), .readOnly)
+    }
+
     func testWrongShapeOrUnknownModeValuesAreIgnored() throws {
         try Data("[1,2,3]".utf8).write(to: file)
         XCTAssertEqual(SiteModeStore(directory: dir).mode(for: "a.com"), .ask)

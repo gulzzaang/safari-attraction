@@ -12,7 +12,7 @@ public enum SiteModeError: Error, Equatable {
 }
 
 /// `<앱 지원 폴더>/site-modes.json`(호스트 → 모드) 저장소. 호스트 키는 소문자로 맞춘다.
-/// 파일이 없으면 · 깨졌으면 빈 것으로 보고(앱이 죽지 않는다), 깨진 파일은 처음 덮어쓰기 전에 `site-modes.json.bak` 으로 남긴다.
+/// 파일이 없으면 · 깨졌으면 · 읽지 못했으면 빈 것으로 보고(앱이 죽지 않는다), 깨졌거나 못 읽은 파일은 처음 덮어쓰기 전에 `site-modes.json.bak` 으로 남긴다.
 /// `directory` 는 앱 지원 폴더(`AppPaths.supportDirectory()`) — 시험은 임시 폴더를 넣는다.
 public final class SiteModeStore: @unchecked Sendable {
     public static let fileName = "site-modes.json"
@@ -69,7 +69,11 @@ public final class SiteModeStore: @unchecked Sendable {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else { return }   // 없으면 빈 것
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }   // 없으면 빈 것
+        guard let data = try? Data(contentsOf: fileURL) else {
+            loadedCorrupt = true   // 파일은 있는데 못 읽음(권한 등) — 깨진 파일과 같이 덮어쓰기 전에 .bak 으로 남긴다
+            return
+        }
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             loadedCorrupt = true
             return
