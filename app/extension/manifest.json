@@ -2,7 +2,22 @@
   "manifest_version": 3,
   "name": "사파리-어트랙션",
   "version": "0.1.0",
-  "description": "사파리-어트랙션 앱의 사파리 확장(조각 2 에서 채움)",
-  "background": { "scripts": ["background.js"], "persistent": false },
-  "permissions": []
+  "description": "지금 보는 페이지 위에 작은 패널을 띄워, 그 페이지를 붙여 사파리-어트랙션 앱의 클로드 · 제미나이 등에게 바로 묻습니다.",
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "사파리-어트랙션 패널 (⌥⇧E)" },
+  "commands": {
+    "toggle-panel": {
+      "suggested_key": { "default": "Alt+Shift+E", "mac": "Alt+Shift+E" },
+      "description": "페이지 위 패널 열기 · 닫기"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["lib/page.js", "lib/text.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": ["nativeMessaging", "activeTab", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"]
 }

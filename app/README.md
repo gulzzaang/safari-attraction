@@ -1,16 +1,16 @@
-# 사파리-어트랙션 앱 (조각 1 · 3 · 4)
+# 사파리-어트랙션 앱 (조각 1 · 2 · 3 · 4)
 
 사파리 옆에 붙는 Claude 옆 창 앱. MCP 서버(`src/` · `plugin/` · `mcpb/`)와는 따로다.
 
 - `AppCore/` — 순수 로직 Swift 패키지(`AppCore` 라이브러리 + `AppCoreTests`). Apple 프레임워크만 쓴다.
 - `SafariAttractionApp/` — 앱 실행 파일 패키지(`SafariAttractionApp`, `AppCore` 를 경로로 참조). 메뉴 막대 아이콘만 있는 앱(Dock 아이콘 없음).
-- `extension/` — 사파리 확장 씨앗(`manifest.json` · `background.js`), 조각 2 에서 채운다.
+- `extension/` — 사파리 확장(페이지 위 패널, 조각 2): `manifest.json` · `background.js` · `content.js` · `panel.css` · `lib/`(순수 JS) · `Handler/`(네이티브 핸들러 Swift) · `ext.entitlements` · `test/`(`node --test app/extension/test`).
 
 ## 빌드 · 시험 · 실행 (Xcode 없이)
 
 ```sh
 app/scripts/build.sh   # swift build -c release → app/.build/SafariAttractionApp.app 조립 + ad-hoc 서명
-app/scripts/test.sh    # AppCore 시험(swift test)
+app/scripts/test.sh    # 확장 JS 시험(node --test) + AppCore 시험(swift test)
 open -g app/.build/SafariAttractionApp.app                     # 앞으로 안 나오게 띄우기
 osascript -e 'quit app id "com.gulzzaang.SafariAttractionApp"'  # 끄기
 ```
@@ -21,9 +21,20 @@ osascript -e 'quit app id "com.gulzzaang.SafariAttractionApp"'  # 끄기
 
 `safariattraction://toggle`(옆 창 열기 · 닫기) · `safariattraction://ask?model=claude&q=…&web=1&page=1[&open=1]`(질문을 친 것처럼 보내고, 끝나면 `~/Library/Application Support/SafariAttractionApp/dev-last.json` 에 결과를 적는다) 는 **`DEV=1 app/scripts/build.sh` 로 만든 빌드에서만** 있다. 평소 빌드(`app/scripts/build.sh`)에는 이 주소 등록도, 받는 코드도 없다. DEV 빌드에서도 `defaults write com.gulzzaang.SafariAttractionApp DevHooks -int 1` 을 해 둔 때만 반응한다(앱 자신의 설정 도메인 하나만 읽는다 — 전역 설정 · 실행 인자는 읽지 않는다).
 
-## 조각 2(사파리 확장) 전에
+## 페이지 위 패널 (사파리 확장, 조각 2)
 
-사파리 확장 대상은 Xcode 도구(`safari-web-extension-converter` · `xcodebuild`)가 필요하다. 이 맥은 Xcode 첫 실행 구성요소가 안 깔려 있어서, 먼저 터미널에서 `sudo xcodebuild -runFirstLaunch` 를 한 번 실행하거나 Xcode 를 한 번 열어 설치를 마쳐야 한다.
+사파리 툴바 단추나 **⌥⇧E**(Option+Shift+E)로 지금 페이지 위에 작은 패널이 뜬다(오른쪽 아래). 입력 칸에 묻고, 「이 페이지 함께」(기본 켬)면 그 페이지의 제목 · 주소 · 고른 글 · 본문 앞부분이 질문에 붙는다(비밀번호 칸 값은 읽지 않는다). 답은 앱이 고른 CLI · 모델로 받아 패널에 흘려 준다. 맨 위에 고른 CLI · 모델 이름이 보이고, Esc 나 ✕ 로 닫는다. 앱(메뉴 막대 나침반)이 꺼져 있으면 「사파리-어트랙션 앱을 켜 주세요(메뉴 막대 나침반)」 가 보인다.
+
+- **구조**: `Contents/PlugIns/SafariAttractionExtension.appex`(번들 ID `com.gulzzaang.SafariAttractionApp.Extension`, 이름 「사파리-어트랙션」)를 `app/scripts/build.sh` 가 Xcode 없이 `swiftc` 로 빌드해 앱 안에 넣고(안쪽 appex 먼저 서명, ad-hoc) `~/Applications` 로 복사한 뒤 `pluginkit -a` 로 등록한다(등록이 실패해도 빌드는 성공 + 경고). 확장의 background 가 네이티브 핸들러에게 연결 정보(`~/Library/Application Support/SafariAttractionApp/panel-link.json` 의 포트 · 토큰)를 받아 `http://127.0.0.1:<포트>` 의 앱 로컬 서버에 묻는다. **토큰은 background 메모리에만 있다**(content script · 페이지 · 저장소 · 로그에 안 간다). 패널은 content script 가 닫힌 Shadow DOM 으로 그린다.
+- **사파리에서 켜는 법**(이 확장은 서명 안 된 ad-hoc 확장이다):
+  1. 사파리 ▸ 설정 ▸ **고급** ▸ 「웹 개발자용 기능 보기」 를 켠다.
+  2. 사파리 ▸ 설정 ▸ **개발자용** ▸ 「서명 안 된 확장 허용」 을 켠다(관리자 암호를 물을 수 있다). **사파리를 끄면 다시 켜야 한다.**
+  3. 사파리 ▸ 설정 ▸ **확장** ▸ 「사파리-어트랙션」 을 켠다.
+  4. 같은 창의 「웹사이트」 에서 **모든 웹사이트**(또는 쓸 사이트)를 허락하고, **127.0.0.1** 도 허락한다(없으면 「웹사이트」 목록에서 확인 · 허락).
+  5. 이미 열어 둔 페이지는 새로 고친 뒤 툴바 단추 또는 ⌥⇧E.
+- 확장을 안 쓰는 쪽(앱만 쓸 때)은 아무것도 안 해도 된다. 패널 질문은 「일 맡기기」 가 아니라서 사파리를 움직이지 않는다.
+- **「이 페이지 함께」 + 「웹 검색」**: 둘을 함께 켜면 페이지 글이 클로드를 움직여 다른 주소를 열게 할 수 있다 — 믿을 수 없는 페이지에서는 함께 켜지 않는다(패널에도 같은 안내가 뜬다).
+- 맥 앞에서 확인할 것(아직 사파리를 띄워 보지 못했다): 확장이 목록에 뜨는지 · 켜지는지 · 툴바 단추 · ⌥⇧E · 패널 · 묻기 · 127.0.0.1 허락 흐름 · 앱을 껐다 켰을 때의 안내.
 
 ## 쓰는 법 (시험판 — 이 맥에서만)
 

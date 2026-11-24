@@ -1,0 +1,69 @@
+/* 사파리-어트랙션 패널 — 닫힌 Shadow DOM 안에서만 쓴다(페이지 CSS 와 섞이지 않는다). */
+:host { all: initial; }
+* { box-sizing: border-box; }
+
+.panel {
+  --bg: #ffffff; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --soft: #f5f5f7;
+  --accent: #0a60d6; --accent-fg: #ffffff; --error: #c4281c;
+  display: flex; flex-direction: column; gap: 8px;
+  max-height: min(70vh, 560px);
+  padding: 12px;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.22);
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Helvetica Neue", sans-serif;
+  text-align: left; letter-spacing: normal; text-transform: none;
+}
+@media (prefers-color-scheme: dark) {
+  .panel {
+    --bg: #2a2a2d; --fg: #f2f2f4; --muted: #a1a1a8; --line: #48484d; --soft: #38383c;
+    --accent: #4c9bff; --accent-fg: #0b1b33; --error: #ff7a70;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+  }
+}
+
+.head { display: flex; align-items: center; gap: 8px; }
+.title { font-weight: 600; }
+.meta { flex: 1; min-width: 0; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon {
+  all: unset; cursor: pointer; width: 24px; height: 24px; line-height: 24px; text-align: center;
+  border-radius: 6px; color: var(--muted);
+}
+.icon:hover { background: var(--soft); color: var(--fg); }
+
+.answer {
+  min-height: 56px; max-height: 38vh; overflow: auto;
+  padding: 8px 10px; background: var(--soft); border-radius: 8px;
+  white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+  outline: none;
+}
+.answer:empty::before { content: "여기에 답이 흘러나와요."; color: var(--muted); }
+.answer .q { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.answer a { color: var(--accent); text-decoration: underline; }
+
+.status { min-height: 0; color: var(--muted); font-size: 12px; }
+.status:empty { display: none; }
+.status.error { color: var(--error); }
+
+.input {
+  all: unset; box-sizing: border-box; display: block; width: 100%;
+  min-height: 62px; max-height: 140px; overflow: auto; resize: none;
+  padding: 8px 10px; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 8px; white-space: pre-wrap; word-break: break-word;
+  font: inherit; cursor: text; -webkit-user-select: text; user-select: text;
+}
+.input:focus { border-color: var(--accent); }
+.input::placeholder { color: var(--muted); }
+
+.opts { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
+.opt { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.opt input { margin: 0; accent-color: var(--accent); }
+.note { color: var(--muted); font-size: 12px; }
+.send {
+  all: unset; cursor: pointer; margin-left: auto; padding: 5px 14px; border-radius: 8px;
+  background: var(--accent); color: var(--accent-fg); font-weight: 600;
+}
+.send:hover { filter: brightness(1.08); }
+.warn { color: var(--muted); font-size: 11px; }
+.warn:empty { display: none; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
