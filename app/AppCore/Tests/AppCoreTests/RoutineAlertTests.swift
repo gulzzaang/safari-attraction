@@ -454,6 +454,20 @@ final class RoutineAlertTests: XCTestCase {
     }
 
     @MainActor
+    func testShutdownBeforeAlertTaskStartsDoesNotRunRoutine() async throws {
+        try addAlertRoutine()
+        let rig = makeRig()
+        let n = await rig.hub.handleSiteAlert(host: "example.com", kind: .notification, title: "t", body: "b")
+        XCTAssertEqual(n, 1)
+        // alertTask 가 runner.runRoutine 에 들어가기 전에 앱 종료(shutdown)가 불려도 실행되지 않고 상태가 깨끗이 풀린다.
+        rig.hub.shutdown()
+        await rig.hub.waitForAlertRuns()
+        XCTAssertEqual(rig.runner.calls.count, 0)
+        XCTAssertNil(rig.hub.scheduler.activeRoutineID)
+        XCTAssertEqual(store.history(), [])
+    }
+
+    @MainActor
     func testFinishedAlertRunNotifiesLikeAnyRoutine() async throws {
         try addAlertRoutine()
         let rig = makeRig()

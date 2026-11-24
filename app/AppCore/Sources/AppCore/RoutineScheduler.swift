@@ -106,11 +106,12 @@ public final class RoutineScheduler {
     }
 
     /// 시계를 끈다. 이미 돌고 있는 루틴은 멈추지 않는다(`AgentSession.stop()` 몫). 끈 뒤에는 `start()` 하기 전까지
-    /// `checkNow()` · `runNow(routineID:)` 가 아무것도 하지 않는다.
+    /// `checkNow()` · `runNow(routineID:)` · `startAlertRun` 이 아무것도 하지 않고, 아직 시작 전인 알림 작업도 취소한다.
     public func stop() {
         stopped = true
         tickTask?.cancel()
         tickTask = nil
+        alertTask?.cancel()
     }
 
     public var isTicking: Bool { tickTask != nil }
@@ -247,6 +248,11 @@ public final class RoutineScheduler {
         let sites = routine.sites
         let taskName = task.name
         alertTask = Task { [self] in
+            if stopped || Task.isCancelled {
+                if activeRoutineID == routine.id { activeRoutineID = nil }
+                alertClaimed = false
+                return
+            }
             let outcome = await runner.runRoutine(text: text, sites: sites)
             if activeRoutineID == routine.id { activeRoutineID = nil }
             alertClaimed = false
