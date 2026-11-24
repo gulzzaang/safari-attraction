@@ -45,6 +45,10 @@ public final class AgentSession {
     public static let emptyPlanReason = "계획을 답 글에 목록으로 먼저 써 보여 준 뒤 다시 ExitPlanMode 를 불러 주세요"
     static let maxEmptyPlanDenials = 2
     public static let replToolName = "mcp__\(AgentCommandBuilder.mcpServerName)__repl"
+    static let statusToolName = "mcp__\(AgentCommandBuilder.mcpServerName)__status"
+    static let memoryToolName = "mcp__\(AgentCommandBuilder.mcpServerName)__memory"
+    static let projectToolName = "mcp__\(AgentCommandBuilder.mcpServerName)__project"
+    static let routineMemoryWriteRefusedMessage = "사람 없이 도는 일은 기억 · 프로젝트를 바꾸지 않아요 — 찾기 · 읽기만 하세요"
     static let mcpToolPrefix = "mcp__\(AgentCommandBuilder.mcpServerName)__"
     /// 이 낱말이 든 `repl` 코드는 빨간 코드 카드로 묻는다(계획 8 Global Constraints — 관문은 실수 · 보통의 속임을 막는 장치).
     /// 낱말 경계(`\\b`)로 본다 — `page.evaluate(...)` 가 `eval` 에 걸리지 않게. 대소문자는 구분한다.
@@ -533,7 +537,7 @@ public final class AgentSession {
         }
     }
 
-    /// 사람 없는 실행의 도구 물음 — 카드 없이 바로: `repl` 은 덧막이 낱말이 있으면 거절(거절 한 번), 그 밖의 사파리 도구는 허락, 나머지(ExitPlanMode 포함)는 거절.
+    /// 사람 없는 실행의 도구 물음 — 카드 없이 바로: `repl` 은 덧막이 낱말이 있으면 거절(거절 한 번), `status` 는 허락, `memory` 는 search · read 만, `project` 는 list 만 허락(그 밖은 거절하고 거절 한 번), 나머지(모르는 도구 · ExitPlanMode 포함)는 거절.
     private func decideUnattendedPermission(_ req: PermissionRequest, run: Run, state u: UnattendedState) {
         let input = req.input
         if req.toolName == Self.replToolName {
@@ -544,8 +548,22 @@ public final class AgentSession {
             } else {
                 reply(ClaudeControl.allow(requestID: req.requestID, updatedInput: input, setModeManual: false), run: run)
             }
-        } else if req.toolName.hasPrefix(Self.mcpToolPrefix) {
+        } else if req.toolName == Self.statusToolName {
             reply(ClaudeControl.allow(requestID: req.requestID, updatedInput: input, setModeManual: false), run: run)
+        } else if req.toolName == Self.memoryToolName || req.toolName == Self.projectToolName {
+            // 사람 없이 도는 일은 기억 · 프로젝트를 읽기만 한다 — 읽은 페이지의 속임 글이 기억에 심어지지 않게.
+            let action = (input["action"] as? String) ?? ""
+            let readOnly = req.toolName == Self.memoryToolName ? (action == "search" || action == "read") : action == "list"
+            if readOnly {
+                reply(ClaudeControl.allow(requestID: req.requestID, updatedInput: input, setModeManual: false), run: run)
+            } else {
+                u.denied += 1
+                reply(ClaudeControl.deny(requestID: req.requestID, message: Self.routineMemoryWriteRefusedMessage), run: run)
+            }
+        } else if req.toolName.hasPrefix(Self.mcpToolPrefix) {
+            // 모르는 사파리 도구는 허락하지 않는다.
+            u.denied += 1
+            reply(ClaudeControl.deny(requestID: req.requestID, message: Self.toolNotAllowedMessage), run: run)
         } else {
             reply(ClaudeControl.deny(requestID: req.requestID, message: Self.toolNotAllowedMessage), run: run)
         }

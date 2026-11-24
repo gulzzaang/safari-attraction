@@ -1110,6 +1110,41 @@ final class AgentSessionTests: XCTestCase {
         XCTAssertEqual(o.status, RoutineRecord.statusPartial, "덧막이 repl 거절도 거절 한 번")
     }
 
+    func testRoutineMemoryAndProjectOnlyReadActionsAreAllowed() async throws {
+        let (r, _, t) = try await startRoutine()
+        let memory = "mcp__safari-attraction__memory"
+        let project = "mcp__safari-attraction__project"
+        r.emit(canUseTool("m1", memory, ["action": "search", "query": "우유"]))
+        r.emit(canUseTool("m2", memory, ["action": "read", "path": "기억/나.md"]))
+        r.emit(canUseTool("p1", project, ["action": "list"]))
+        try await waitUntil("읽기 답 셋") { self.replies(r).count == 3 }
+        for id in ["m1", "m2", "p1"] { XCTAssertEqual(reply(r, id)?.behavior, "allow", id) }
+        XCTAssertTrue(cards.isEmpty)
+        r.emit(result(text: "끝")); let o = await t.value
+        XCTAssertEqual(o.status, RoutineRecord.statusDone, "읽기만 허락 — 거절 없음")
+    }
+
+    func testRoutineMemoryAndProjectWritesAreDeniedAndCounted() async throws {
+        let (r, _, t) = try await startRoutine()
+        let memory = "mcp__safari-attraction__memory"
+        let project = "mcp__safari-attraction__project"
+        let writes: [(String, String, [String: Any])] = [
+            ("w1", memory, ["action": "remember", "text": "x"]), ("w2", memory, ["action": "forget", "text": "x"]),
+            ("w3", memory, ["action": "tidy"]), ("w4", memory, ["action": "tidy_save", "text": "x"]),
+            ("w5", memory, ["action": "pause", "on": true]), ("w6", memory, [:]),
+            ("w7", project, ["action": "create", "name": "x"]), ("w8", project, ["action": "update", "text": "x"]),
+            ("w9", project, ["action": "save_doc"]), ("w10", project, ["action": "archive"]),
+            ("w11", project, ["action": "open_sites"]), ("w12", project, [:]),
+            ("w13", "mcp__safari-attraction__unknown", ["action": "list"]),
+        ]
+        for (id, name, input) in writes { r.emit(canUseTool(id, name, input)) }
+        try await waitUntil("거절 답") { self.replies(r).count == writes.count }
+        for (id, _, _) in writes { XCTAssertEqual(reply(r, id)?.behavior, "deny", id) }
+        XCTAssertTrue(cards.isEmpty)
+        r.emit(result(text: "끝")); let o = await t.value
+        XCTAssertEqual(o.status, RoutineRecord.statusPartial, "기억 · 프로젝트 쓰기 거절도 거절로 센다")
+    }
+
     func testRoutineCleanRunIsDoneWithTheAnswer() async throws {
         let (r, g, t) = try await startRoutine()
         let d = await g.request(gateRequest(host: "www.coupang.com", action: "goto", irreversible: false)).value
