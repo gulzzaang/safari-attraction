@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { SafariDriver } from "./driver/types.js";
 import { formatDoctor, runDoctor } from "./doctor.js";
 import { toKorean } from "./errors-ko.js";
-import { createGateFromEnv, noPermissionPromptsFromEnv } from "./gate/gate.js";
+import { createGateFromEnv, noPermissionPromptsFromEnv, unattendedFromEnv } from "./gate/gate.js";
 import { GUIDES, type SiteGuide } from "./guides/index.js";
 import { planGuideNotes } from "./guides/notes.js";
 import { ActivityLog, type Extra, type Touch } from "./memory/activity.js";
@@ -212,7 +212,7 @@ export function createSafariServer(driver: SafariDriver, opts: { home?: MemoryHo
   const memoryTimeoutMs = opts.memoryTimeoutMs ?? MEMORY_TIMEOUT_MS;
   const guides = opts.guides ?? GUIDES;
   // 앱이 환경값으로 알려 준 동작 관문(없으면 null — 지금과 똑같이 바로 돈다)과 허락 창 없는 모드.
-  const session = createReplSession(driver, { guides, gate: createGateFromEnv(process.env), noPermissionPrompts: noPermissionPromptsFromEnv(process.env) });
+  const session = createReplSession(driver, { guides, gate: createGateFromEnv(process.env), noPermissionPrompts: noPermissionPromptsFromEnv(process.env), unattended: unattendedFromEnv(process.env) });
   const server = new McpServer({ name: "safari-attraction", version: VERSION });
 
   server.registerTool(

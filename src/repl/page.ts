@@ -531,8 +531,8 @@ export class Page {
   }
 
   /** 서버 안에서 관문에 직접 묻는 길(페이지 안 fetch 의 바꾸는 메서드). */
-  async [GATE_ASK](action: GateAction, target: string, value: string, irreversible: boolean | null): Promise<void> {
-    await this.askGate(action, target, value, irreversible);
+  async [GATE_ASK](action: GateAction, target: string, value: string, irreversible: boolean | null, urlOverride?: string): Promise<void> {
+    await this.askGate(action, target, value, irreversible, urlOverride);
   }
 
   /**

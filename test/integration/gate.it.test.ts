@@ -155,4 +155,20 @@ describeIt('동작 관문(실제 사파리 · 자기 탭만)', () => {
     expect(r.error).toBeUndefined();
     expect(await read(r.output.split('\n')[0]!, 'String(window.__paid)')).toBe('1');
   });
+
+  test('사람 없음 + 관문 거절: openTab 이 탭을 열지 않는다(탭 지문이 전후 같다)', async () => {
+    gateServer = await startGateServer(() => false);
+    const gate = createGateFromEnv({ SAFARI_ATTRACTION_GATE: gateServer.path, SAFARI_ATTRACTION_GATE_TOKEN: TOKEN });
+    expect(gate).not.toBeNull();
+    const fingerprint = async () => (await d.listTabs()).map((t) => `${t.windowId}:${t.index}:${t.url}`).join('\n'); // 창 · 자리 · 주소(사용자 탭은 읽기만 한다)
+    const before = await fingerprint();
+    const url = mine('gate.html');
+    session = createReplSession(d, { gate, unattended: true });
+    const r = await session.run(`await openTab(${JSON.stringify(url)})`);
+    expect(r.errorCode).toBe('ACTION_DENIED');
+    expect(gateServer.requests).toHaveLength(1);
+    expect(gateServer.requests[0]).toMatchObject({ action: 'open', host: '127.0.0.1', url, irreversible: false });
+    expect(await fingerprint()).toBe(before); // 탭이 하나도 늘지 않았다
+    expect((await d.listTabs()).filter(isMine)).toEqual([]);
+  });
 });

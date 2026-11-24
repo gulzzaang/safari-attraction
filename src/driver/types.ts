@@ -46,6 +46,7 @@ export type SafariErrorCode =
   | "SCREEN_CAPTURE_DENIED"
   | "WINDOW_CLOSED"
   | "ACTION_DENIED"
+  | "NOT_ALLOWED"
   | "SAFARI_ERROR";
 
 export class SafariError extends Error {

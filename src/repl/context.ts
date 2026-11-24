@@ -83,10 +83,12 @@ const errorText = (e: unknown): string => {
  * Aside 의 repl 처럼 자바스크립트를 돌리는 세션. node:vm 컨텍스트 하나를 세션 내내 쓰므로 최상위 const/let/함수가
  * 다음 호출에도 남고, top-level await 가 된다. 호출은 겹쳐도 차례로 돈다.
  */
-export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGuide[]; gate?: ActionGate | null; noPermissionPrompts?: boolean } = {}): ReplSession {
+export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGuide[]; gate?: ActionGate | null; noPermissionPrompts?: boolean; unattended?: boolean } = {}): ReplSession {
   const guides = opts.guides ?? GUIDES;
   // 동작 관문(없으면 null — 아무것도 묻지 않는다)과 허락 창 없는 모드. 모든 Page 가 같은 것을 쓴다.
   const pageOpts: PageOptions = { gate: opts.gate ?? null, noPermissionPrompts: opts.noPermissionPrompts === true };
+  // 사람 없음 모드(SAFARI_ATTRACTION_UNATTENDED): 관문이 있으면 새 탭 · fetch 를 전부 묻고, 새 창(openAiWindow)은 열지 않는다.
+  const unattended = opts.unattended === true;
   const store = new SnapshotStore();
   const owned = new Set<string>();
   // 호출마다 출력 칸(slot)을 따로 둔다. AsyncLocalStorage 가 칸을 await · 타이머 · 드라이버 호출을 건너 따라가므로,
@@ -253,14 +255,19 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
   };
 
   // javascript: · data: · file: · blob: 처럼 웹 주소가 아닌 곳을 여는 일은 이동이 아니라 코드 실행 · 파일 열기일 수 있다 — 관문이 있으면 evaluate(알 수 없음)로 묻는다.
-  const gateOpenUrl = async (url: unknown): Promise<void> => {
+  // 사람 없음이면 웹 주소(about:blank 포함)로 새 탭을 여는 것도 「open」 으로 묻는다(openTab 만 — openAiWindow 는 아예 안 연다).
+  const gateOpenUrl = async (url: unknown, askWeb = false): Promise<void> => {
     const gate = opts.gate;
     const u = String(url);
-    if (!gate || !isNonWebDestination(u)) return;
+    if (!gate) return;
+    const nonWeb = isNonWebDestination(u);
+    if (!nonWeb && !(askWeb && unattended)) return;
     const resume = aiAccess.gateWait?.();
     let answer;
     try {
-      answer = await gate.check({ host: hostOf(u), url: "", action: "evaluate", target: clipTarget(u), value: "", irreversible: null });
+      answer = nonWeb
+        ? await gate.check({ host: hostOf(u), url: "", action: "evaluate", target: clipTarget(u), value: "", irreversible: null })
+        : await gate.check({ host: hostOf(u), url: u, action: "open", target: clipTarget(u), value: "", irreversible: false });
     } finally {
       resume?.();
     }
@@ -270,7 +277,7 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
   sandbox.openTab = async (url: string, opts: { waitUntil?: WaitUntil; timeout?: number } = {}): Promise<Page> => {
     if (disposed) throw new Error("openTab: 서버가 끝나는 중이라 탭을 열 수 없음");
     const more = extraWait(opts, "openTab"); // 잘못된 값이면 탭을 열기 전에 알린다
-    await gateOpenUrl(url);
+    await gateOpenUrl(url, true);
     const wait = openWait(opts);
     const backToFront = () => {
       log("고른 창이 닫혀서 맨 앞 창으로 돌아갑니다");
@@ -306,6 +313,7 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
 
   sandbox.openAiWindow = async (url: string = "about:blank", opts: { width?: number; height?: number; waitUntil?: WaitUntil; timeout?: number } = {}): Promise<Page> => {
     if (disposed) throw new Error("openAiWindow: 서버가 끝나는 중이라 창을 열 수 없음");
+    if (unattended) throw new SafariError("NOT_ALLOWED", "사람 없이 도는 일은 새 창을 열지 않아요");
     const more = extraWait(opts, "openAiWindow");
     await gateOpenUrl(url);
     const wait = openWait(opts);
@@ -461,8 +469,18 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
       clean.headers = o;
     }
     // GET · HEAD 가 아니면 페이지에 요청을 바꾸는 일이라 관문에 한 번 묻는다. 안쪽 evaluate 는 관문을 거치지 않는 길로 부른다(같은 일을 두 번 묻지 않게).
+    // 사람 없음이면 GET · HEAD 도 묻고(irreversible false), 호스트는 가려는 주소의 것이다(읽은 글의 속임수로 값을 남의 주소에 내보내는 길을 막으려고).
     const method = String(clean.method ?? "GET").trim() || "GET";
-    if (fetchIsIrreversible(method)) await pg[GATE_ASK]("fetch", `${method.toUpperCase()} ${String(url)}`, "", true);
+    const irreversible = fetchIsIrreversible(method);
+    if (unattended) {
+      let dest = String(url);
+      try {
+        dest = new URL(dest, pg.url() || undefined).href;
+      } catch {
+        // 주소로 못 읽으면 받은 글 그대로(호스트는 빈 글 — 앱이 거절한다)
+      }
+      await pg[GATE_ASK]("fetch", `${method.toUpperCase()} ${String(url)}`, "", irreversible, dest);
+    } else if (irreversible) await pg[GATE_ASK]("fetch", `${method.toUpperCase()} ${String(url)}`, "", true);
     const r = await pg[RAW_EVALUATE]<{ status: number; ok: boolean; statusText: string; url: string; headers: Record<string, string>; body: string }>(IN_PAGE_FETCH, {
       url: String(url),
       init: clean,

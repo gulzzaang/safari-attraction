@@ -78,6 +78,7 @@ export function opError(op: string, e: unknown): SafariError {
   if (e instanceof HostError) {
     const msg = e.message;
     if (e.code === "SAFARI_NOT_RUNNING") return new SafariError("SAFARI_NOT_RUNNING", msg);
+    if (e.code === "NOT_ALLOWED") return new SafariError("NOT_ALLOWED", msg);
     if (e.number === -1743 || /-1743/.test(msg)) return new SafariError("AUTOMATION_DENIED", msg);
     if (/Apple Events|Apple 이벤트/i.test(msg) && /JavaScript/i.test(msg)) return new SafariError("JS_FROM_APPLE_EVENTS_OFF", msg);
     if ((isRunJs(op) || op === "closeTab") && (e.number === -1728 || /Can't get|Invalid index|가져올 수 없/i.test(msg))) {
@@ -91,9 +92,10 @@ export function opError(op: string, e: unknown): SafariError {
 /** 드라이버가 호스트에 바라는 것(시험에서는 가짜로 바꿔 끼운다). */
 export type HostLike = Pick<JxaHost, "call" | "close">;
 
-export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLike; /** 알릴 것(기본은 표준 오류 출력). */ warn?: (line: string) => void } = {}): SafariDriver {
+export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLike; /** 알릴 것(기본은 표준 오류 출력). */ warn?: (line: string) => void; /** 사람 없음 모드: 사파리를 켜지 않고 새 창을 열지 않는다. */ unattended?: boolean } = {}): SafariDriver {
   const warn = opts.warn ?? ((line: string) => void process.stderr.write(`${line}\n`));
   const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const unattended = opts.unattended === true;
   const host: HostLike = opts.host ?? new JxaHost(requestTimeoutMs);
   const withBudget = (loadBudgetMs: number | undefined, base?: number) => budgetTimeout(clampBudget(loadBudgetMs), base, requestTimeoutMs);
 
@@ -156,6 +158,8 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
   const toTab = (e: { raw: RawTab; key: string; owned: boolean }): TabInfo => ({ ...e.raw, key: e.key, owned: e.owned });
 
   async function launchSafari(): Promise<void> {
+    // 사람 없음: 꺼진 사파리를 켜지 않는다(켜면 맥 앞의 사람에게 창이 뜬다).
+    if (unattended) throw new SafariError("SAFARI_NOT_RUNNING", "사파리가 켜져 있지 않아요 — 사람 없이 도는 일은 사파리를 켜지 않아요");
     await execFileP("open", ["-g", "-a", "Safari"]);
     const t0 = Date.now();
     while (Date.now() - t0 < LAUNCH_WAIT_MS) {
@@ -261,7 +265,8 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     async openTab(url, o = {}) {
       const before = await frontBundleId();
       const key = registry.nextKey();
-      const args = { url, windowId: o.windowId, key: registry.markerOf(key), loadBudgetMs: clampBudget(o.loadBudgetMs) }; // 페이지에는 서버마다 다른 표시를 적는다
+      // 페이지에는 서버마다 다른 표시를 적는다. 사람 없음이면 열린 창이 없을 때 새 창을 만들지 않게 호스트에 알린다.
+      const args = { url, windowId: o.windowId, key: registry.markerOf(key), loadBudgetMs: clampBudget(o.loadBudgetMs), ...(unattended ? { noNewWindow: true } : {}) };
       let raw: RawTab & { stamped: boolean; windowUrls?: string[]; around?: Around };
       try {
         raw = await call("openTab", args, withBudget(o.loadBudgetMs));
@@ -279,6 +284,7 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     },
 
     async openWindow(url, o = {}) {
+      if (unattended) throw new SafariError("NOT_ALLOWED", "사람 없이 도는 일은 새 창을 열지 않아요");
       const before = await frontBundleId();
       const key = registry.nextKey();
       const args = { url, key: registry.markerOf(key), loadBudgetMs: clampBudget(o.loadBudgetMs) };

@@ -625,6 +625,12 @@ const ops = {
     } else {
       const wins = normalWindows();
       if (wins.length === 0) {
+        if (args.noNewWindow) {
+          // 사람 없음 모드: 열린 창이 없으면 새 창을 만들지 않는다.
+          const err = new Error("사람 없이 도는 일은 새 창을 열지 않아요");
+          err.hostCode = "NOT_ALLOWED";
+          throw err;
+        }
         Safari.make({ new: "document", withProperties: { url: args.url } });
         nap(0.3);
         const again = normalWindows();
@@ -909,7 +915,7 @@ function handle(line) {
     writeLine({
       id: req.id,
       ok: false,
-      error: { message: String((e && e.message) || e), number: e && e.errorNumber },
+      error: { message: String((e && e.message) || e), number: e && e.errorNumber, code: e && e.hostCode },
     });
   }
 }

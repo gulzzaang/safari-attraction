@@ -8,7 +8,8 @@ export const GUIDE_KO: Record<SafariErrorCode, string> = {
   AUTOMATION_DENIED:
     "이 앱이 사파리를 조작하도록 허락받지 못했어요. 시스템 설정 → 개인정보 보호 및 보안 → 자동화 에서 이 서버를 실행한 앱(터미널 · Claude 등)의 Safari 를 켜 주세요. " +
     "허락 창이 한 번 떴는데 거부했다면 이 목록에서 다시 켜야 해요.",
-  SAFARI_NOT_RUNNING: "사파리가 꺼져 있어요. 사파리를 켜 주세요(openTab 은 사파리를 뒤에서 켜 보지만, 켜지 못하면 직접 켜야 해요).",
+  SAFARI_NOT_RUNNING:
+    "사파리가 꺼져 있어요. 사파리를 켜 주세요(openTab 은 사파리를 뒤에서 켜 보지만, 켜지 못하면 직접 켜야 해요). 사람 없이 도는 일은 사파리를 켜지 않아요 — 그때는 이 일을 멈추고 사파리가 꺼져 있다고 알리세요.",
   TAB_CLOSED: "그 탭이 이미 닫혔거나 사라졌어요. listBrowserTabs() 로 지금 있는 탭을 보고 openTab · attachBrowserTab 으로 다시 여세요.",
   ALERT_BLOCKED: "그 탭에 경고창(alert · confirm · 인쇄 창 등)이 떠서 사파리가 답하지 못해요. 사파리에서 그 창을 닫아 주세요.",
   TIMEOUT: "시간 안에 끝나지 않았어요. 페이지가 느리거나 사파리가 바쁜 것일 수 있으니 잠시 뒤 다시 해 보세요.",
@@ -16,6 +17,7 @@ export const GUIDE_KO: Record<SafariErrorCode, string> = {
     "화면 찍기 권한이 없어요. 시스템 설정 → 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 Claude 를 띄운 앱(터미널 · Claude 등)을 켜고, 그 앱을 다시 켜 주세요.",
   WINDOW_CLOSED: "AI 전용 창이 닫혔어요. openAiWindow() 로 다시 열 수 있어요.",
   ACTION_DENIED: "사용자가 이 동작을 허락하지 않았어요. 같은 동작을 되풀이하지 말고, 다른 방법을 찾거나 지금까지 한 일을 정리해 끝내세요.",
+  NOT_ALLOWED: "사람 없이 도는 일에서는 이 동작을 하지 않아요(새 창 열기 등). 이미 열린 사파리 창 안에서 읽기만 하세요 — 같은 동작을 되풀이하지 말고 지금까지 읽은 것을 정리해 끝내세요.",
   SAFARI_ERROR: "사파리가 오류를 돌려줬어요.",
 };
 

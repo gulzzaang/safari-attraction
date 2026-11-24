@@ -11,7 +11,7 @@ import net from "node:net";
 import { SafariError } from "../driver/types.js";
 import { isIrreversibleText } from "./classify.js";
 
-export type GateAction = "click" | "fill" | "check" | "uncheck" | "select" | "press" | "type" | "evaluate" | "fetch" | "goto" | "nav";
+export type GateAction = "click" | "fill" | "check" | "uncheck" | "select" | "press" | "type" | "evaluate" | "fetch" | "goto" | "nav" | "open";
 
 /** 관문에 묻는 내용(토큰 · id 는 손님이 붙인다). */
 export type GateRequest = {
@@ -74,6 +74,14 @@ export function isNonWebDestination(url: string): boolean {
 /** SAFARI_ATTRACTION_NO_PERMISSION_PROMPTS=1 이면 맥 허락 창이 뜰 수 있는 일(화면 기록 등)을 미리 확인하고 안 한다. */
 export function noPermissionPromptsFromEnv(env: NodeJS.ProcessEnv): boolean {
   return env.SAFARI_ATTRACTION_NO_PERMISSION_PROMPTS === "1";
+}
+
+/**
+ * SAFARI_ATTRACTION_UNATTENDED=1 이면 「사람 없음」 모드: 사람이 맥 앞에 없이 도는 일이라 ① 관문이 있으면 모든 새 탭 · 이동 · fetch 를 묻고
+ * ② 사파리가 꺼져 있어도 켜지 않으며 ③ 새 창(openAiWindow)을 열지 않는다. 환경값이 없으면 지금과 같다.
+ */
+export function unattendedFromEnv(env: NodeJS.ProcessEnv): boolean {
+  return env.SAFARI_ATTRACTION_UNATTENDED === "1";
 }
 
 const deny = (reason: string): GateAnswer => ({ allow: false, reason });

@@ -210,19 +210,20 @@ Finder 에서 `사파리-어트랙션` 폴더를 열어 파일을 메모장이�
 
 ## 앱 관문(개발자용)
 
-사파리 앱(옆 창)이 일을 맡길 때, 서버는 페이지를 바꾸는 동작 직전에 앱에 허락을 묻는다. 환경값 네 개로 켠다.
+사파리 앱(옆 창)이 일을 맡길 때, 서버는 페이지를 바꾸는 동작 직전에 앱에 허락을 묻는다. 환경값 다섯 개로 켠다.
 
 | 환경값 | 뜻 |
 | --- | --- |
 | `SAFARI_ATTRACTION_GATE` | 앱이 연 유닉스 소켓 경로. 이 값이 있어야 관문이 켜진다 |
 | `SAFARI_ATTRACTION_GATE_TOKEN` | 요청마다 붙는 64자 16진 토큰(틀리면 앱이 거절하고 끊는다) |
 | `SAFARI_ATTRACTION_NO_PERMISSION_PROMPTS=1` | 맥 허락 창이 뜰 수 있는 일(화면 기록)을 미리 확인하고, 안 되면 창을 띄우지 않고 오류를 낸다 |
+| `SAFARI_ATTRACTION_UNATTENDED=1` | 「사람 없음」 모드(예약 루틴용). 아래 「사람 없음 모드」 참고 |
 | `SAFARI_ATTRACTION_HOME` | 기억 폴더(앱은 `~/Library/Application Support/SafariAttractionApp/memory`) |
 
 동작 하나마다 소켓에 한 줄 JSON 을 보내고 한 줄 답을 받는다.
 
 ```json
-{"v":1,"token":"…","id":"<무작위>","host":"www.coupang.com","url":"https://…","action":"click|fill|check|uncheck|select|press|type|evaluate|fetch|goto|nav","target":"…(120자까지)","value":"…(40자까지) 또는 (비밀)","irreversible":true}
+{"v":1,"token":"…","id":"<무작위>","host":"www.coupang.com","url":"https://…","action":"click|fill|check|uncheck|select|press|type|evaluate|fetch|goto|nav|open","target":"…(120자까지)","value":"…(40자까지) 또는 (비밀)","irreversible":true}
 {"id":"…","allow":true}
 {"id":"…","allow":false,"reason":"한국어 이유"}
 ```
@@ -237,6 +238,16 @@ Finder 에서 `사파리-어트랙션` 폴더를 열어 파일을 메모장이�
   - `reload` · 뒤로 · 앞으로 는 늘 허락(이동)이라, POST 로 받은 결과 페이지를 `reload` 하면 폼이 다시 보내질 수 있다.
   - 사이트 모드(읽기만 · 묻고 하기 · 다 허락)는 호스트가 정확히 같을 때만 적용된다(`coupang.com` 과 `www.coupang.com` 은 다른 사이트).
   - `goto` · `openTab` · `openAiWindow` 로 `javascript:` · `data:` · `file:` · `blob:` 같은 웹 주소가 아닌 곳을 열려 하면 이동이 아니라 `evaluate`(`irreversible: null`)로 묻는다. `evaluate` 식에 결제 · 삭제 낱말이 있으면 `irreversible: true` 로 묻는다(다 허락인 사이트에서도 카드가 뜬다).
+
+### 사람 없음 모드
+
+`SAFARI_ATTRACTION_UNATTENDED=1` 은 사람이 맥 앞에 없이 도는 일(예약 루틴)을 위한 모드다. 환경값이 없으면 지금과 똑같다.
+
+- **관문이 있으면 모든 이동 · 새 탭 · 요청을 묻는다.** `openTab`(웹 주소 · `about:blank` 포함)은 `action: "open"`, `goto` 는 `goto`, `reload` · 뒤로 · 앞으로 는 `nav`, 페이지 안 `fetch` 는 GET · HEAD 도 `fetch`(`irreversible: false`, 바꾸는 메서드는 지금처럼 `true`)로 묻는다. 거절이면 탭을 열지도 요청을 보내지도 않는다. `javascript:` 같은 웹 아닌 주소는 지금처럼 `evaluate`(`null`)로 묻는다.
+- **`fetch` 의 `host` 는 지금 페이지가 아니라 가려는 주소의 호스트**다(읽은 글의 속임수로 값을 남의 사이트에 내보내는 길을 앱이 호스트로 막을 수 있게). 사람 없음이 아닐 때는 지금처럼 지금 페이지의 호스트로 묻는다.
+- **사파리를 켜지 않는다.** 꺼져 있으면 `openTab` 은 `open -g -a Safari` 를 부르지 않고 `SAFARI_NOT_RUNNING`(「사파리가 켜져 있지 않아요 — 사람 없이 도는 일은 사파리를 켜지 않아요」)을 낸다. 열린 창이 하나도 없을 때 `openTab` 이 새 창을 만드는 일도 막는다(`NOT_ALLOWED`).
+- **새 창을 열지 않는다.** `openAiWindow` 는 관문이 없어도 `NOT_ALLOWED`(「사람 없이 도는 일은 새 창을 열지 않아요」)다.
+- 한계: `fetch` 가 따라가는 리다이렉트의 도착지는 서버가 볼 수 없다(처음 주소의 호스트만 묻는다). 읽기 전용으로 확실한 `evaluate` 식은 여기서도 묻지 않는다.
 
 ## 사파리 앱(시험판)
 

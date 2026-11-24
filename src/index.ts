@@ -2,6 +2,7 @@
 import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createJxaDriver } from "./driver/jxa-driver.js";
+import { unattendedFromEnv } from "./gate/gate.js";
 import { runCli } from "./cli.js";
 import { installProcessGuards } from "./guards.js";
 import { createSafariServer } from "./server.js";
@@ -11,7 +12,7 @@ const SHUTDOWN_MS = 8000;
 
 /** MCP 서버로 동작한다(표준입출력). */
 async function serve(): Promise<void> {
-  const driver = createJxaDriver();
+  const driver = createJxaDriver({ unattended: unattendedFromEnv(process.env) });
   const { server, shutdown, handleStray } = createSafariServer(driver);
 
   let closing = false;
