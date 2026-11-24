@@ -135,6 +135,18 @@ describe("남의 표시가 있는 사용자 탭의 이동 확인", () => {
     expect(await keyOf(d)).toBe(key);
   });
 
+  test("동작 사이에 사용자가 같은 창에 탭을 더 열어도(창 모습이 달라져도) 같은 탭으로 이어 쓴다 — 표시 없는 탭과 같다", async () => {
+    const h = foreignWindow();
+    const d = driverOn(h);
+    const key = await keyOf(d);
+    await d.runJs(key, "1");
+    tabsOf(h).push(h.newTab("http://user.example/late")); // 사용자가 탭을 하나 더 열었다
+    expect(await d.settleTab(key, FAST)).toMatchObject({ navigated: false });
+    expect(await d.runJs(key, "2")).toBe("2");
+    expect(await keyOf(d)).toBe(key);
+    expect(markers(h)[0]).toBe(FOREIGN);
+  });
+
   test("새 문서가 떠 남의 표시가 사라지면 이동으로 보고 우리 표시를 적는다", async () => {
     const h = foreignWindow();
     const d = driverOn(h);

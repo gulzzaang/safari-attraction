@@ -131,6 +131,12 @@ function isForeignMarker(marker, args) {
   return args.foreignOk === true && marker !== "" && marker !== args.key && typeof args.instance === "string" && args.instance !== "" && !String(marker).endsWith("." + args.instance);
 }
 
+// 남의 표시가 남은 탭을 우리가 쓰는 탭으로 받아들여도 되는가 — 표시 없는 탭과 같다: 주소가 기록한 주소(또는 대신 받아들일 주소)와 같거나(runJs · 확인 글과 같은 기준), 창 모습(탭 수 · 이웃 주소)이 마지막 확인과 같을 때(mayStamp).
+// 사용자가 같은 창에 탭을 더 열어 창 모습이 달라져도 주소가 그대로면 같은 탭이다. 우리 표시이면 false(그건 따로 본다).
+function foreignHere(marker, url, args) {
+  return marker !== args.key && isForeignMarker(marker, args) && (urlIs(url, args) || mayStamp(args, url));
+}
+
 function guardTab(args) {
   if (args.urlOnly) {
     let tab;
@@ -220,7 +226,7 @@ function settleFast(args) {
   }
   if (!r || typeof r.href !== "string" || r.href === "") return null;
   // 남의 표시가 남은 탭(표시 없는 탭과 같이 다룬다): 창 모습 · 주소가 그대로일 때만 같은 문서로 본다. 우리 표시를 적지 않는다.
-  const foreign = r.m !== args.key && isForeignMarker(r.m, args) && mayStamp(args, r.href);
+  const foreign = foreignHere(r.m, r.href, args);
   if (r.m !== args.key && !foreign) return null;
   let isActive;
   try {
@@ -269,7 +275,7 @@ function finishRebind(args, tab) {
     const again = probeTab(args.windowId, args.index);
     if (!again) return { status: "gone" };
     // 남의 표시가 적힌 새 문서(다른 서버가 먼저 적었다)는 표시 없는 탭과 같이 자리 · 모습으로 확인하고, 덮어쓰지 않는다 — 표시를 못 적은 것(stamped:false)으로 돌려준다.
-    if (again.marker !== "" && again.marker !== args.key && !(isForeignMarker(again.marker, args) && mayStamp(args, again.url))) return { status: "other" };
+    if (again.marker !== "" && again.marker !== args.key && !foreignHere(again.marker, again.url, args)) return { status: "other" };
     if (again.marker === "" && !mayStamp(args, again.url)) return { status: "gone" }; // 기다리는 사이 사용자 탭이 그 자리로 밀려 왔을 수 있다
     if (again.marker !== "" && again.marker !== args.key) break;
     stampTab(tab, args.key);
@@ -567,8 +573,8 @@ const ops = {
     const p0 = probeTab(args.windowId, args.index);
     if (!p0) return { status: "gone" };
     // 남의 표시가 남은 탭은 표시 없는 탭과 같이 다룬다(자리 · 모습으로 확인) — 옛 문서가 아직 떠 있는 동안은 그 표시가 「옛 문서」의 신호다.
-    const foreign = p0.marker !== args.key && isForeignMarker(p0.marker, args);
-    if (p0.marker !== "" && p0.marker !== args.key && !(foreign && mayStamp(args, p0.url))) return { status: "other" };
+    const foreign = foreignHere(p0.marker, p0.url, args);
+    if (p0.marker !== "" && p0.marker !== args.key && !foreign) return { status: "other" };
     if (p0.marker === "" && !mayStamp(args, p0.url)) return { status: "gone" };
     const tab = p0.tab;
     const t0 = Date.now();
@@ -602,7 +608,7 @@ const ops = {
     if (quick) return quick;
     const p0 = probeTab(args.windowId, args.index);
     if (!p0) return { status: "gone" };
-    const foreign = p0.marker !== args.key && isForeignMarker(p0.marker, args) && mayStamp(args, p0.url); // 남의 표시가 남은 탭은 표시 없는 탭과 같이 자리 · 모습으로 확인한다
+    const foreign = foreignHere(p0.marker, p0.url, args); // 남의 표시가 남은 탭은 표시 없는 탭과 같이 확인한다
     if (p0.marker !== "" && p0.marker !== args.key && !foreign) return { status: "other" };
     if (p0.marker === args.key || foreign) {
       const win = Safari.windows.byId(args.windowId);
