@@ -17,6 +17,27 @@ public enum SiteList {
         return out
     }
 
+    /// 사람이 목록 칸에 직접 친 한 줄(`docs.rs` · `https://www.coupang.com/np/search`)을 목록 항목으로. 쓸 수 없으면 nil.
+    /// 글에서 도메인을 찾는 `extractHosts` 와 달리 파일 확장자처럼 보이는 끝(`.rs` 등)도 받는다(사람이 직접 쳤으니). 주소의 길 · 쿼리 · 포트는 떼고,
+    /// 스킴 뒤 사용자 정보(`https://a.com@evil.com`)는 실제 호스트(`evil.com`)를 쓴다. 스킴 없는 `a.com@b.com` · 공백 · 점 없는 낱말 · 공개 접미사(`co.kr`)는 nil.
+    public static func entry(fromUserInput text: String) -> String? {
+        var t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasScheme = t.range(of: "://") != nil
+        if let r = t.range(of: "://") { t = String(t[r.upperBound...]) }
+        if let end = t.firstIndex(where: { "/?#".contains($0) }) { t = String(t[..<end]) }
+        if let at = t.lastIndex(of: "@") {
+            guard hasScheme else { return nil }
+            t = String(t[t.index(after: at)...])
+        }
+        if let colon = t.lastIndex(of: ":"), !t[t.index(after: colon)...].isEmpty, t[t.index(after: colon)...].allSatisfy(\.isASCII), t[t.index(after: colon)...].allSatisfy(\.isNumber) {
+            t = String(t[..<colon])
+        }
+        let host = stripPrefixes(normalize(t))
+        guard isUsableEntry(host), host.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-") }),
+              !host.hasPrefix("."), !host.contains("..") else { return nil }
+        return host
+    }
+
     /// `host` 가 목록의 어느 항목과 같거나 그 아래 도메인이면 true.
     /// 목록의 `coupang.com` 은 `coupang.com` · `www.coupang.com` · `m.coupang.com` 을 허락하고 `evilcoupang.com` 은 허락하지 않는다.
     /// 대소문자 · 끝 점은 무시하고, 빈 호스트 · `/ ? # @ :` 나 공백이 든 호스트는 언제나 false.

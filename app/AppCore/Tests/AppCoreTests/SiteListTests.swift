@@ -116,4 +116,21 @@ final class SiteListTests: XCTestCase {
     func testMoreFileNamesAreNotHosts() {
         XCTAssertEqual(SiteList.extractHosts(from: "index.html style.css main.php lib.rs App.kt Main.java Cargo.toml a.rtf b.xml c.cpp x.htm"), [])
     }
+
+    func testEntryFromUserInput() {
+        XCTAssertEqual(SiteList.entry(fromUserInput: "coupang.com"), "coupang.com")
+        XCTAssertEqual(SiteList.entry(fromUserInput: "  WWW.Coupang.com. "), "coupang.com")
+        XCTAssertEqual(SiteList.entry(fromUserInput: "https://www.coupang.com/np/search?q=a"), "coupang.com")
+        XCTAssertEqual(SiteList.entry(fromUserInput: "docs.rs"), "docs.rs")            // 글에서는 안 뽑는 .rs 도 사람이 치면 받는다
+        XCTAssertEqual(SiteList.entry(fromUserInput: "https://docs.rs/serde"), "docs.rs")
+        XCTAssertEqual(SiteList.entry(fromUserInput: "example.com:8080"), "example.com")
+        XCTAssertEqual(SiteList.entry(fromUserInput: "https://coupang.com@evil.com/"), "evil.com")   // 실제 호스트
+        XCTAssertNil(SiteList.entry(fromUserInput: "coupang.com@evil.com"))
+        XCTAssertNil(SiteList.entry(fromUserInput: ""))
+        XCTAssertNil(SiteList.entry(fromUserInput: "com"))
+        XCTAssertNil(SiteList.entry(fromUserInput: "co.kr"))
+        XCTAssertNil(SiteList.entry(fromUserInput: "a b.com"))
+        XCTAssertNil(SiteList.entry(fromUserInput: "javascript:alert(1)"))
+        XCTAssertNil(SiteList.entry(fromUserInput: "..com"))
+    }
 }

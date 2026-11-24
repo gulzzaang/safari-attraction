@@ -326,12 +326,11 @@ struct RoutinesView: View {
     }
 
     private func addSite() {
-        let hosts = SiteList.extractHosts(from: newSite)
-        guard !hosts.isEmpty else {
+        guard let host = SiteList.entry(fromUserInput: newSite) else {
             siteError = "사이트 주소를 알아보지 못했어요 (예: coupang.com). co.kr 같은 끝 주소만으로는 추가할 수 없어요"
             return
         }
-        for h in hosts where !(draft?.sites.contains(h) ?? true) { draft?.sites.append(h) }
+        if !(draft?.sites.contains(host) ?? true) { draft?.sites.append(host) }
         draft?.sitesEdited = true
         newSite = ""
         siteError = nil

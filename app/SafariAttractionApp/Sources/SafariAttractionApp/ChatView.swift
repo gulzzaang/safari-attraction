@@ -51,7 +51,8 @@ struct ChatView: View {
     @State private var savingName: String?
     @State private var saveNotice: String?
 
-    private var busy: Bool { vm.isRunning || agent.isRunning }
+    /// 사람이 하는 일(묻기 · 일 맡기기)이 도는 중. 배경에서 도는 루틴은 모드 바꾸기를 막지 않는다(일 맡기기 입력만 잠근다).
+    private var busy: Bool { vm.isRunning || (agent.isRunning && !agent.isRoutineRunning) }
 
     var body: some View {
         VStack(spacing: 0) {
