@@ -8,12 +8,25 @@ import Darwin
 final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     static let appOffMessage = "사파리-어트랙션 앱을 켜 주세요(메뉴 막대 나침반)"
     static let badLinkMessage = "앱의 연결 정보가 올바르지 않아요 — 앱을 껐다 켜 주세요"
+    static let unknownRequestMessage = "알 수 없는 요청이에요"
     static let relativePath = "/Library/Application Support/SafariAttractionApp/panel-link.json"
 
     func beginRequest(with context: NSExtensionContext) {
         let response = NSExtensionItem()
-        response.userInfo = [SFExtensionMessageKey: Self.linkReply()]
+        let item = context.inputItems.first as? NSExtensionItem
+        let message = item?.userInfo?[SFExtensionMessageKey]
+        // 정해진 요청(getLink)에만 연결 정보를 준다. 그 밖의 요청은 오류.
+        let reply: [String: Any] = Self.isGetLink(message) ? Self.linkReply() : ["error": Self.unknownRequestMessage]
+        response.userInfo = [SFExtensionMessageKey: reply]
         context.completeRequest(returningItems: [response], completionHandler: nil)
+    }
+
+    /// `{ type: "getLink" }` — 사파리 버전에 따라 `{ message: { type: "getLink" } }` 로 한 겹 싸여 올 수 있어 둘 다 받는다.
+    static func isGetLink(_ message: Any?) -> Bool {
+        guard let dict = message as? [String: Any] else { return false }
+        if dict["type"] as? String == "getLink" { return true }
+        if let inner = dict["message"] as? [String: Any], inner["type"] as? String == "getLink" { return true }
+        return false
     }
 
     /// 샌드박스 안에서 `NSHomeDirectory()` · `homeDirectoryForCurrentUser` 는 컨테이너 경로다. 진짜 홈은 사용자 DB 에서 읽는다.

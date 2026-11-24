@@ -81,3 +81,16 @@ test("/info 는 loggedIn 이 null 일 수 있고 모르는 키는 버린다", ()
   assert.deepEqual(L.toInfoMessage({ cli: "x", cliName: "엑스", model: "M", loggedIn: false }).loggedIn, false);
   assert.deepEqual(L.toInfoMessage(null), { t: "info", cli: null, cliName: null, model: null, loggedIn: null });
 });
+
+test("질문 번호: 지금 번호가 아닌 답 줄은 버린다(멈춘 뒤 · 새 질문 뒤 옛 줄)", () => {
+  const A = L.acceptForAsk;
+  assert.equal(A({ t: "delta", id: 2, text: "x" }, 2), true);
+  assert.equal(A({ t: "delta", id: 1, text: "옛" }, 2), false);
+  assert.equal(A({ t: "done", id: 1 }, 2), false);
+  assert.equal(A({ t: "error", id: 3, message: "x" }, 2), false);
+  assert.equal(A({ t: "delta", id: 2, text: "x" }, null), false); // 멈춤 뒤
+  assert.equal(A({ t: "delta", text: "번호 없음" }, 2), false);
+  assert.equal(A({ t: "info", cliName: "클로드" }, null), true);
+  assert.equal(A({ t: "info-error", message: "x" }, 2), true);
+  assert.equal(A(null, 1), false);
+});

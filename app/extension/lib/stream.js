@@ -88,6 +88,19 @@
     };
   }
 
+  /**
+   * 패널 쪽 거르개 — 답 줄(delta · done · error)은 지금 묻기 번호와 같을 때만 받는다(멈춘 뒤 · 새 질문 뒤에 늦게 온 옛 줄 버림).
+   * 그 밖의 메시지(info 등)는 번호와 상관없이 받는다. `currentId` 가 null 이면(묻는 중이 아님) 답 줄은 모두 버린다.
+   */
+  function acceptForAsk(msg, currentId) {
+    if (!msg || typeof msg !== "object") return false;
+    if (msg.t === "delta" || msg.t === "done" || msg.t === "error") {
+      return currentId !== null && currentId !== undefined && msg.id === currentId;
+    }
+    return true;
+  }
+
+  lib.acceptForAsk = acceptForAsk;
   lib.scrub = scrub;
   lib.NdjsonReader = NdjsonReader;
   lib.parseLine = parseLine;

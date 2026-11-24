@@ -232,7 +232,9 @@ if mkdir -p "$INSTALL_DIR" \
   for attempt in 1 2 3; do
     pluginkit -a "$INSTALLED/Contents/PlugIns/$EXT_NAME.appex" || echo "경고: pluginkit -a 가 실패했어요(시도 $attempt)" >&2
     sleep 3
-    if pluginkit -m -i "$EXT_ID" 2>/dev/null | grep -q "$EXT_ID"; then EXT_REGISTERED=1; break; fi
+    # 목록을 먼저 변수에 담고 본다(pipefail 아래 `| grep -q` 는 grep 이 일찍 끝나 SIGPIPE 로 「없음」 으로 잘못 보일 수 있다).
+    EXT_LISTED="$(pluginkit -m -i "$EXT_ID" 2>/dev/null || true)"
+    if [[ "$EXT_LISTED" == *"$EXT_ID"* ]]; then EXT_REGISTERED=1; break; fi
   done
   if [[ "$EXT_REGISTERED" == "1" ]]; then
     echo "사파리 확장 등록함 — 사파리 설정 → 확장 → 「사파리-어트랙션」 (켜는 법은 app/README.md)"

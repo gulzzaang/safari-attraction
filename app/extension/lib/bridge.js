@@ -179,6 +179,25 @@
     return { info, ask, getLink };
   }
 
+  /** 패널 묻기 번호 — 정수만(없으면 0). */
+  function askIdOf(msg) {
+    return msg && Number.isSafeInteger(msg.id) ? msg.id : 0;
+  }
+
+  /**
+   * 패널이 보낸 묻기를 서버로 보낼 모양으로 다시 다듬는다(모르는 키는 버린다): { id, body: { question, webSearch, page? } }.
+   * 질문이 비었으면 null.
+   */
+  function sanitizeAsk(msg) {
+    const question = msg && typeof msg.question === "string" ? msg.question.trim().slice(0, 20000) : "";
+    if (!question) return null;
+    const body = { question, webSearch: msg.webSearch === true };
+    if (msg.page && typeof msg.page === "object") body.page = lib.buildPage(msg.page);
+    return { id: askIdOf(msg), body };
+  }
+
+  lib.askIdOf = askIdOf;
+  lib.sanitizeAsk = sanitizeAsk;
   lib.BridgeError = BridgeError;
   lib.validLink = validLink;
   lib.createBridge = createBridge;

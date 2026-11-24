@@ -282,3 +282,15 @@ test("요청 머리는 X-SA-Token · Content-Type 만(미리 확인이 허락하
   assert.ok(!("cache" in t.calls[0].init));
   assert.ok(!("credentials" in t.calls[0].init) || t.calls[0].init.credentials === undefined);
 });
+
+test("sanitizeAsk: 번호 · 질문 · page 만 남기고 모르는 키는 버린다", () => {
+  const r = L.sanitizeAsk({ t: "ask", id: 7, question: "  뭐?  ", webSearch: true, page: { title: "t", url: "u", selection: "", text: "x", evil: 1 }, token: "x", extra: 1 });
+  assert.equal(r.id, 7);
+  assert.deepEqual(Object.keys(r.body).sort(), ["page", "question", "webSearch"]);
+  assert.equal(r.body.question, "뭐?");
+  assert.deepEqual(Object.keys(r.body.page).sort(), ["selection", "text", "title", "url"]);
+  assert.equal(L.sanitizeAsk({ question: "   " }), null);
+  assert.equal(L.sanitizeAsk(null), null);
+  assert.equal(L.sanitizeAsk({ question: "q", id: "7" }).id, 0);
+  assert.equal(L.sanitizeAsk({ question: "q", webSearch: "yes" }).body.webSearch, false);
+});

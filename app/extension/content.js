@@ -17,6 +17,8 @@
   let openedSelection = "";
   let previousFocus = null;
   let answering = false;
+  let askCounter = 0;      // 묻기 번호(질문마다 +1)
+  let currentAskId = null; // 지금 답을 기다리는 묻기 번호(없으면 null)
   let answerText = "";
   let renderQueued = false;
   let includePagePref = true;
@@ -221,6 +223,7 @@
     port.onMessage.addListener(onPortMessage);
     port.onDisconnect.addListener(() => {
       port = null;
+      currentAskId = null;
       if (answering) { setAnswering(false); setStatus(lib.errorText("disconnected"), true); }
     });
     port.postMessage({ t: "info" });
@@ -228,6 +231,7 @@
 
   function onPortMessage(msg) {
     if (!ui || !msg) return;
+    if (!lib.acceptForAsk(msg, currentAskId)) return; // 멈춘 뒤 · 새 질문 뒤에 늦게 온 옛 줄
     switch (msg.t) {
       case "info": {
         const parts = [msg.cliName, msg.model].filter((s) => typeof s === "string" && s);
@@ -243,11 +247,13 @@
         if (typeof msg.text === "string") { answerText += msg.text; queueRender(); }
         break;
       case "done":
+        currentAskId = null;
         setAnswering(false);
         setStatus("");
         renderAnswer();
         break;
       case "error":
+        currentAskId = null;
         setAnswering(false);
         setStatus(typeof msg.message === "string" ? msg.message : lib.errorText("disconnected"), true);
         renderAnswer();
@@ -265,11 +271,13 @@
     ui.answer.appendChild(h("div", "q", question));
     ui.answer.appendChild(h("div", "a", ""));
     answerText = "";
+    const id = ++askCounter;
+    currentAskId = id;
     ui.input.value = "";
     setStatus("답을 기다리는 중…");
     setAnswering(true);
     try {
-      port.postMessage({ t: "ask", question, page, webSearch: ui.webBox.checked });
+      port.postMessage({ t: "ask", id, question, page, webSearch: ui.webBox.checked });
     } catch (_) {
       setAnswering(false);
       setStatus(lib.errorText("disconnected"), true);
@@ -277,6 +285,7 @@
   }
 
   function cancel() {
+    currentAskId = null;
     if (port) { try { port.postMessage({ t: "cancel" }); } catch (_) { /* 무시 */ } }
     setAnswering(false);
     setStatus("멈췄어요.");
@@ -304,7 +313,7 @@
     if (port) { try { port.disconnect(); } catch (_) { /* 무시 */ } port = null; }
     if (host && host.parentNode) host.parentNode.removeChild(host);
     host = null; ui = null;
-    answering = false; answerText = ""; openedSelection = "";
+    answering = false; currentAskId = null; answerText = ""; openedSelection = "";
     const back = previousFocus;
     previousFocus = null;
     try { if (back && back.isConnected && typeof back.focus === "function") back.focus(); } catch (_) { /* 무시 */ }
@@ -315,6 +324,7 @@
   }
 
   ext.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!sender || sender.id !== ext.runtime.id) return false;
     if (msg && msg.t === "toggle") { toggle(); sendResponse({ ok: true }); }
     return false;
   });
