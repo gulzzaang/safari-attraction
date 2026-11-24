@@ -30,7 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 알림 허락은 여기서 묻지 않는다(「끝나면 알림」 을 켤 때만).
         let routineStore = RoutineStore(directory: support)
         let scheduler = RoutineScheduler(store: routineStore, runner: agent)
-        let hub = RoutineHub(store: routineStore, scheduler: scheduler, notifier: SystemRoutineNotifier(), preference: DefaultsNotifyPreference())
+        let hub = RoutineHub(store: routineStore, scheduler: scheduler, notifier: SystemRoutineNotifier(), preference: DefaultsNotifyPreference(),
+                             warmUpLoginPath: { _ = ShellPath.loginPath() })   // 루틴을 켤 때 · 「지금 한 번」 때 메인 밖에서 미리 읽는다
         let controller = SidePanelController(viewModel: vm, agent: agent, siteModes: siteModes, hub: hub, bridge: bridge)
         agent.onPendingCardChange = { [weak self] waiting in
             self?.controller?.setCardWaiting(waiting)

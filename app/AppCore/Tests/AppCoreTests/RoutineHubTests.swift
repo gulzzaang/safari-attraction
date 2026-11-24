@@ -205,7 +205,7 @@ final class RoutineHubTests: XCTestCase {
         await hub.handleWake()
         XCTAssertEqual(runner.calls, 0)
         try store.upsertRoutine(routine(task, createdAt: t0))
-        hub.shutdown()                                   // 시계는 꺼진 상태 — 깨어남 점검은 시계가 켜져 있을 때만 일한다
+        hub.scheduler.stop()                             // 시계는 꺼진 상태 — 깨어남 점검은 시계가 켜져 있을 때만 일한다
         await hub.handleWake()
         XCTAssertEqual(runner.calls, 0)
         hub.reconcile()
@@ -242,14 +242,15 @@ final class RoutineHubTests: XCTestCase {
         XCTAssertFalse(RoutineNotification.shouldNotify(rec(RoutineRecord.statusSkipped("다른 일이 도는 중이에요"))))
     }
 
-    func testNotificationTextIsOneLineAndShort() {
+    func testNotificationTextHasNoAnswerContent() {
         let long = String(repeating: "가", count: 300)
         let rec = RoutineRecord(at: Date(), routineID: UUID(), name: "쿠팡 사과", status: "끝남", answer: "첫 줄\n\n둘째 줄 " + long)
         XCTAssertEqual(RoutineNotification.title(for: rec), "루틴 「쿠팡 사과」 끝남")
         let body = RoutineNotification.body(for: rec)
         XCTAssertFalse(body.contains("\n"))
-        XCTAssertTrue(body.hasPrefix("첫 줄 둘째 줄"))
-        XCTAssertLessThanOrEqual(body.count, 121)
+        XCTAssertFalse(body.contains("첫 줄"), "알림 본문에는 클로드 답 · 읽은 내용을 넣지 않는다")
+        XCTAssertFalse(body.contains("가가가"))
+        XCTAssertEqual(body, "옆 창의 루틴 기록에서 볼 수 있어요")
         XCTAssertEqual(RoutineNotification.body(for: RoutineRecord(at: Date(), routineID: UUID(), name: "a", status: "끝남", answer: "")),
                        "옆 창의 루틴 기록에서 볼 수 있어요")
     }
@@ -309,6 +310,83 @@ final class RoutineHubTests: XCTestCase {
         XCTAssertEqual(notifier.delivered.count, 3)        // 건너뜀은 알리지 않고
         XCTAssertEqual(store.history().count, 5)           // 기록은 남는다
         XCTAssertEqual(notifier.requestCount, 1)           // 알림을 보낼 때 허락을 다시 묻지 않는다
+    }
+
+    @MainActor
+    func testDeliveredNotificationBodyHasNoClaudeAnswer() async throws {
+        let task = try addTask()
+        let r = try store.upsertRoutine(routine(task, enabled: false, createdAt: t0))
+        let (hub, _, runner) = makeHub(now: t0.addingTimeInterval(3600))
+        runner.outcome = RoutineOutcome(status: RoutineRecord.statusDone, answer: "비밀번호는 1234 입니다")
+        await hub.setNotify(true)
+        await hub.runNow(routineID: r.id)
+        XCTAssertEqual(notifier.delivered.count, 1)
+        XCTAssertFalse(notifier.delivered[0].body.contains("1234"))
+        XCTAssertFalse(notifier.delivered[0].title.contains("1234"))
+        XCTAssertEqual(notifier.delivered[0].title, "루틴 「쿠팡 사과」 끝남")
+    }
+
+    // MARK: 끝내는 중 (M1)
+
+    @MainActor
+    func testNothingRunsAfterShutdown() async throws {
+        let task = try addTask()
+        let r = try store.upsertRoutine(routine(task, createdAt: t0))
+        let (hub, _, runner) = makeHub(now: t0.addingTimeInterval(3600 + 60))   // 09:01 — 때가 됨
+        hub.shutdown()
+        hub.reconcile()
+        XCTAssertFalse(hub.scheduler.isTicking, "끝낸 뒤에는 시계를 되살리지 않는다")
+        let rec = await hub.runNow(routineID: r.id)
+        XCTAssertNil(rec)
+        XCTAssertFalse(hub.scheduler.isTicking)
+        await hub.handleWake()
+        _ = try hub.saveRoutine(routine(task, createdAt: t0))
+        XCTAssertFalse(hub.scheduler.isTicking)
+        XCTAssertEqual(runner.calls, 0)
+        XCTAssertEqual(store.history().count, 0)
+    }
+
+    // MARK: 로그인 셸 PATH 미리 읽기 (M2)
+
+    private final class CallCount: @unchecked Sendable {
+        private let lock = NSLock()
+        private var n = 0
+        private var main = false
+        func hit() { lock.withLock { n += 1; if Thread.isMainThread { main = true } } }
+        var count: Int { lock.withLock { n } }
+        var sawMain: Bool { lock.withLock { main } }
+    }
+
+    @MainActor
+    func testLoginPathIsWarmedWhenRoutineTurnedOnAndOnRunNowButNotAtLaunchOrWhenOff() async throws {
+        let task = try addTask()
+        let hits = CallCount()
+        let clock = HubClock(t0)
+        let scheduler = RoutineScheduler(store: store, runner: HubRunner(),
+                                         preflight: RoutinePreflight(safari: HubSafari(), automation: automation),
+                                         calendar: calendar, clock: { clock.now },
+                                         sleep: { _ in try? await Task.sleep(nanoseconds: 3_600_000_000_000) })
+        let hub = RoutineHub(store: store, scheduler: scheduler, notifier: notifier, preference: preference,
+                             clock: { clock.now }, warmUpLoginPath: { hits.hit() })
+        hubs.append(hub)
+        hub.launch()
+        let off = try hub.saveRoutine(routine(task, enabled: false, createdAt: t0))
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(hits.count, 0, "앱을 켤 때나 꺼진 루틴을 저장할 때는 읽지 않는다")
+        try hub.setEnabled(true, routineID: off.id)
+        try await waitFor { hits.count == 1 }
+        await hub.runNow(routineID: off.id)
+        try await waitFor { hits.count == 2 }
+        XCTAssertFalse(hits.sawMain, "메인 스레드 밖에서 읽는다")
+    }
+
+    @MainActor
+    private func waitFor(_ cond: @escaping @MainActor () -> Bool) async throws {
+        for _ in 0..<100 {
+            if cond() { return }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("조건이 되지 않았어요")
     }
 
     @MainActor

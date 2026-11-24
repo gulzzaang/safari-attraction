@@ -22,13 +22,8 @@ public enum RoutineNotification {
 
     public static func title(for record: RoutineRecord) -> String { "루틴 「\(record.name)」 \(record.status)" }
 
-    /// 답 앞부분을 한 줄로(없으면 안내 한 줄).
-    public static func body(for record: RoutineRecord) -> String {
-        let oneLine = record.answer.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }.joined(separator: " ")
-        if oneLine.isEmpty { return "옆 창의 루틴 기록에서 볼 수 있어요" }
-        return oneLine.count > 120 ? String(oneLine.prefix(120)) + "…" : oneLine
-    }
+    /// 알림 본문은 늘 같은 안내 한 줄 — 제목에 루틴 이름과 상태가 있고, 클로드 답 · 읽은 내용은 알림(잠금 화면 · 알림 센터)에 싣지 않는다.
+    public static func body(for record: RoutineRecord) -> String { "옆 창의 루틴 기록에서 볼 수 있어요" }
 }
 
 /// 화면이 쓰는 한 덩어리 — 저장한 일 · 루틴 · 기록(`RoutineStore`)과 앱 안 시계(`RoutineScheduler`)를 묶고,
@@ -50,9 +45,15 @@ public final class RoutineHub {
     @ObservationIgnored private let notifier: RoutineNotifying
     @ObservationIgnored private let preference: NotifyPreferenceStoring
     @ObservationIgnored private let clock: @MainActor () -> Date
+    /// 로그인 셸 PATH 를 미리 읽어 캐시해 두는 일(메인 밖에서 부른다). 사람 없는 시각의 첫 실행이 `zsh -lic` 를 처음 부르지 않게.
+    @ObservationIgnored private let warmUpLoginPath: @Sendable () -> Void
+    /// `shutdown()` 뒤에는 시계를 되살리거나 루틴을 돌리지 않는다.
+    @ObservationIgnored private var isShutDown = false
 
     public init(store: RoutineStore, scheduler: RoutineScheduler, notifier: RoutineNotifying, preference: NotifyPreferenceStoring,
-                clock: @escaping @MainActor () -> Date = { Date() }) {
+                clock: @escaping @MainActor () -> Date = { Date() },
+                warmUpLoginPath: @escaping @Sendable () -> Void = {}) {
+        self.warmUpLoginPath = warmUpLoginPath
         self.store = store
         self.scheduler = scheduler
         self.notifier = notifier
@@ -68,6 +69,7 @@ public final class RoutineHub {
 
     /// 시계를 루틴 상태에 맞춘다 — 켜진 루틴이 하나라도 있으면 시작(곧바로 한 번 살핀다), 없으면 끈다.
     public func reconcile() {
+        guard !isShutDown else { return }
         if hasEnabledRoutine { scheduler.start() } else { scheduler.stop() }
     }
 
@@ -76,12 +78,21 @@ public final class RoutineHub {
 
     /// 잠에서 깰 때 — 켜진 루틴이 있을 때만 한 번 살핀다.
     public func handleWake() async {
-        guard hasEnabledRoutine else { return }
+        guard !isShutDown, hasEnabledRoutine else { return }
         await scheduler.checkNow()
     }
 
     /// 앱을 끝낼 때.
-    public func shutdown() { scheduler.stop() }
+    public func shutdown() {
+        isShutDown = true
+        scheduler.stop()
+    }
+
+    /// 로그인 셸 PATH 를 메인 밖에서 읽어 둔다(이미 캐시돼 있으면 `ShellPath` 가 다시 읽지 않는다). 사람이 루틴을 켜거나 「지금 한 번」 을 누를 때만 부른다.
+    private func warmUp() {
+        let work = warmUpLoginPath
+        Task.detached(priority: .utility) { work() }
+    }
 
     // MARK: 저장한 일
 
@@ -105,7 +116,9 @@ public final class RoutineHub {
     @discardableResult
     public func saveRoutine(_ routine: Routine) throws -> Routine {
         defer { revision += 1; reconcile() }
-        return try store.saveRoutine(routine, now: clock())
+        let saved = try store.saveRoutine(routine, now: clock())
+        if saved.enabled && !isShutDown { warmUp() }
+        return saved
     }
 
     public func setEnabled(_ enabled: Bool, routineID: UUID) throws {
@@ -122,6 +135,8 @@ public final class RoutineHub {
     /// 「지금 한 번」 — 꺼진 루틴도 돌려 볼 수 있다. 시계가 꺼져 있으면(켜진 루틴이 없음) 잠깐 켰다가 끝나면 다시 맞춘다.
     @discardableResult
     public func runNow(routineID: UUID) async -> RoutineRecord? {
+        guard !isShutDown else { return nil }
+        warmUp()
         if !scheduler.isTicking { scheduler.start() }   // stop() 뒤엔 runNow 가 아무것도 안 하므로 먼저 켠다(켜진 루틴이 없으니 살필 것은 없다)
         let record = await scheduler.runNow(routineID: routineID)
         revision += 1
