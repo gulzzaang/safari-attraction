@@ -12,7 +12,7 @@ test("background 는 scripts 목록(lib 먼저, background.js 마지막) — ser
   assert.equal(manifest.background.persistent, false);
   const scripts = manifest.background.scripts;
   assert.equal(scripts[scripts.length - 1], "background.js");
-  assert.deepEqual(scripts.slice(0, -1), ["lib/page.js", "lib/text.js", "lib/stream.js", "lib/bridge.js"]);
+  assert.deepEqual(scripts.slice(0, -1), ["lib/page.js", "lib/text.js", "lib/stream.js", "lib/bridge.js", "lib/alerts.js"]);
   const src = readFileSync(join(ext, "background.js"), "utf8");
   assert.ok(!/importScripts\s*\(/.test(src), "background.js 에 importScripts 가 있다");
   assert.ok(src.includes("확장 파일을 못 읽었어요"), "lib 이 없을 때 눈에 띄는 안내가 없다");
@@ -29,9 +29,10 @@ test("manifest 가 가리키는 파일이 모두 있고 build.sh 가 복사한�
 });
 
 test("content script 는 lib 이 먼저, content.js 마지막, 모든 http/https 최상위 프레임", () => {
-  const cs = manifest.content_scripts[0];
+  const cs = manifest.content_scripts.find((c) => c.js.includes("content.js"));
   assert.equal(cs.js[cs.js.length - 1], "content.js");
-  assert.ok(cs.js.indexOf("lib/stream.js") < cs.js.indexOf("content.js"));
+  assert.deepEqual(cs.js, ["lib/page.js", "lib/text.js", "lib/stream.js", "lib/alerts.js", "content.js"]);
+  assert.equal(cs.world, undefined); // 패널은 격리 세계
   assert.deepEqual(cs.matches, ["http://*/*", "https://*/*"]);
   assert.equal(cs.run_at, "document_idle");
   assert.equal(cs.all_frames, undefined);
@@ -56,4 +57,15 @@ test("background.js 는 lib 이 없으면 console.error + 배지 「!」 로 멈
   assert.deepEqual(errors, ["사파리-어트랙션: 확장 파일을 못 읽었어요"]);
   assert.deepEqual(badges, [{ text: "!" }]);
   assert.deepEqual(listeners, []);
+});
+
+test("알림 엿듣기는 따로: notify-hook.js 하나만 · 페이지 세계(MAIN) · document_start · 모든 http/https 최상위 프레임", () => {
+  const hooks = manifest.content_scripts.filter((c) => c.js.includes("notify-hook.js"));
+  assert.equal(hooks.length, 1);
+  const h = hooks[0];
+  assert.deepEqual(h.js, ["notify-hook.js"]); // 페이지 세계에는 lib 을 싣지 않는다
+  assert.equal(h.world, "MAIN");
+  assert.equal(h.run_at, "document_start");
+  assert.deepEqual(h.matches, ["http://*/*", "https://*/*"]);
+  assert.equal(h.all_frames, undefined);
 });

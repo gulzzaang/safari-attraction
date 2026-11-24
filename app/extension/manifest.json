@@ -2,9 +2,9 @@
   "manifest_version": 3,
   "name": "사파리-어트랙션",
   "version": "0.1.0",
-  "description": "지금 보는 페이지 위에 작은 패널을 띄워, 그 페이지를 붙여 사파리-어트랙션 앱의 클로드 · 제미나이 등에게 바로 묻습니다.",
+  "description": "지금 보는 페이지 위에 작은 패널을 띄워, 그 페이지를 붙여 사파리-어트랙션 앱의 클로드 · 제미나이 등에게 바로 묻습니다. 알림 루틴이 지켜보는 사이트의 알림을 앱에 알립니다.",
   "background": {
-    "scripts": ["lib/page.js", "lib/text.js", "lib/stream.js", "lib/bridge.js", "background.js"],
+    "scripts": ["lib/page.js", "lib/text.js", "lib/stream.js", "lib/bridge.js", "lib/alerts.js", "background.js"],
     "persistent": false
   },
   "action": { "default_title": "사파리-어트랙션 패널 (⌥⇧E)" },
@@ -17,7 +17,13 @@
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
-      "js": ["lib/page.js", "lib/text.js", "lib/stream.js", "content.js"],
+      "js": ["notify-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["lib/page.js", "lib/text.js", "lib/stream.js", "lib/alerts.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

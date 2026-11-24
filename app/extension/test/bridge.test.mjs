@@ -294,3 +294,13 @@ test("sanitizeAsk: 번호 · 질문 · page 만 남기고 모르는 키는 버�
   assert.equal(L.sanitizeAsk({ question: "q", id: "7" }).id, 0);
   assert.equal(L.sanitizeAsk({ question: "q", webSearch: "yes" }).body.webSearch, false);
 });
+
+test("bridge.request: 토큰 머리를 붙여 앱 서버에 묻고 Response 를 돌려준다(알림 보내기용)", async () => {
+  const t = setup({ fetchImpl: async () => jsonResponse(200, { hosts: ["example.com"] }) });
+  const res = await t.bridge.request("/alert-hosts", { method: "GET" });
+  assert.equal(res.status, 200);
+  assert.equal(t.calls[0].url, "http://127.0.0.1:51000/alert-hosts");
+  assert.equal(t.calls[0].init.headers["X-SA-Token"], TOKEN);
+  const off = setup({ links: [{ error: "없음" }], fetchImpl: async () => { throw new Error("부르면 안 됨"); } });
+  await assert.rejects(off.bridge.request("/alert-hosts", { method: "GET" }), (e) => e.code === "app_off");
+});

@@ -109,7 +109,7 @@ EXT_EXEC="SafariAttractionExt"
 EXT_ID="com.gulzzaang.SafariAttractionApp.Extension"
 APPEX="$APP/Contents/PlugIns/$EXT_NAME.appex"
 EXT_BUILD="$BUILD/ext"
-EXT_RUNTIME_FILES=(manifest.json background.js content.js panel.css lib/page.js lib/text.js lib/stream.js lib/bridge.js)
+EXT_RUNTIME_FILES=(manifest.json background.js content.js notify-hook.js panel.css lib/page.js lib/text.js lib/stream.js lib/bridge.js lib/alerts.js)
 for f in "${EXT_RUNTIME_FILES[@]}" Handler/SafariWebExtensionHandler.swift ext.entitlements; do
   if [[ ! -f "$EXT_SRC/$f" ]]; then
     echo "빌드 실패: 확장 파일이 없어요 — $EXT_SRC/$f" >&2

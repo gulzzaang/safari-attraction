@@ -323,6 +323,61 @@
     if (host) closePanel(); else if (!opening) openPanel();
   }
 
+  // ── 사이트 알림 알아채기 ────────────────────────────────────────────────────
+  // ① 페이지 세계(notify-hook.js)가 감싼 Notification · showNotification 에서 보낸 메시지.
+  //    페이지 스크립트도 같은 메시지를 흉내 낼 수 있다 — 그래서 호스트는 메시지가 아니라 location.hostname,
+  //    글은 글자만 · 각 1,000자, 탭마다 10초에 한 번까지(앱은 그 사이트를 지켜보는 루틴만 · 10분 쿨다운으로 다시 거른다).
+  // ② 탭 제목 앞 (N) · [N] 숫자가 늘어남(처음 값은 기준만).
+  const alertLimiter = lib.createRateLimiter(10_000);
+  const badgeTracker = lib.createBadgeTracker();
+
+  function sendAlert(kind, title, body) {
+    if (!alertLimiter.allow()) return;
+    try {
+      const sent = ext.runtime.sendMessage({
+        t: "alert",
+        host: location.hostname,
+        kind,
+        title: typeof title === "string" ? title.slice(0, lib.ALERT_TEXT_LIMIT * 2) : "",
+        body: typeof body === "string" ? body.slice(0, lib.ALERT_TEXT_LIMIT * 2) : "",
+      });
+      if (sent && typeof sent.catch === "function") sent.catch(() => { /* background 없음 — 버림 */ });
+    } catch (_) { /* 확장이 꺼지는 중 — 버림 */ }
+  }
+
+  window.addEventListener("message", (e) => {
+    if (e.source !== window) return;
+    const alert = lib.readAlertMessage(e.data);
+    if (alert) sendAlert("notification", alert.title, alert.body);
+  });
+
+  let lastTitle = null;
+  function checkTitle() {
+    const title = typeof document.title === "string" ? document.title : "";
+    if (title === lastTitle) return;
+    lastTitle = title;
+    if (badgeTracker.observe(title)) sendAlert("badge", lib.readAlertMessage({ __safariAttractionAlert: 1, title }).title, "");
+  }
+
+  // <title> 이 바뀌는 것을 본다. head 가 아직 없으면 documentElement 의 바로 아래만 보다가 head 가 생기면 옮긴다.
+  let titleObserver = null;
+  function watchTitle() {
+    try {
+      const head = document.head;
+      if (head) {
+        titleObserver = new MutationObserver(checkTitle);
+        titleObserver.observe(head, { childList: true, subtree: true, characterData: true });
+      } else if (document.documentElement) {
+        const waiter = new MutationObserver(() => {
+          if (document.head) { waiter.disconnect(); watchTitle(); checkTitle(); }
+        });
+        waiter.observe(document.documentElement, { childList: true });
+      }
+    } catch (_) { /* MutationObserver 를 못 쓰면 제목 숫자만 못 본다 */ }
+    checkTitle();
+  }
+  watchTitle();
+
   ext.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!sender || sender.id !== ext.runtime.id) return false;
     if (msg && msg.t === "toggle") { toggle(); sendResponse({ ok: true }); }

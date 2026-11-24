@@ -9,7 +9,7 @@
   const lib = globalThis.SAPanelLib;
 
   // lib 이 안 실렸으면(확장 파일을 못 읽음) 조용히 죽지 말고 눈에 띄게 멈춘다.
-  if (!lib || typeof lib.createBridge !== "function" || typeof lib.sanitizeAsk !== "function") {
+  if (!lib || typeof lib.createBridge !== "function" || typeof lib.sanitizeAsk !== "function" || typeof lib.createAlertForwarder !== "function") {
     console.error("사파리-어트랙션: 확장 파일을 못 읽었어요");
     try {
       ext.action.setBadgeText({ text: "!" });
@@ -24,6 +24,10 @@
     fetch: (url, init) => fetch(url, init),
     hasHostPermission: () => ext.permissions.contains({ origins: ["http://127.0.0.1/*"] }),
   });
+
+  // 사이트 알림 → 앱. 지켜볼 사이트 목록(/alert-hosts, 5분 기억)에 맞는 호스트만 /alert 로 보낸다.
+  // 앱 꺼짐 · 연결 실패 · 403 은 조용히 버린다(패널 안내 없음). 토큰 · 알림 글은 어디에도 찍지 않는다.
+  const alerts = lib.createAlertForwarder({ request: (path, init) => bridge.request(path, init) });
 
   /** 이 확장 자신의 content script · 페이지에서 온 것만 받는다. */
   const fromSelf = (sender) => !!sender && sender.id === ext.runtime.id;
@@ -59,6 +63,16 @@
     port.onDisconnect.addListener(() => {
       if (controller) { controller.abort(); controller = null; }
     });
+  });
+
+  // ── 사이트 알림(content script → 여기 → 앱) ────────────────────────────────
+  ext.runtime.onMessage.addListener((msg, sender) => {
+    if (!fromSelf(sender) || !msg || msg.t !== "alert") return false;
+    // 호스트는 보낸 탭의 주소에서 다시 읽는다(없을 때만 메시지의 것).
+    const senderHost = lib.hostFromUrl(sender.url || (sender.tab && sender.tab.url) || "");
+    const payload = lib.alertPayload(msg, senderHost);
+    if (payload) alerts.forward(payload).catch(() => { /* 조용히 버림 */ });
+    return false;
   });
 
   // ── 패널 모양(CSS) 전달 ────────────────────────────────────────────────────

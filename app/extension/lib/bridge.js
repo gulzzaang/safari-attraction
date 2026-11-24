@@ -176,7 +176,8 @@
       }
     }
 
-    return { info, ask, getLink };
+    // request 는 알림 보내기(alerts.js)가 쓴다 — 토큰은 여기서 붙고 돌려주는 것은 Response 뿐.
+    return { info, ask, getLink, request: (path, init, signal) => request(path, init || {}, signal) };
   }
 
   /** 패널 묻기 번호 — 정수만(없으면 0). */
