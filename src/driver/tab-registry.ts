@@ -28,10 +28,17 @@ export interface Spot {
   unstamped: boolean;
   /** 표시 안 한 탭을 알아볼 때 url 말고 받아들일 주소 — 이동이 시간 초과로 끝난 탭이 늦게 새 문서로 바뀌었을 때의 목적지. */
   altUrl?: string;
+  /**
+   * 우리가 열지 않은 탭이고 아직 표시를 안 했다 — 다른 서버(instance 가 우리 것과 다른 표시)가 남긴 표시가 있는 탭을 「표시 없음」과 같이 자리 · 주소로 알아보고, 그 표시는 덮어쓰지 않는다.
+   * 우리가 연 탭(owned)은 이 깃발이 없다 — 정확히 우리 표시만 받는다(closeOwned 가 사용자 탭을 잘못 닫지 않게).
+   */
+  foreignOk?: boolean;
+  /** 이 서버의 instanceId(표시 `키.instanceId` 의 뒷부분). 같은 인스턴스의 다른 키 표시는 남의 것이 아니라 우리 다른 탭이다. */
+  instance?: string;
 }
 
 /** 호스트가 보낸 답 — 자리의 탭이 키와 맞지 않으면 stale. */
-export type Guarded<T> = { stale: true } | { value: T; /** 일을 마친 뒤의 탭 주소(알면). */ url?: string; /** 일을 마친 뒤 문서를 떠나는 중인가(beforeunload 깃발, 빠른 길만 안다). */ leaving?: boolean; /** 우리 표시를 확인한 바로 그때의 창 모습. */ around?: Around };
+export type Guarded<T> = { stale: true } | { value: T; /** false 면 남의 표시가 있는 탭이라 우리 표시를 적지 않고 일했다(안 주면 우리 표시가 적혀 있다). */ stamped?: boolean; /** 일을 마친 뒤의 탭 주소(알면). */ url?: string; /** 일을 마친 뒤 문서를 떠나는 중인가(beforeunload 깃발, 빠른 길만 안다). */ leaving?: boolean; /** 우리 표시를 확인한 바로 그때의 창 모습. */ around?: Around };
 
 /** withTabDetail 의 결과: 호스트가 돌려준 것과, 일을 시키기 전에 기록해 둔 주소. */
 export type Detailed<T> = { value: T; url?: string; leaving?: boolean; urlBefore: string; /** 우리가 연 탭인가(붙인 사용자 탭이 아니다). */ owned: boolean };
@@ -44,7 +51,7 @@ export type RebindResult = { status: "ok"; tab: RawTab; /** 표시가 실제로 
  * navigated = 새 문서가 떠 표시를 다시 적었다. gone · other 는 rebind 와 같다.
  */
 export type SettleResult =
-  | { status: "same"; leaving: boolean; tab: RawTab; around?: Around }
+  | { status: "same"; leaving: boolean; tab: RawTab; around?: Around; /** false 면 남의 표시가 있는 탭이라 우리 표시를 적지 않았다(안 주면 우리 표시가 그대로). */ stamped?: boolean }
   | { status: "navigated"; tab: RawTab; /** 표시가 실제로 적혔는가(안 주면 적힌 것으로 본다). */ stamped?: boolean; around?: Around }
   | { status: "gone" }
   | { status: "other" };
@@ -71,15 +78,17 @@ export interface Around {
 
 /** 레지스트리가 사파리에 바라는 것(호스트 op 와 1:1). */
 export interface TabBackend {
-  list(): Promise<RawTab[]>;
+  list(timeoutMs?: number): Promise<RawTab[]>;
   probe(windowId: number, index: number, timeoutMs?: number): Promise<Probe>;
   stamp(windowId: number, index: number, key: string): Promise<boolean>;
   /** 제자리에서 이동한 탭에 표시를 다시 적는다(불러오기가 끝나길 기다린다). */
-  rebind(args: { windowId: number; index: number; key: string; url: string; altUrl?: string; shape?: Around }): Promise<RebindResult>;
+  rebind(args: { windowId: number; index: number; key: string; url: string; altUrl?: string; shape?: Around; foreignOk?: boolean; instance?: string }): Promise<RebindResult>;
   /** 이동이 일어났는지 보고, 새 문서면 표시를 다시 적는다. 표시가 없다는 이유로 아무것도 지우지 않는다. */
-  settle(args: { windowId: number; index: number; key: string; url: string; altUrl?: string; shape?: Around; waitUntil?: "commit"; loadBudgetMs?: number }): Promise<SettleResult>;
+  settle(args: { windowId: number; index: number; key: string; url: string; altUrl?: string; shape?: Around; foreignOk?: boolean; instance?: string; waitUntil?: "commit"; loadBudgetMs?: number }): Promise<SettleResult>;
   /** 자리의 탭이 spot.key 의 탭일 때만 닫는다. urlOnly 는 표시를 못 읽는 탭(경고창)용 — 주소만 본다. */
   close(spot: Spot, urlOnly: boolean, timeoutMs?: number): Promise<Guarded<null>>;
+  /** 서버가 끝날 때 사용자 탭에 적은 우리 표시를 지운다 — 자리의 탭 표시가 아직 정확히 key 일 때만. 지웠으면 true. */
+  clearMark(windowId: number, index: number, key: string, timeoutMs?: number): Promise<boolean>;
   /**
    * 여러 자리의 탭 표시를 읽기만 한다(페이지 상태를 바꾸지 않는다. 사파리를 앞으로 가져오지도 않는다).
    * 탭 하나에 timeoutMs 안에 못 읽었거나 없는 탭은 결과에서 뺀다. requestMs 가 있으면 요청 전체의 시간 제한(끝낼 때 남은 마감).
@@ -124,6 +133,8 @@ export const RECLAIM_WINDOW_MS = 600_000;
 export const SHAPE_FRESH_MS = 60_000;
 /** 끝낼 때(closeOwned) 표시 훑기에 쓰는 시간의 상한. 서버가 끝나길 기다리는 시간(SHUTDOWN_MS 8초)보다 짧아야 한다. */
 export const SHUTDOWN_SCAN_MS = 5_000;
+/** 끝낼 때 사용자 탭에 적은 우리 표시를 지우는 데 쓰는 시간의 총 상한(최선 노력 — 넘으면 그만둔다). */
+export const RELEASE_BUDGET_MS = 1_500;
 /** 표시를 읽을 때 탭 하나에 기다리는 시간. 넘으면 그 탭은 건너뛴다. */
 export const SCAN_TAB_TIMEOUT_MS = 500;
 /** 표시 읽기를 이 개수씩 나눠 보낸다(멈춘 탭이 있어도 그 묶음만 잃는다). */
@@ -203,6 +214,14 @@ export class TabRegistry {
    */
   constructor(private backend: TabBackend, private instanceId: string = randomBytes(4).toString("hex"), private now: () => number = Date.now) {}
 
+  /**
+   * 다른 서버(다른 Claude 세션 · 끝난 세션)가 남긴 표시인가 — 비어 있지 않고 instanceId 가 우리 것과 다르다.
+   * 같은 인스턴스의 다른 키 표시(`t9.<우리 instanceId>`)는 남의 것이 아니라 우리 다른 탭의 표시다.
+   */
+  isForeignMarker(marker: string): boolean {
+    return marker !== "" && !marker.endsWith(`.${this.instanceId}`);
+  }
+
   /** 키(t1)에 대응하는 페이지 안 표시 — 호스트와 사파리 쪽에는 이 값을 키로 넘긴다. 서버 프로세스마다 다르다. */
   markerOf(key: string): string {
     return `${key}.${this.instanceId}`;
@@ -258,6 +277,11 @@ export class TabRegistry {
     }
   }
 
+  /** 호스트 요청에 싣는 「남의 표시 허용」 — 우리가 열지 않았고 아직 표시를 안 한 탭만. */
+  private foreignArgs(e: Entry): { foreignOk?: boolean; instance?: string } {
+    return !e.owned && !e.stamped ? { foreignOk: true, instance: this.instanceId } : {};
+  }
+
   /**
    * 우리 탭이 스스로 새 문서가 돼(늦은 리디렉트) 표시를 잃었을 때 기록한 자리의 표시 없는 탭을 우리 탭으로 봐도 되는가.
    * 마지막으로 기록한 창 모습과 견줘 (1) 탭 수가 같고 (2) 바로 앞 · 뒤 이웃의 주소가 같고 (3) 그 탭의 주소가 창의 다른 탭들의 기록된 주소가 아닐 때만, 그리고 http(s) · 같은 등록 도메인 · 마지막 일로부터 10분 안일 때만.
@@ -294,16 +318,18 @@ export class TabRegistry {
   async adopt(windowId: number, index: number): Promise<string> {
     const p = await this.backend.probe(windowId, index);
     if (!p.exists) throw new SafariError("TAB_CLOSED", `그 자리에 탭이 없음: 창 ${windowId} · ${index}번째`);
-    const known = [...this.entries.values()].find((e) => (p.marker !== "" ? this.markerOf(e.key) === p.marker : sameSpot(e, { windowId, index }) && sameUrl(e.url, p.url)));
+    // 남의 표시가 있는 탭은 「표시 없음」과 같이 자리 · 주소로 알아보고, 표시를 덮어쓰지 않는다(그 탭을 쓰는 다른 세션이 놓치지 않게).
+    const foreign = this.isForeignMarker(p.marker);
+    const known = [...this.entries.values()].find((e) => (p.marker !== "" && !foreign ? this.markerOf(e.key) === p.marker : sameSpot(e, { windowId, index }) && sameUrl(e.url, p.url)));
     if (known) {
       known.windowId = windowId;
       known.index = index;
       known.url = p.url;
-      if (!known.stamped) known.stamped = await this.backend.stamp(windowId, index, this.markerOf(known.key));
+      if (!known.stamped && !foreign) known.stamped = await this.backend.stamp(windowId, index, this.markerOf(known.key));
       return known.key;
     }
     const key = this.nextKey();
-    const stamped = await this.backend.stamp(windowId, index, this.markerOf(key));
+    const stamped = foreign ? false : await this.backend.stamp(windowId, index, this.markerOf(key));
     this.register(key, windowId, index, p.url, { owned: false, stamped });
     return key;
   }
@@ -312,7 +338,8 @@ export class TabRegistry {
   spot(key: string): Spot {
     const e = this.entries.get(key);
     if (!e) throw new SafariError("TAB_CLOSED", `모르는 탭 키(닫혔거나 만든 적 없음): ${key}`);
-    return { windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, unstamped: !e.stamped, altUrl: e.pendingUrl };
+    // foreignOk: 우리가 열지 않은 탭을 아직 표시 안 한 채로 쓸 때만(남의 표시가 있는 사용자 탭). 우리가 연 탭 · 우리 표시를 이미 적은 탭은 정확히 우리 표시만 받는다.
+    return { windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, unstamped: !e.stamped, altUrl: e.pendingUrl, ...(!e.owned && !e.stamped ? { foreignOk: true, instance: this.instanceId } : {}) };
   }
 
   /** 지금 알고 있는 그 탭의 주소(열 때 · runJs · settle · rebind 때마다 새로 한다). 모르는 키면 undefined. */
@@ -403,7 +430,7 @@ export class TabRegistry {
           throw this.gone(key);
         }
       }
-      this.confirm(key);
+      this.confirm(key, r.stamped);
       const known = this.entries.get(key);
       if (known && r.around) this.setShape(known, r.around);
       if (r.url !== undefined) {
@@ -466,11 +493,11 @@ export class TabRegistry {
     const e = this.entries.get(key);
     if (!e) throw tabClosed(key);
     if (e.lost) await this.resolve(key); // settle 과 같다 — 잃어버린 탭은 표시로만 돌아온다
-    let r = await this.backend.rebind({ windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, altUrl: e.pendingUrl, shape: this.stampShape(e) });
+    let r = await this.backend.rebind({ windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, altUrl: e.pendingUrl, shape: this.stampShape(e), ...this.foreignArgs(e) });
     if (r.status !== "ok") {
       // 기록한 자리가 아니다(표시가 남은 채 옮겨 갔거나, 표시 없는 탭이 우리 탭이라는 증거가 없다) — 표시로 찾는다(못 찾으면 TAB_CLOSED 로 키를 지운다).
       const at = await this.resolveAfterRefusal(key);
-      r = await this.backend.rebind({ ...at, key: this.markerOf(key), url: e.url, altUrl: e.pendingUrl, shape: this.stampShape(e) });
+      r = await this.backend.rebind({ ...at, key: this.markerOf(key), url: e.url, altUrl: e.pendingUrl, shape: this.stampShape(e), ...this.foreignArgs(e) });
       if (r.status !== "ok") {
         this.drop(key);
         throw this.gone(key);
@@ -503,17 +530,18 @@ export class TabRegistry {
     if (!e.stamped) {
       // 표시를 아직 안 적은 탭 — 자리와 주소가 그대로일 때만 우리 탭이다. 이 경우 표시 없음은 이동이 아니다.
       const p = await this.backend.probe(e.windowId, e.index);
+      // 남의 표시가 있는 탭에는 적지 않는다(덮어쓰지 않는다) — 아래 호스트 확인이 자리 · 모습으로 알아본다.
       if (p.exists && p.marker === "" && (sameUrl(p.url, e.url) || sameUrl(p.url, e.pendingUrl)) && (await this.backend.stamp(e.windowId, e.index, this.markerOf(key)))) {
         e.stamped = true;
         e.pendingUrl = undefined;
       }
     }
     const { waitUntil, loadBudgetMs } = opts;
-    let r = await this.backend.settle({ windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, altUrl: e.pendingUrl, shape: this.stampShape(e), waitUntil, loadBudgetMs });
+    let r = await this.backend.settle({ windowId: e.windowId, index: e.index, key: this.markerOf(key), url: e.url, altUrl: e.pendingUrl, shape: this.stampShape(e), ...this.foreignArgs(e), waitUntil, loadBudgetMs });
     if (r.status === "gone" || r.status === "other") {
       // 기록한 자리가 아니다(표시가 남은 채 옮겨 갔거나, 표시 없는 탭이 우리 탭이라는 증거가 없다) — 표시로 찾는다(못 찾으면 resolve 가 키를 지우고 TAB_CLOSED).
       const at = await this.resolveAfterRefusal(key);
-      r = await this.backend.settle({ ...at, key: this.markerOf(key), url: e.url, altUrl: e.pendingUrl, shape: this.stampShape(e), waitUntil, loadBudgetMs });
+      r = await this.backend.settle({ ...at, key: this.markerOf(key), url: e.url, altUrl: e.pendingUrl, shape: this.stampShape(e), ...this.foreignArgs(e), waitUntil, loadBudgetMs });
       if (r.status === "gone" || r.status === "other") {
         this.drop(key);
         throw this.gone(key);
@@ -527,7 +555,7 @@ export class TabRegistry {
     if (r.around) this.setShape(e, r.around);
     e.pendingUrl = undefined;
     e.lost = false;
-    e.stamped = r.status === "navigated" ? (r.stamped ?? true) : true; // commit 에서 표시를 못 적었으면 「표시 안 한 탭」으로 둔다
+    e.stamped = r.stamped ?? true; // commit 에서 표시를 못 적었거나 남의 표시가 있어 안 적었으면 「표시 안 한 탭」으로 둔다
     e.blocked = false;
     e.actedAt = this.now();
     return { navigated: r.status === "navigated", leaving: r.status === "same" && r.leaving, tab: r.tab };
@@ -548,9 +576,51 @@ export class TabRegistry {
     } catch {
       return;
     }
-    if (!p.exists || p.marker !== this.markerOf(key)) return; // 이미 바뀌었거나 없다 — 그건 settle · resolve 가 다룬다
+    // 이미 바뀌었거나 없다 — 그건 settle · resolve 가 다룬다. 남의 표시가 남은 탭(우리 표시를 안 적은 채 쓰던 탭)은 아직 옛 문서이니 목적지를 적어 둔다.
+    const oldDoc = p.marker === this.markerOf(key) || (!e.stamped && this.isForeignMarker(p.marker));
+    if (!p.exists || !oldDoc) return;
     e.stamped = false;
     e.pendingUrl = !sameUrl(p.url, e.url) && p.url !== "" ? p.url : undefined;
+  }
+
+  /**
+   * 끝날 때 사용자 탭에 적어 둔 우리 표시를 지운다(다음 서버가 「남의 표시」를 만나지 않게, 그 탭에 우리 흔적을 남기지 않게).
+   * 그 탭의 표시가 아직 정확히 우리 것일 때만 지운다 — 기록한 자리에서 못 찾으면 같은 주소의 다른 탭 몇 개까지 본다. 최선 노력: 오류는 모두 삼키고, budgetMs 안에서만 한다.
+   * 지운 탭은 「표시 안 한 탭」으로 되돌린다(doctor · dispose 처럼 끝낸 뒤에도 쓰는 호출이 있어서). 지운 탭 수를 돌려준다.
+   */
+  async releaseStamps(budgetMs: number = RELEASE_BUDGET_MS): Promise<number> {
+    const mine = [...this.entries.values()].filter((e) => !e.owned && e.stamped);
+    if (mine.length === 0) return 0;
+    const deadline = this.now() + budgetMs;
+    const left = () => deadline - this.now();
+    let raw: RawTab[] = [];
+    try {
+      raw = await this.backend.list(Math.max(200, Math.min(left(), 1_000)));
+    } catch {
+      return 0;
+    }
+    const claimed = new Set<string>();
+    let cleared = 0;
+    for (const e of mine) {
+      const mark = this.markerOf(e.key);
+      const here = raw.find((t) => sameSpot(t, e));
+      const near = raw.filter((t) => !(here && sameSpot(t, here)) && sameUrl(t.url, e.url)).slice(0, 5);
+      for (const t of [...(here ? [here] : []), ...near]) {
+        if (claimed.has(spotId(t))) continue;
+        if (left() <= 0) return cleared;
+        try {
+          if (await this.backend.clearMark(t.windowId, t.index, mark, Math.max(200, Math.min(left(), 1_000)))) {
+            claimed.add(spotId(t));
+            e.stamped = false;
+            cleared++;
+            break;
+          }
+        } catch {
+          // 최선 노력 — 못 지워도 끝내는 일은 막지 않는다
+        }
+      }
+    }
+    return cleared;
   }
 
   /**
@@ -666,12 +736,12 @@ export class TabRegistry {
     return { answered, complete: answered && web.every((t) => !scan.reads.get(spotId(t))!.unreadable) };
   }
 
-  /** 호스트가 자리의 탭이 맞다고 확인해 일을 마쳤다 — 표시도 이제 적혀 있다. */
-  confirm(key: string): void {
+  /** 호스트가 자리의 탭이 맞다고 확인해 일을 마쳤다 — 표시도 이제 적혀 있다(남의 표시가 있어 안 적었으면 stamped=false — 표시 안 한 탭으로 남겨 자리 · 주소로 계속 확인한다). */
+  confirm(key: string, stamped?: boolean): void {
     const e = this.entries.get(key);
     if (e) {
       e.pendingUrl = undefined;
-      e.stamped = true;
+      e.stamped = stamped ?? true;
       e.blocked = false;
       e.actedAt = this.now();
     }

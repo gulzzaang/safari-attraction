@@ -57,12 +57,32 @@ export const DEFAULT_TIMEOUT_MS = 120_000;
 /** openTabs 한 번에 열 수 있는 최대 개수. */
 export const OPEN_TABS_MAX = 10;
 
-/** snapshot() 의 결과. console.log 로 찍으면 바뀐 곳(diff) 글이 나온다(처음이면 전체, 같으면 「변화 없음」, 내린 뒤면 새로 보이는 곳만). */
+/** snapshot() 의 결과. console.log 로 찍으면 바뀐 곳(diff) 글이 나온다(처음이면 전체, 같으면 「변화 없음」, 내린 뒤면 새로 보이는 곳만). 글자처럼도 쓸 수 있다(tree 를 대신한다: match · split · includes · length · 템플릿 …). */
 export interface SnapshotResult {
   /** 이번에 읽은 전체 글(지금 화면, 또는 full 이면 문서 전체). */
   tree: string;
   /** 지난번 읽기와 비교한 글(처음 · 많이 바뀌었으면 전체와 같다). */
   diff: string;
+}
+
+/**
+ * snapshot() 의 결과를 글자처럼도 쓰게 한다(어사이드 · Playwright 에 익숙한 쓰임: `s.match(...)` · `s.split('\n')` · `s.includes(...)` · `` `${s}` ``). 글자 자리에 들어가면 tree 가 되고,
+ * 글자 메서드(match · matchAll · split · includes · indexOf · slice · replace · trim · startsWith · endsWith · search … 글자가 가진 것 전부)와 length 는 tree 에 넘긴다.
+ * 모두 열거되지 않게 달아서 Object.keys · JSON.stringify · console.log 는 전과 같다(.tree · .diff). `===` · typeof 는 글자가 아니므로 .tree 를 쓴다.
+ * .tree 처럼 글자로 쓰는 것은 읽은 줄로 치지 않는다(console.log(결과) · .diff 로 찍어야 읽은 것이 된다).
+ */
+function actLikeText(result: object, tree: string): void {
+  const def = (key: string | symbol, value: unknown) => Object.defineProperty(result, key, { value, enumerable: false, configurable: true, writable: true });
+  for (const name of Object.getOwnPropertyNames(String.prototype)) {
+    if (name === "constructor" || name === "length") continue;
+    const fn = (String.prototype as unknown as Record<string, unknown>)[name];
+    if (typeof fn === "function") def(name, (...args: unknown[]) => (fn as (...a: unknown[]) => unknown).apply(tree, args));
+  }
+  def("toString", () => tree);
+  def("valueOf", () => tree);
+  def(Symbol.toPrimitive, () => tree);
+  def(Symbol.iterator, () => tree[Symbol.iterator]());
+  Object.defineProperty(result, "length", { get: () => tree.length, enumerable: false, configurable: true });
 }
 
 /** 페이지 안에서 fetch 를 돌려 결과를 JSON 으로 돌려주는 식(함수 식이라 evaluate 가 인자를 넣어 부른다). */
@@ -475,6 +495,7 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
     Object.defineProperty(result, "diff", { get: read, enumerable: true });
     // console.log(result) 는 바뀐 곳 글을 찍는다.
     Object.defineProperty(result, inspect.custom, { value: read, enumerable: false });
+    actLikeText(result, tree);
     return result;
   };
 

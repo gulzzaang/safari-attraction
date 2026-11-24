@@ -80,6 +80,8 @@ describe("MCP 서버", () => {
     expect(d).toContain("열린 shadow DOM 과 같은 사이트 iframe");
     expect(d).toContain("닫힌 shadow root");
     expect(d).not.toContain("Reading skips iframes");
+    expect(d).toContain("snapshot 결과는 글자처럼 써도 된다"); // s.match · s.split 같은 쓰임
+    expect(d).toContain("s.tree");
   });
 
   test("repl 은 콘솔 출력을 글로 돌려준다", async () => {

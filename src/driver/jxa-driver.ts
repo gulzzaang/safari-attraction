@@ -115,6 +115,8 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     url: s.url,
     unstamped: s.unstamped,
     altUrl: s.altUrl,
+    foreignOk: s.foreignOk,
+    instance: s.instance,
     urls: urlForms([s.url, s.altUrl]),
     urlForms: urlForms([s.url]),
   });
@@ -124,16 +126,18 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
     urls: urlForms([a.url, a.altUrl]),
     shape: a.shape && { count: a.shape.count, prev: a.shape.prev === null ? null : urlForms([a.shape.prev]), next: a.shape.next === null ? null : urlForms([a.shape.next]) },
   });
-  const guardSpec = (s: Spot) => ({ key: s.key, unstamped: s.unstamped, url: s.url, altUrl: s.altUrl });
+  const guardSpec = (s: Spot) => ({ key: s.key, unstamped: s.unstamped, url: s.url, altUrl: s.altUrl, foreignOk: s.foreignOk, instance: s.instance });
 
   // 탭 키(t1, t2 …)와 사파리 안 자리를 이어 주는 기록. 사용자가 탭을 옮겨도 같은 키가 같은 탭을 가리킨다.
   const registry = new TabRegistry({
-    list: () => call<RawTab[]>("listTabs"),
+    list: (timeoutMs) => call<RawTab[]>("listTabs", {}, timeoutMs),
     probe: (windowId, index, timeoutMs) => call<Probe>("probe", { windowId, index }, timeoutMs),
     stamp: (windowId, index, key) => call<boolean>("stamp", { windowId, index, key }),
     rebind: (a) => call<RebindResult>("rebind", stampArgs(a)),
     settle: (a) => call<SettleResult>("settle", { ...stampArgs(a), loadBudgetMs: clampBudget(a.loadBudgetMs) }, withBudget(a.loadBudgetMs)),
-    close: (spot, urlOnly, timeoutMs) => call<Guarded<null>>("closeTab", { ...guardArgs(spot), urlOnly }, timeoutMs),
+    // 닫기는 정확히 우리 표시(또는 우리가 연 표시 없는 탭)만 — 남의 표시가 있는 탭을 받아들이는 foreignOk 는 싣지 않는다.
+    close: (spot, urlOnly, timeoutMs) => call<Guarded<null>>("closeTab", { ...guardArgs(spot), foreignOk: false, urlOnly }, timeoutMs),
+    clearMark: (windowId, index, key, timeoutMs) => call<boolean>("unstamp", { windowId, index, key }, timeoutMs),
     // 표시 읽기는 읽기 전용. 호스트가 탭 하나에 쓸 시간(timeoutMs)을 지키고, 한 탭이 멈추면 요청 시간 제한이 끊는다.
     readMarkers: (spots, timeoutMs, requestMs) => call<MarkerRead[]>("readMarkers", { spots, timeoutMs }, Math.min(requestMs ?? Infinity, spots.length * timeoutMs + READ_MARKERS_SLACK_MS)),
   });
@@ -385,6 +389,8 @@ export function createJxaDriver(opts: { requestTimeoutMs?: number; host?: HostLi
       } catch (err) {
         firstError ??= err;
       }
+      // 우리 탭을 다 닫은 뒤(그쪽이 먼저다) 사용자 탭에 적어 둔 우리 표시를 지운다 — 표시가 아직 정확히 우리 것일 때만, 최선 노력으로 시간 상한 안에서.
+      await registry.releaseStamps().catch(() => 0);
       adoptedWindows.clear(); // 고른 창은 닫지 않고 그저 놓아 준다
       if (firstError) throw firstError;
       return closed;
