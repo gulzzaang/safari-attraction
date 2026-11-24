@@ -47,6 +47,18 @@ final class SiteModeStoreTests: XCTestCase {
         XCTAssertEqual(SiteModeStore(directory: dir).mode(for: "a.com"), .ask)
     }
 
+    func testRemoveForgetsTheHostAndPersists() throws {
+        let s = SiteModeStore(directory: dir)
+        try s.setMode(.allowAll, for: "Shop.Example.com")
+        try s.setMode(.readOnly, for: "b.com")
+        try s.removeMode(for: " shop.example.COM ")
+        XCTAssertEqual(s.mode(for: "shop.example.com"), .ask)
+        XCTAssertEqual(s.all, ["b.com": .readOnly])
+        XCTAssertEqual(SiteModeStore(directory: dir).all, ["b.com": .readOnly])
+        try s.removeMode(for: "never-saved.com")   // 없는 것을 지워도 괜찮다
+        XCTAssertEqual(s.all, ["b.com": .readOnly])
+    }
+
     func testEmptyHostIsRejected() {
         let s = SiteModeStore(directory: dir)
         XCTAssertThrowsError(try s.setMode(.allowAll, for: "  "))

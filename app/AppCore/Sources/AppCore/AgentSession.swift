@@ -35,11 +35,14 @@ public final class AgentSession {
     public static let replToolName = "mcp__\(AgentCommandBuilder.mcpServerName)__repl"
     static let mcpToolPrefix = "mcp__\(AgentCommandBuilder.mcpServerName)__"
     /// 이 낱말이 든 `repl` 코드는 빨간 코드 카드로 묻는다(계획 8 Global Constraints — 관문은 실수 · 보통의 속임을 막는 장치).
-    static let codeWrapperPattern = "constructor|process|require|child_process|import\\(|Function|eval|globalThis|__proto__|prototype"
+    /// 낱말 경계(`\\b`)로 본다 — `page.evaluate(...)` 가 `eval` 에 걸리지 않게. 대소문자는 구분한다.
+    static let codeWrapperPattern = "\\b(constructor|process|require|child_process|Function|eval|globalThis|prototype)\\b|import\\(|__proto__"
 
     // 화면이 읽고 쓰는 것
     public var input = ""
-    public private(set) var messages: [AgentMessage] = []
+    public private(set) var messages: [AgentMessage] = [] {
+        didSet { notifyPendingCardChange() }
+    }
     public private(set) var isRunning = false
     /// 멈추라고 했지만 프로세스가 아직 안 끝났다 — 화면은 「멈추는 중…」, 새 입력은 받지 않는다.
     public private(set) var isStopping = false
@@ -50,6 +53,10 @@ public final class AgentSession {
 
     /// 사람의 답을 기다리는 카드가 있다 — 화면 · 메뉴 막대 「기다림」.
     public var hasPendingCard: Bool { messages.contains { $0.isPendingCard } }
+
+    /// 기다리는 카드가 생기거나 모두 사라질 때만 불린다(옆 창이 숨지 않게 · 메뉴 막대 「기다림」).
+    @ObservationIgnored public var onPendingCardChange: (@MainActor (Bool) -> Void)?
+    @ObservationIgnored private var lastNotifiedPending = false
 
     @ObservationIgnored private let runnerFactory: @Sendable () -> InteractiveRunning
     @ObservationIgnored private let gateFactory: @MainActor () throws -> GateServing
@@ -126,7 +133,8 @@ public final class AgentSession {
             guard isPlan, !t.isEmpty else { return false }
             revisedText = t
         case .alwaysAllowSite:
-            guard case .actionCard = messages[index].content else { return false }
+            // 빨간 카드(되돌릴 수 없어 보임 · 알 수 없음)는 늘 허락으로 묶지 않는다 — 그때그때 본다.
+            guard case .actionCard(_, _, _, _, let danger, _) = messages[index].content, !danger else { return false }
         }
         let resolved = revisedText.map { AgentAnswer.revise($0) } ?? answer
         guard waiter.resolve(.answer(resolved)) else { return false }
@@ -318,6 +326,7 @@ public final class AgentSession {
         case .stream(let e): apply(e, run: run)
         case .control(.permission(let req)): startPermission(req, run: run)
         case .control(.unsupported(let id, _)):
+            guard !run.closing else { return }   // 멈추는 중 — 더 답하지 않는다
             reply(ClaudeControl.error(requestID: id, message: Self.unsupportedRequestMessage), run: run)
         case .cancel(let id):
             if let cardID = run.requestCards[id], let w = waiters[cardID] {
@@ -504,6 +513,13 @@ public final class AgentSession {
     }
 
     // MARK: 도우미
+
+    private func notifyPendingCardChange() {
+        let now = hasPendingCard
+        guard now != lastNotifiedPending else { return }
+        lastNotifiedPending = now
+        onPendingCardChange?(now)
+    }
 
     private func newRunID() -> Int { nextRunID += 1; return nextRunID }
 

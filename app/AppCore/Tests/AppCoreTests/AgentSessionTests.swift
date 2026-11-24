@@ -495,6 +495,81 @@ final class AgentSessionTests: XCTestCase {
         XCTAssertFalse(AgentSession.hasWrapperWord("await page.click('#buy')"))
     }
 
+    func testWrapperWordsUseWordBoundaries() async throws {
+        // page.evaluate 는 평범한 말 — eval 에 걸리면 안 된다.
+        XCTAssertFalse(AgentSession.hasWrapperWord("page.evaluate(() => document.title)"))
+        XCTAssertFalse(AgentSession.hasWrapperWord("const processed = 1; await page.evaluate(x => x)"))
+        for code in ["eval('x')", "Function('x')", "this.constructor", "process.env", "require('fs')", "import('x')", "a.__proto__",
+                     "globalThis.x", "Object.prototype", "child_process"] {
+            XCTAssertTrue(AgentSession.hasWrapperWord(code), code)
+        }
+        XCTAssertFalse(AgentSession.hasWrapperWord("EVAL('x')"), "대소문자 구분")
+        // 세션 수준: evaluate 만 든 코드는 카드 없이 허락, eval 은 코드 카드.
+        let (r, _, t) = try await start("일")
+        r.emit(canUseTool("r1", AgentSession.replToolName, ["code": "await page.evaluate(() => document.title)"]))
+        try await waitUntil { self.reply(r, "r1") != nil }
+        XCTAssertEqual(reply(r, "r1")?.behavior, "allow")
+        XCTAssertTrue(cards.isEmpty)
+        r.emit(canUseTool("r2", AgentSession.replToolName, ["code": "eval('x')"]))
+        try await waitUntil { self.lastCard != nil }
+        guard case .codeCard = lastCard!.content else { return XCTFail("코드 카드가 아님") }
+        r.finish(.finished(code: 0)); await t.value
+    }
+
+    func testDangerActionCardRefusesAlwaysAllowSite() async throws {
+        let (r, g, t) = try await start("일")
+        try await approvePlan(r)
+        let decision = g.request(gateRequest(action: "evaluate", target: "document.body", irreversible: nil))
+        try await waitUntil { self.cards.count == 2 }
+        guard case .actionCard(_, _, _, _, let danger, _) = lastCard!.content else { return XCTFail() }
+        XCTAssertTrue(danger)
+        XCTAssertFalse(session.answer(cardID: lastCard!.id, .alwaysAllowSite), "빨간 카드는 늘 허락을 받지 않는다")
+        XCTAssertEqual(lastCard?.cardState, .pending)
+        XCTAssertEqual(siteModes.mode(for: "www.example.com"), .ask)
+        XCTAssertTrue(session.answer(cardID: lastCard!.id, .approve))
+        let d = await decision.value
+        XCTAssertEqual(d, .allow)
+        XCTAssertEqual(siteModes.mode(for: "www.example.com"), .ask)
+        r.finish(.finished(code: 0)); await t.value
+    }
+
+    func testIrreversibleCardAlsoRefusesAlwaysAllowSite() async throws {
+        try siteModes.setMode(.allowAll, for: "www.example.com")
+        let (r, g, t) = try await start("일")
+        try await approvePlan(r)
+        let decision = g.request(gateRequest(target: "결제하기", irreversible: true))
+        try await waitUntil { self.cards.count == 2 }
+        XCTAssertFalse(session.answer(cardID: lastCard!.id, .alwaysAllowSite))
+        XCTAssertTrue(session.answer(cardID: lastCard!.id, .reject))
+        let d = await decision.value
+        XCTAssertEqual(d, .deny(AgentSession.cardRejectedReason))
+        r.finish(.finished(code: 0)); await t.value
+    }
+
+    func testUnsupportedControlRequestAfterClosingGetsNoReply() async throws {
+        let (r, _, t) = try await start("일")
+        session.stop()
+        // 멈추는 중에 도착한 모르는 요청 — 답을 쓰지 않는다(같은 메인 액터 턴 안이라 줄은 큐에 이미 들어갔다).
+        r.emit(["type": "control_request", "request_id": "u9", "request": ["subtype": "mcp_message"]])
+        await t.value
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertNil(reply(r, "u9"))
+    }
+
+    func testPendingCardCallbackFiresOnChangesOnly() async throws {
+        var seen: [Bool] = []
+        session.onPendingCardChange = { seen.append($0) }
+        let (r, _, t) = try await start("일")
+        r.emit(canUseTool("plan1", "ExitPlanMode", ["plan": "계획"]))
+        try await waitUntil { self.lastCard != nil }
+        r.emit(["type": "assistant", "session_id": "sess-1", "message": ["content": [["type": "text", "text": "글"]]]])
+        try await waitUntil { self.session.messages.count >= 3 }
+        XCTAssertEqual(seen, [true], "카드가 뜬 한 번만")
+        XCTAssertTrue(session.answer(cardID: lastCard!.id, .approve))
+        XCTAssertEqual(seen, [true, false])
+        r.finish(.finished(code: 0)); await t.value
+    }
+
     func testUnsupportedControlRequestGetsErrorReply() async throws {
         let (r, _, t) = try await start("일")
         r.emit(["type": "control_request", "request_id": "u1", "request": ["subtype": "mcp_message"]])

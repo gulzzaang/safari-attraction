@@ -31,7 +31,8 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertEqual(errno, ESRCH, file: file, line: line)
         errno = 0
         XCTAssertEqual(kill(-pid, 0), -1, "프로세스 그룹 \(pid) 가 아직 있음", file: file, line: line)
-        XCTAssertEqual(errno, ESRCH, file: file, line: line)
+        // EPERM = 그 그룹 번호를 다른 사람의 프로세스가 다시 쓰는 중(우리 것은 이미 없다) — 사라진 것으로 본다.
+        XCTAssertTrue(errno == ESRCH || errno == EPERM, "errno=\(errno)", file: file, line: line)
     }
 
     func testEchoFinishesWithAllOutput() async {

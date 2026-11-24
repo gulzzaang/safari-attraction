@@ -57,6 +57,17 @@ public final class SiteModeStore: @unchecked Sendable {
         modes = next
     }
 
+    /// 이 사이트를 잊는다(다시 「묻고 하기」). 저장된 적 없으면 아무 일도 없다.
+    public func removeMode(for host: String) throws {
+        let key = Self.normalize(host)
+        lock.lock(); defer { lock.unlock() }
+        guard modes[key] != nil else { return }
+        var next = modes
+        next[key] = nil
+        try write(next)
+        modes = next
+    }
+
     private func load() {
         guard let data = try? Data(contentsOf: fileURL) else { return }   // 없으면 빈 것
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
