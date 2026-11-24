@@ -142,6 +142,36 @@ final class CodexDeviceLoginTests: XCTestCase {
         XCTAssertEqual(login.state, .needsTerminal)
     }
 
+    func testNonZeroExitBeforeAnythingWasReadOpensTerminalInstead() async throws {
+        let runner = FakeRunner()
+        runner.setScript { _, emit in
+            emit(.stderr(Data("Error: device code login is not enabled for this account\n".utf8)))
+            return .finished(code: 1)
+        }
+        let login = make(runner: runner)
+        var finished: [Bool] = []
+        login.onFinished = { finished.append($0) }
+        login.start()
+        try await waitUntil { login.state == .needsTerminal }
+        XCTAssertEqual(finished, [], "끝난 게 아니라 터미널로 넘긴다")
+    }
+
+    func testParseDeadlineStartsOnlyAfterLoginPathIsResolved() async throws {
+        let gate = Gate()
+        let runner = FakeRunner()
+        runner.setScript { _, _ in await gate.wait(); return .stopped }
+        let slept = CallCounter()
+        let login = CodexDeviceLogin(runner: runner, loginPath: { Thread.sleep(forTimeInterval: 0.3); return "/test/bin" },
+                                     workDirectory: { URL(fileURLWithPath: "/tmp/work-test") }, timeout: 30, sleep: { _ in slept.hit() })
+        login.start()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(slept.count, 0, "로그인 PATH 를 읽는 동안에는 10초 시계가 돌지 않는다")
+        XCTAssertEqual(login.state, .starting)
+        try await waitUntil { login.state == .needsTerminal }
+        XCTAssertEqual(slept.count, 1)
+        await gate.open()
+    }
+
     func testFailureNonZeroExit() async throws {
         let runner = FakeRunner()
         runner.setScript { _, emit in

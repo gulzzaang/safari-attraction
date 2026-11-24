@@ -137,23 +137,23 @@ public final class CodexDeviceLogin {
         let collector = Collector()
         let runner = self.runner, loginPath = self.loginPath, workDirectory = self.workDirectory, timeout = self.timeout
         let sleep = self.sleep
-        let deadline = Task { [weak self] in
-            do { try await sleep(Self.parseDeadline) } catch { return }
-            await MainActor.run {
-                guard let self, self.generation == gen, self.state == .starting else { return }
-                self.state = .needsTerminal
-                self.runner.stop()
-            }
-        }
         task = Task { [weak self] in
             let prepared: (String, URL)? = await Task.detached(priority: .userInitiated) {
                 guard let dir = try? workDirectory() else { return nil }
                 return (loginPath(), dir)
             }.value
             guard let (path, dir) = prepared else {
-                deadline.cancel()
                 await MainActor.run { self?.finish(gen, .failed("작업 폴더를 만들지 못했어요")) }
                 return
+            }
+            // 주소 · 코드를 기다리는 10초는 로그인 PATH 를 읽은 뒤, 프로세스를 띄우기 직전부터 센다.
+            let deadline = Task { [weak self] in
+                do { try await sleep(Self.parseDeadline) } catch { return }
+                await MainActor.run {
+                    guard let self, self.generation == gen, self.state == .starting else { return }
+                    self.state = .needsTerminal
+                    self.runner.stop()
+                }
             }
             let cmd = CLICommands.codexDeviceLogin
             let outcome = await runner.run(executable: cmd.executable, arguments: cmd.arguments, workDir: dir, path: path,
@@ -191,7 +191,16 @@ public final class CodexDeviceLogin {
             finish(gen, .failed(ModelKind.chatgpt.notFoundMessage))
         case .timedOut:
             finish(gen, .failed("로그인이 끝나지 않아 멈췄어요 — 다시 시도해 주세요"))
-        case .finished, .failed:
+        case .finished:
+            switch state {
+            case .needsTerminal: return
+            case .starting:
+                // 주소 · 코드를 읽기 전에 codex 가 오류로 끝났다(예: 계정에서 기기 코드 로그인을 안 켬) — 터미널로 열어 codex 자신의 안내를 보여 준다.
+                state = .needsTerminal
+            default:
+                finish(gen, .failed("로그인이 끝나지 않았어요 — 다시 시도하거나 터미널로 해 주세요"))
+            }
+        case .failed:
             if state == .needsTerminal { return }
             finish(gen, .failed("로그인이 끝나지 않았어요 — 다시 시도하거나 터미널로 해 주세요"))
         }
