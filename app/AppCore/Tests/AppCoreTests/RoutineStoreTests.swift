@@ -318,4 +318,87 @@ final class RoutineStoreTests: XCTestCase {
         try s.appendHistory(record(2))
         XCTAssertEqual(try Data(contentsOf: historyBak), original)
     }
+
+    // 사이트 알림 루틴
+
+    private func alertRoutine(_ task: SavedTask, host: String, keyword: String? = nil, sites: [String] = ["example.com"]) -> Routine {
+        Routine(taskID: task.id, schedule: .siteAlert(host: host, keyword: keyword), sites: sites, enabled: true, createdAt: t0)
+    }
+
+    func testSiteAlertRoutineSurvivesReopen() throws {
+        let s = RoutineStore(directory: dir)
+        let task = try s.upsertSavedTask(SavedTask(name: "알림", text: "새 소식 알려 줘"))
+        let a = try s.upsertRoutine(alertRoutine(task, host: "example.com", keyword: "세일"))
+        let b = try s.upsertRoutine(alertRoutine(task, host: "shop.example.com", keyword: nil))
+        let s2 = RoutineStore(directory: dir)
+        XCTAssertEqual(s2.routines, [a, b])
+        XCTAssertEqual(s2.routine(id: a.id)?.schedule, .siteAlert(host: "example.com", keyword: "세일"))
+        XCTAssertEqual(s2.routine(id: b.id)?.schedule, .siteAlert(host: "shop.example.com", keyword: nil))
+    }
+
+    func testSiteAlertHostMustBeInsideSites() throws {
+        let s = RoutineStore(directory: dir)
+        let task = try s.upsertSavedTask(SavedTask(name: "알림", text: "새 소식"))
+        // 목록 밖, 비슷한 이름, 위쪽 도메인, 빈 호스트, 이상한 글자는 모두 저장 거절
+        for host in ["other.com", "evilexample.com", "example.com.evil.com", "", "   ", "a/b.com", "example.com:8080"] {
+            XCTAssertThrowsError(try s.upsertRoutine(alertRoutine(task, host: host)), "host=\(host)") {
+                XCTAssertEqual($0 as? RoutineStoreError, .alertHostOutsideSites, "host=\(host)")
+            }
+        }
+        XCTAssertThrowsError(try s.upsertRoutine(alertRoutine(task, host: "coupang.com", sites: ["www.coupang.com"])))   // 목록의 위쪽 도메인
+        XCTAssertThrowsError(try s.upsertRoutine(alertRoutine(task, host: "example.com", sites: [])))
+        XCTAssertEqual(s.routines, [])
+        // saveRoutine 도 같은 규칙
+        XCTAssertThrowsError(try s.saveRoutine(alertRoutine(task, host: "other.com"), now: t0)) {
+            XCTAssertEqual($0 as? RoutineStoreError, .alertHostOutsideSites)
+        }
+        XCTAssertEqual(s.routines, [])
+        XCTAssertEqual(RoutineStoreError.alertHostOutsideSites.localizedDescription, "알림을 볼 사이트는 갈 수 있는 사이트 안에 있어야 해요")
+    }
+
+    func testSiteAlertSubdomainOfASiteIsAllowedAndHostIsNormalized() throws {
+        let s = RoutineStore(directory: dir)
+        let task = try s.upsertSavedTask(SavedTask(name: "알림", text: "새 소식"))
+        let saved = try s.upsertRoutine(alertRoutine(task, host: "  WWW.Example.COM. ", keyword: "  세일  "))
+        XCTAssertEqual(saved.schedule, .siteAlert(host: "www.example.com", keyword: "세일"))
+        let blank = try s.upsertRoutine(alertRoutine(task, host: "example.com", keyword: "   "))
+        XCTAssertEqual(blank.schedule, .siteAlert(host: "example.com", keyword: nil))
+    }
+
+    func testEditingSitesAwayFromAlertHostIsRejected() throws {
+        let s = RoutineStore(directory: dir)
+        let task = try s.upsertSavedTask(SavedTask(name: "알림", text: "새 소식"))
+        var r = try s.saveRoutine(alertRoutine(task, host: "example.com"), now: t0)
+        r.sites = ["other.com"]
+        XCTAssertThrowsError(try s.saveRoutine(r, now: t0)) { XCTAssertEqual($0 as? RoutineStoreError, .alertHostOutsideSites) }
+        XCTAssertEqual(s.routine(id: r.id)?.sites, ["example.com"])
+    }
+
+    func testOldRoutinesJSONWithoutSiteAlertStillReads() throws {
+        let taskID = UUID(), a = UUID(), b = UUID(), c = UUID()
+        let json = """
+        {
+          "savedTasks": [{"id": "\(taskID.uuidString)", "name": "옛 일", "text": "쿠팡에서 사과"}],
+          "routines": [
+            {"id": "\(a.uuidString)", "taskID": "\(taskID.uuidString)", "schedule": {"daily": {"hour": 9, "minute": 30}},
+             "sites": ["coupang.com"], "enabled": true, "createdAt": "2027-01-15T08:00:00Z"},
+            {"id": "\(b.uuidString)", "taskID": "\(taskID.uuidString)", "schedule": {"weekdays": {"_0": [2, 4], "hour": 7, "minute": 0}},
+             "sites": ["coupang.com"], "enabled": false, "createdAt": "2027-01-15T08:00:00Z"},
+            {"id": "\(c.uuidString)", "taskID": "\(taskID.uuidString)", "schedule": {"everyHours": {"_0": 3}},
+             "sites": ["coupang.com"], "enabled": true, "createdAt": "2027-01-15T08:00:00Z"}
+          ]
+        }
+        """
+        try Data(json.utf8).write(to: file)
+        let s = RoutineStore(directory: dir)
+        XCTAssertEqual(s.routines.map(\.schedule), [.daily(hour: 9, minute: 30), .weekdays([2, 4], hour: 7, minute: 0), .everyHours(3)])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: bak.path), "읽혔으니 깨진 파일로 보고 .bak 을 만들지 않는다")
+        // 새 경우를 더해 저장한 뒤에도 옛 것들이 그대로
+        let task = s.savedTasks[0]
+        try s.upsertRoutine(alertRoutine(task, host: "coupang.com", sites: ["coupang.com"]))
+        let s2 = RoutineStore(directory: dir)
+        XCTAssertEqual(s2.routines.count, 4)
+        XCTAssertEqual(s2.routines[0].schedule, .daily(hour: 9, minute: 30))
+        XCTAssertEqual(s2.routines[3].schedule, .siteAlert(host: "coupang.com", keyword: nil))
+    }
 }

@@ -240,4 +240,36 @@ final class RoutineScheduleTests: XCTestCase {
             XCTAssertEqual(try JSONDecoder().decode(RoutineSchedule.self, from: data), s)
         }
     }
+
+    // 사이트 알림 — 시계는 이 루틴을 돌리지 않는다
+
+    func testSiteAlertNeverDueByClock() {
+        let c = cal()
+        let s = RoutineSchedule.siteAlert(host: "example.com", keyword: nil)
+        let created = date(c, 2026, 3, 1, 8, 0)
+        for now in [created, date(c, 2026, 3, 1, 9, 0), date(c, 2026, 6, 1, 9, 0), date(c, 2030, 1, 1, 0, 0)] {
+            XCTAssertEqual(decide(s, now: now, created: created, c), .notYet(next: .distantFuture))
+            XCTAssertEqual(decide(s, now: now, handled: created, created: created, c), .notYet(next: .distantFuture))
+        }
+        XCTAssertEqual(s.nextOccurrence(after: created, anchor: created, calendar: c), .distantFuture)
+    }
+
+    func testSiteAlertSummary() {
+        XCTAssertEqual(RoutineSchedule.siteAlert(host: "example.com", keyword: nil).summary, "example.com 알림이 오면")
+        XCTAssertEqual(RoutineSchedule.siteAlert(host: "example.com", keyword: "세일").summary, "example.com 알림에 ‘세일’ 가 있으면")
+    }
+
+    func testSiteAlertCodableRoundTripWithAndWithoutKeyword() throws {
+        for s in [RoutineSchedule.siteAlert(host: "example.com", keyword: nil), .siteAlert(host: "a.example.com", keyword: "배송")] {
+            let data = try JSONEncoder().encode(s)
+            XCTAssertEqual(try JSONDecoder().decode(RoutineSchedule.self, from: data), s)
+        }
+    }
+
+    func testAlertWatchOnlyForSiteAlert() {
+        XCTAssertEqual(RoutineSchedule.siteAlert(host: "x.com", keyword: "k").alertWatch?.host, "x.com")
+        XCTAssertEqual(RoutineSchedule.siteAlert(host: "x.com", keyword: "k").alertWatch?.keyword, "k")
+        XCTAssertNil(RoutineSchedule.daily(hour: 9, minute: 0).alertWatch)
+        XCTAssertNil(RoutineSchedule.everyHours(3).alertWatch)
+    }
 }

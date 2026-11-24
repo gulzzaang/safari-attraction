@@ -79,6 +79,17 @@ public enum RoutineStoreError: Error, Equatable {
     case emptyText
     case unknownTask
     case unknownRoutine
+    /// 알림 루틴의 호스트가 「갈 수 있는 사이트」(`sites`) 안에 없다.
+    case alertHostOutsideSites
+}
+
+extension RoutineStoreError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .alertHostOutsideSites: return "알림을 볼 사이트는 갈 수 있는 사이트 안에 있어야 해요"
+        case .emptyName, .emptyText, .unknownTask, .unknownRoutine: return nil   // 기본 글 그대로
+        }
+    }
 }
 
 /// `<앱 지원 폴더>/routines.json`(저장한 일 + 루틴)과 `<앱 지원 폴더>/routines/history.jsonl`(결과 기록, 최근 200개) 저장소.
@@ -162,10 +173,14 @@ public final class RoutineStore: @unchecked Sendable {
     }
 
     /// 새로 넣거나 고친다. 가리키는 저장한 일이 없으면 `unknownTask`. 사이트는 소문자 · 끝 점 떼기 · 빈 것 · 점 없는 낱말 · 공개 접미사(`co.kr`) · 중복 빼기로 맞춘다.
+    /// 알림 루틴(`.siteAlert`)은 호스트를 소문자 · 공백 · 끝 점 없이 맞추고 키워드의 앞뒤 공백을 떼며(빈 키워드는 없음), 호스트가
+    /// 맞춘 `sites` 중 하나와 `SiteList.allows` 로 맞지 않으면 `alertHostOutsideSites`.
     @discardableResult
     public func upsertRoutine(_ routine: Routine) throws -> Routine {
         var r = routine
         r.sites = Self.cleanSites(r.sites)
+        r.schedule = Self.cleanSchedule(r.schedule)
+        if case let .siteAlert(host, _) = r.schedule, !SiteList.allows(host: host, list: r.sites) { throw RoutineStoreError.alertHostOutsideSites }
         lock.lock(); defer { lock.unlock() }
         guard doc.savedTasks.contains(where: { $0.id == r.taskID }) else { throw RoutineStoreError.unknownTask }
         var next = doc
@@ -181,6 +196,7 @@ public final class RoutineStore: @unchecked Sendable {
     @discardableResult
     public func saveRoutine(_ routine: Routine, now: Date) throws -> Routine {
         var r = routine
+        r.schedule = Self.cleanSchedule(r.schedule)   // 맞춘 모양으로 견줘야 알림 루틴을 그대로 다시 저장해도 「일정이 바뀜」 이 되지 않는다
         let old = self.routine(id: r.id)
         if r.enabled, old == nil || old?.enabled == false || old?.schedule != r.schedule {
             r.lastHandled = now
@@ -210,6 +226,12 @@ public final class RoutineStore: @unchecked Sendable {
         next.routines.removeAll { $0.id == id }
         try writeDocument(next)
         doc = next
+    }
+
+    private static func cleanSchedule(_ schedule: RoutineSchedule) -> RoutineSchedule {
+        guard case let .siteAlert(host, keyword) = schedule else { return schedule }
+        let k = keyword?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .siteAlert(host: SiteList.normalize(host), keyword: (k?.isEmpty ?? true) ? nil : k)
     }
 
     private static func cleanSites(_ sites: [String]) -> [String] {

@@ -5,6 +5,15 @@ public enum RoutineSchedule: Codable, Equatable, Sendable {
     case daily(hour: Int, minute: Int)
     case weekdays(Set<Int>, hour: Int, minute: Int)
     case everyHours(Int)
+    /// 사이트 알림이 오면 — 시계로는 돌지 않는다(`decide` 는 늘 `.notYet(next: .distantFuture)`). 사파리 확장이 `host`(와 그 하위 도메인)의
+    /// 알림을 알아채 앱에 알리면 `RoutineHub.handleSiteAlert` 가 돌린다. `keyword` 가 있으면 알림 제목 + 내용에 그 글이 있을 때만(대소문자 무시).
+    case siteAlert(host: String, keyword: String?)
+
+    /// 알림 루틴이면 지켜볼 호스트 · 키워드, 아니면 nil.
+    public var alertWatch: (host: String, keyword: String?)? {
+        if case let .siteAlert(host, keyword) = self { return (host, keyword) }
+        return nil
+    }
 
     /// 지금 무엇을 할지 — 한 곳에서 일정 · 지나침 규칙을 다 판단한다.
     ///
@@ -15,6 +24,7 @@ public enum RoutineSchedule: Codable, Equatable, Sendable {
     /// 부르는 쪽은 `.run` · `.skipMissed` 둘 다 `lastHandled = scheduled` 로 저장해야 한다
     /// (그래야 몰려 돌지도, 영원히 건너뛰지도 않는다). 실제로 돈 시각 표시는 `lastRun` 이 따로 맡는다.
     public func decide(now: Date, lastHandled: Date?, createdAt: Date, calendar: Calendar) -> ScheduleDecision {
+        if case .siteAlert = self { return .notYet(next: .distantFuture) }   // 시계 · 잠 깸 · 앱 켬으로는 돌지 않는다
         let base = lastHandled ?? createdAt
         let first = nextOccurrence(after: base, anchor: base, calendar: calendar)
         guard first <= now else { return .notYet(next: first) }
@@ -25,7 +35,7 @@ public enum RoutineSchedule: Codable, Equatable, Sendable {
     /// `after` 보다 **뒤**의 첫 예정 시각(정각이면 다음). 화면에 보일 「다음 시각」 은 `after` 에 지금을 넣는다.
     /// - `daily` · `weekdays`: 달력 기준. 시간대 · 여름시간은 `calendar` 에 맡긴다(없는 시각이면 바로 뒤 첫 시각으로 밀림 — 예: 2:30 이 없는 날은 3:00).
     /// - `everyHours`: `anchor` + k × N시간(k ≥ 1, N 은 1…24 로 맞춤) 중 `after` 뒤 첫 칸.
-    /// - 요일이 하나도 없는 `weekdays` 는 `Date.distantFuture`(돌지 않음).
+    /// - 요일이 하나도 없는 `weekdays` · `siteAlert` 는 `Date.distantFuture`(시계로는 돌지 않음).
     public func nextOccurrence(after: Date, anchor: Date, calendar: Calendar) -> Date {
         switch self {
         case let .daily(hour, minute):
@@ -38,6 +48,8 @@ public enum RoutineSchedule: Codable, Equatable, Sendable {
             let step = Self.step(n)
             let k = max(1, Int((after.timeIntervalSince(anchor) / step).rounded(.down)) + 1)
             return anchor.addingTimeInterval(Double(k) * step)
+        case .siteAlert:
+            return .distantFuture
         }
     }
 
@@ -47,6 +59,8 @@ public enum RoutineSchedule: Codable, Equatable, Sendable {
             let step = Self.step(n)
             let k = max(1, Int((now.timeIntervalSince(base) / step).rounded(.down)))
             return base.addingTimeInterval(Double(k) * step)
+        case .siteAlert:
+            return first
         case .daily, .weekdays:
             // 기준이 아주 옛날이어도 마지막 8일만 훑으면 가장 최근 칸을 찾는다(요일이 있으면 늦어도 7일 안에 한 번).
             var latest: Date?
@@ -100,6 +114,9 @@ extension RoutineSchedule {
             return "매주 \(names.joined(separator: " · ")) \(clock(h, m))"
         case let .everyHours(n):
             return "\(min(24, max(1, n)))시간마다"
+        case let .siteAlert(host, keyword):
+            guard let keyword, !keyword.isEmpty else { return "\(host) 알림이 오면" }
+            return "\(host) 알림에 ‘\(keyword)’ 가 있으면"
         }
     }
 }

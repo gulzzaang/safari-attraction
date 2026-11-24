@@ -35,6 +35,8 @@ public final class RoutineScheduler {
     public static let missedSkipReason = "지나침"
     public static let missingTaskReason = "저장한 일을 찾을 수 없어요"
     public static let noSitesSkipReason = "갈 수 있는 사이트가 없어요"
+    /// 알림으로 남기는 같은 루틴의 건너뜀 기록 사이 간격(알림 쿨다운과 같은 10분).
+    public static let alertSkipInterval: TimeInterval = 600
     public static let storageFailedAnswer = "저장 실패 — 루틴 기록을 쓰지 못했어요"
 
     /// 지금 루틴을 돌고 있으면 그 루틴(화면 표시용). 기다리는 중에는 비어 있다.
@@ -58,6 +60,11 @@ public final class RoutineScheduler {
     @ObservationIgnored private var stopped = false
     /// 루틴마다 마지막으로 **처리한** 예정 시각 — 저장소 쓰기가 실패해도(`lastHandled` 가 안 남아도) 같은 칸이 다음 틱에 또 돌지 않게 메모리에서도 거른다.
     @ObservationIgnored private var lastScheduled: [UUID: Date] = [:]
+    /// 알림으로 도는 루틴이 하나 시작됐고 아직 끝나지 않았다 — 알림은 한 번에 하나만 돈다(`runner.isBusy` 가 켜지기 전 틈도 막는다).
+    @ObservationIgnored private var alertClaimed = false
+    @ObservationIgnored private var alertTask: Task<Void, Never>?
+    /// 알림으로 남긴 건너뜀 기록의 마지막 시각(루틴마다) — 알림이 쏟아져도 같은 루틴의 건너뜀 기록은 `alertSkipInterval` 에 한 줄.
+    @ObservationIgnored private var lastAlertSkip: [UUID: Date] = [:]
 
     public init(store: RoutineStore,
                 runner: RoutineRunning,
@@ -209,6 +216,47 @@ public final class RoutineScheduler {
         let outcome = await runner.runRoutine(text: task.text, sites: routine.sites)
         if claimed { activeRoutineID = nil }
         return finish(routine: routine, taskName: task.name, status: outcome.status, answer: outcome.answer, scheduled: nil)
+    }
+
+    // MARK: 알림으로 돌기
+
+    /// 사이트 알림으로 루틴을 **시작**한다 — 기다리지 않는다. 일정은 보지 않고, `lastHandled` 는 건드리지 않으며, 일 글 뒤에 알림 머리(`note`)를 붙여
+    /// 예약 루틴과 같은 사람 없음 길(`runRoutine(text:sites:)`)로 돈다. 끝나면 기록 · `lastRun` · 「끝나면 알림」(`onFinished`)이 예약 루틴과 같다.
+    /// 시작했으면 true. 돌지 못하면 false 이고, 이유가 있으면 `건너뜀(이유)` 기록을 한 줄 남긴다(같은 루틴은 `alertSkipInterval` 에 한 줄):
+    /// 갈 수 있는 사이트 없음 · 사파리 꺼짐 · 자동화 허락 없음 · 다른 일(일 맡기기 · 다른 루틴 · 먼저 시작된 알림 루틴)이 도는 중.
+    /// 시계를 껐거나 루틴 · 저장한 일이 없으면 아무 기록 없이 false.
+    @discardableResult
+    public func startAlertRun(routineID: UUID, note: String) -> Bool {
+        guard !stopped, let routine = store.routine(id: routineID) else { return false }
+        guard let task = store.savedTask(id: routine.taskID) else { return false }
+        if Self.hasNoSites(routine) { return skipAlert(routine, taskName: task.name, reason: Self.noSitesSkipReason) }
+        if case .skip(let reason) = preflight.check() { return skipAlert(routine, taskName: task.name, reason: reason) }
+        if runner.isBusy || alertClaimed { return skipAlert(routine, taskName: task.name, reason: AgentSession.routineBusyReason) }
+        alertClaimed = true
+        activeRoutineID = routine.id
+        let text = task.text + note
+        let sites = routine.sites
+        let taskName = task.name
+        alertTask = Task { [self] in
+            let outcome = await runner.runRoutine(text: text, sites: sites)
+            if activeRoutineID == routine.id { activeRoutineID = nil }
+            alertClaimed = false
+            finish(routine: routine, taskName: taskName, status: outcome.status, answer: outcome.answer, scheduled: nil)
+        }
+        return true
+    }
+
+    /// 알림으로 시작한 루틴이 끝날 때까지 기다린다(없으면 바로 돌아온다) — 시험 · 앱 끝내기용.
+    public func waitForAlertRun() async {
+        await alertTask?.value
+    }
+
+    private func skipAlert(_ routine: Routine, taskName: String, reason: String) -> Bool {
+        let now = clock()
+        if let last = lastAlertSkip[routine.id], now.timeIntervalSince(last) < Self.alertSkipInterval { return false }
+        lastAlertSkip[routine.id] = now
+        finish(routine: routine, taskName: taskName, status: RoutineRecord.statusSkipped(reason), answer: "", scheduled: nil)
+        return false
     }
 
     /// 사이트 목록이 비었거나 공백뿐이면 갈 수 있는 곳이 없다.

@@ -3,7 +3,7 @@ import SwiftUI
 
 /// 루틴 하나를 고치는 중인 값(아직 저장 전).
 private struct RoutineDraft: Equatable {
-    enum Kind: String, CaseIterable { case daily, weekdays, everyHours }
+    enum Kind: String, CaseIterable { case daily, weekdays, everyHours, siteAlert }
 
     var id: UUID?                  // nil 이면 새 루틴
     var taskID: UUID?
@@ -12,6 +12,8 @@ private struct RoutineDraft: Equatable {
     var minute = 0
     var weekdays: Set<Int> = [2, 3, 4, 5, 6]   // 월~금
     var hours = 6
+    var alertHost = ""            // 사이트 알림 루틴 — 고치는 화면은 계획 12 의 다음 조각이 맡는다(지금은 그대로 보존만)
+    var alertKeyword: String?
     var sites: [String] = []
     var sitesEdited = false        // 사람이 목록을 손대면 일을 바꿔도 다시 뽑지 않는다
     var enabled = true
@@ -21,6 +23,7 @@ private struct RoutineDraft: Equatable {
         case .daily: return .daily(hour: hour, minute: minute)
         case .weekdays: return .weekdays(weekdays, hour: hour, minute: minute)
         case .everyHours: return .everyHours(hours)
+        case .siteAlert: return .siteAlert(host: alertHost, keyword: alertKeyword)
         }
     }
 
@@ -39,6 +42,7 @@ private struct RoutineDraft: Equatable {
         case let .daily(h, m): kind = .daily; hour = h; minute = m
         case let .weekdays(d, h, m): kind = .weekdays; weekdays = d; hour = h; minute = m
         case let .everyHours(n): kind = .everyHours; hours = n
+        case let .siteAlert(host, keyword): kind = .siteAlert; alertHost = host; alertKeyword = keyword
         }
     }
 }
@@ -230,12 +234,17 @@ struct RoutinesView: View {
     private var scheduleEditor: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("언제").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            Picker("", selection: Binding(get: { draft?.kind ?? .daily }, set: { draft?.kind = $0 })) {
-                Text("매일").tag(RoutineDraft.Kind.daily)
-                Text("요일").tag(RoutineDraft.Kind.weekdays)
-                Text("N시간마다").tag(RoutineDraft.Kind.everyHours)
+            if draft?.kind == .siteAlert {
+                // 사이트 알림 루틴은 계획 12 의 화면 조각이 고치는 칸을 만든다 — 그때까지는 호스트 · 키워드를 그대로 두고 보여 주기만 한다.
+                Text(draft?.schedule.summary ?? "").font(.callout)
+            } else {
+                Picker("", selection: Binding(get: { draft?.kind ?? .daily }, set: { draft?.kind = $0 })) {
+                    Text("매일").tag(RoutineDraft.Kind.daily)
+                    Text("요일").tag(RoutineDraft.Kind.weekdays)
+                    Text("N시간마다").tag(RoutineDraft.Kind.everyHours)
+                }
+                .pickerStyle(.segmented).labelsHidden()
             }
-            .pickerStyle(.segmented).labelsHidden()
             if draft?.kind == .weekdays {
                 HStack(spacing: 4) {
                     ForEach([2, 3, 4, 5, 6, 7, 1], id: \.self) { day in
@@ -254,7 +263,7 @@ struct RoutinesView: View {
                 }
                 .controlSize(.small)
                 Text("만든 시각 · 켠 시각부터 셉니다.").font(.caption).foregroundStyle(.secondary)
-            } else {
+            } else if draft?.kind != .siteAlert {
                 HStack(spacing: 4) {
                     Picker("", selection: Binding(get: { draft?.hour ?? 9 }, set: { draft?.hour = $0 })) {
                         ForEach(0..<24, id: \.self) { Text(String(format: "%02d시", $0)).tag($0) }

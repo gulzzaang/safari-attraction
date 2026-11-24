@@ -144,6 +144,51 @@ public final class RoutineHub {
         return record
     }
 
+    // MARK: 사이트 알림
+
+    /// 같은 루틴이 알림으로 또 돌지 않는 시간 — `lastRun`(예약 · 「지금 한 번」 · 알림 어느 쪽이든 실제로 돈 시각)에서 이만큼 지나야 한다.
+    public static let alertCooldown: TimeInterval = 600
+
+    /// 지켜볼 호스트 — 켜진 알림 루틴들의 host(루틴의 갈 수 있는 사이트 안에 드는 것만), 중복 없이 처음 나온 차례. 앱을 끝낸 뒤에는 비어 있다.
+    public func alertHosts() -> [String] {
+        guard !isShutDown else { return [] }
+        var seen = Set<String>()
+        var out: [String] = []
+        for r in store.routines where r.enabled {
+            guard let watch = r.schedule.alertWatch, SiteList.allows(host: watch.host, list: r.sites) else { continue }
+            let host = SiteList.normalize(watch.host)
+            if seen.insert(host).inserted { out.append(host) }
+        }
+        return out
+    }
+
+    /// 사파리 확장이 알아챈 사이트 알림 — 맞는 루틴을 사람 없이 **시작**하고 시작한 수를 돌려준다(루틴이 끝나기를 기다리지 않는다).
+    /// 맞는 루틴: 켜져 있고 · 알림 호스트가 루틴 host 와 같거나 그 하위 도메인이고 · 키워드가 있으면 `제목 + " " + 내용` 에 대소문자 무시로 들어 있음.
+    /// - 쿨다운: `lastRun` 이 `alertCooldown`(10분) 안이면 조용히 버린다(기록도 없음).
+    /// - 한 번에 하나: 맞는 루틴이 여럿이어도 첫 하나만 돌고, 나머지는 바쁨 규칙대로 `건너뜀(다른 일이 도는 중이에요)` 기록(스케줄러가 같은 루틴의 건너뜀 기록은 10분에 한 줄로 줄인다).
+    /// - 사파리 꺼짐 · 허락 없음 · 사이트 없음 · 다른 일이 도는 중 → `건너뜀(이유)` 기록(예약 루틴과 같은 돌기 전 확인, 기다리지 않음).
+    /// - 일 글은 저장한 일 글 + 알림 머리(`SiteAlert.promptNote`). 시계의 `lastHandled` 는 건드리지 않는다.
+    @discardableResult
+    public func handleSiteAlert(host: String, kind: SiteAlert.Kind, title: String, body: String) async -> Int {
+        guard !isShutDown else { return 0 }
+        let alert = SiteAlert(host: host, kind: kind, title: title, body: body)
+        let now = clock()
+        var started = 0
+        for r in store.routines where r.enabled {
+            guard let watch = r.schedule.alertWatch, SiteList.allows(host: watch.host, list: r.sites),
+                  alert.matches(routineHost: watch.host, keyword: watch.keyword) else { continue }
+            if let last = r.lastRun, now.timeIntervalSince(last) < Self.alertCooldown { continue }
+            if scheduler.startAlertRun(routineID: r.id, note: alert.promptNote) { started += 1 }
+        }
+        if started > 0 { revision += 1 }
+        return started
+    }
+
+    /// 알림으로 시작한 루틴이 끝날 때까지 기다린다(시험용).
+    public func waitForAlertRuns() async {
+        await scheduler.waitForAlertRun()
+    }
+
     // MARK: 알림
 
     /// 「끝나면 알림」 켜기 · 끄기. 켤 때만 알림 허락을 묻는다(사람의 동작) — 허락을 못 받으면 켜지지 않고 안내 글이 남는다.
@@ -171,3 +216,6 @@ public final class RoutineHub {
         notifier.deliver(title: RoutineNotification.title(for: record), body: RoutineNotification.body(for: record))
     }
 }
+
+/// 사파리 확장의 알림 길을 받는다 — 서버(`PanelServer`)는 이 닫힘으로만 허브에 닿는다.
+extension RoutineHub: PanelAlertHandling {}

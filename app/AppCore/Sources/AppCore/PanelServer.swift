@@ -6,7 +6,7 @@ public enum PanelServerError: Error, Equatable {
     case stopped
 }
 
-/// 사파리 확장 패널이 부르는 앱 로컬 서버 — `127.0.0.1` 에만 열리는 최소 HTTP/1.1(`GET /info` · `POST /ask`).
+/// 사파리 확장 패널이 부르는 앱 로컬 서버 — `127.0.0.1` 에만 열리는 최소 HTTP/1.1(`GET /info` · `POST /ask` · `GET /alert-hosts` · `POST /alert`).
 ///
 /// - 요청은 `X-SA-Token`(상수 시간 비교) · `Host` 가 `127.0.0.1:<포트>` 일 때만, 아니면 403.
 ///   `Origin` 이 있는데 `safari-web-extension://` 로 시작하지 않아도 403(웹 페이지는 토큰도 모르고 Origin 도 다르다).
@@ -15,6 +15,8 @@ public enum PanelServerError: Error, Equatable {
 ///   (사파리가 실행마다 UUID 를 바꾼다). 403 · 429 · 413 에도 붙여서 확장이 한국어 안내를 읽을 수 있게 한다.
 ///   OPTIONS 미리 확인은 토큰 없이 Host · Origin 만 본다.
 /// - 본문은 256KB 까지(넘으면 413 — 본문은 읽지 않는다), `/ask` 는 동시에 2개까지(셋째는 429).
+/// - 알림 길(사이트 알림 루틴): `GET /alert-hosts` → `{"hosts":[…]}`, `POST /alert` → 202 `{"accepted":N}`(잘못된 본문은 400).
+///   위와 같은 토큰 · Host · Origin · 본문 상한을 그대로 탄다. `/alert` 는 `/ask` 자리를 쓰지 않고, 루틴이 끝나기를 기다리지 않는다(처리기가 시작만 하고 돌아온다).
 /// - `/ask` 답은 `Transfer-Encoding: chunked` 로 한 줄(NDJSON)씩 흘린다. 손님이 끊으면 그 질문의 일을 취소한다(실행기 stop).
 public final class PanelServer: @unchecked Sendable {
     public static let tokenHeader = "X-SA-Token"
@@ -31,6 +33,7 @@ public final class PanelServer: @unchecked Sendable {
     fileprivate let readTimeout: TimeInterval
     private let maxConnections: Int
     private let backend: PanelBackend
+    private let alerts: PanelAlertHandling?
     private let queue = DispatchQueue(label: "SafariAttraction.PanelServer")
     // 아래는 모두 `queue` 에서만 만진다(`port` 읽기만 잠금).
     private var listener: NWListener?
@@ -41,9 +44,10 @@ public final class PanelServer: @unchecked Sendable {
     private var boundPort: UInt16?
 
     /// `readTimeout` — 연결한 뒤 요청(머리 · 본문)을 이 시간 안에 다 못 보내면 끊는다. `maxConnections` — 동시 연결 수 상한(넘으면 바로 끊는다). 시험이 낮춰 쓴다.
+    /// `alerts` — 사이트 알림 길을 받는 쪽(없으면 `/alert-hosts` 는 빈 목록, `/alert` 는 받은 것 0).
     public init(token: String, backend: PanelBackend, readTimeout: TimeInterval = PanelServer.defaultReadTimeout,
-                maxConnections: Int = PanelServer.defaultMaxConnections) {
-        self.token = token; self.backend = backend; self.readTimeout = readTimeout; self.maxConnections = maxConnections
+                maxConnections: Int = PanelServer.defaultMaxConnections, alerts: PanelAlertHandling? = nil) {
+        self.token = token; self.backend = backend; self.alerts = alerts; self.readTimeout = readTimeout; self.maxConnections = maxConnections
     }
 
     /// `safari-web-extension://` 뒤가 호스트 글자(`A-Z a-z 0-9 . -`)에 선택 `:포트`일 때만 — 값을 응답 머리에 되돌려 주므로 CR · LF 나 다른 글자가 있으면 거절한다.
@@ -192,6 +196,7 @@ public final class PanelServer: @unchecked Sendable {
     /// 연결 하나의 상태 — 모든 메서드는 서버 `queue` 에서만 불린다.
     fileprivate final class Connection: @unchecked Sendable {
         enum Phase { case head, body, responding, draining, closed }
+        enum BodyRoute { case ask, alert }
 
         let server: PanelServer   // 연결이 닫힐 때 서버 목록에서 빠지므로 순환은 끊긴다
         let nw: NWConnection
@@ -200,6 +205,7 @@ public final class PanelServer: @unchecked Sendable {
         var head: Head?
         var cors: [(String, String)] = []
         var expectedBody = 0
+        var bodyRoute: BodyRoute = .ask
         var holdsSlot = false
         var askTask: Task<Void, Never>?
         var timer: DispatchWorkItem?
@@ -287,16 +293,27 @@ public final class PanelServer: @unchecked Sendable {
             switch (h.method, h.path) {
             case ("GET", "/info"):
                 answerInfo()
+            case ("GET", "/alert-hosts"):
+                answerAlertHosts()
             case ("POST", "/ask"):
                 if h.headers["transfer-encoding"] != nil { respond(411, "Content-Length 로 보내 주세요"); return }
                 guard let length = Int(h.headers["content-length"] ?? ""), length >= 0 else { respond(411, "Content-Length 로 보내 주세요"); return }
                 if length > PanelServer.maxBodyBytes { respond(413, "질문이 너무 길어요"); return }
                 guard server.reserveAskSlot() else { respond(429, PanelServer.busyMessage); return }
                 holdsSlot = true
+                bodyRoute = .ask
                 expectedBody = length
                 phase = .body
                 tryFinishBody()
-            case (_, "/info"), (_, "/ask"):
+            case ("POST", "/alert"):
+                if h.headers["transfer-encoding"] != nil { respond(411, "Content-Length 로 보내 주세요"); return }
+                guard let length = Int(h.headers["content-length"] ?? ""), length >= 0 else { respond(411, "Content-Length 로 보내 주세요"); return }
+                if length > PanelServer.maxBodyBytes { respond(413, "알림이 너무 길어요"); return }
+                bodyRoute = .alert
+                expectedBody = length
+                phase = .body
+                tryFinishBody()
+            case (_, "/info"), (_, "/ask"), (_, "/alert-hosts"), (_, "/alert"):
                 respond(405, "허락되지 않은 방식이에요")
             default:
                 respond(404, "없는 주소예요")
@@ -307,8 +324,14 @@ public final class PanelServer: @unchecked Sendable {
             guard phase == .body, buffer.count >= expectedBody else { return }
             let body = buffer.prefix(expectedBody)
             buffer = Data()
-            guard let question = PanelQuestion.parse(Data(body)) else { respond(400, "질문을 읽지 못했어요"); return }
-            answerAsk(question)
+            switch bodyRoute {
+            case .ask:
+                guard let question = PanelQuestion.parse(Data(body)) else { respond(400, "질문을 읽지 못했어요"); return }
+                answerAsk(question)
+            case .alert:
+                guard let alert = SiteAlert.parse(Data(body)) else { respond(400, "알림을 읽지 못했어요"); return }
+                answerAlert(alert)
+            }
         }
 
         // MARK: 답
@@ -324,6 +347,37 @@ public final class PanelServer: @unchecked Sendable {
                 queue.async {
                     guard let c = box.value, c.phase != .closed else { return }
                     c.respondJSON(200, info.jsonData())
+                }
+            }
+        }
+
+        func answerAlertHosts() {
+            phase = .responding
+            timer?.cancel()
+            let alerts = server.alerts
+            let box = WeakBox(self)
+            let queue = server.queue
+            askTask = Task {
+                let hosts = await alerts?.alertHosts() ?? []
+                queue.async {
+                    guard let c = box.value, c.phase != .closed else { return }
+                    c.respondJSON(200, PanelJSON.encode(["hosts": hosts]))
+                }
+            }
+        }
+
+        /// 알림을 처리기에 넘기고(루틴을 시작만 한다 — 끝나기를 기다리지 않는다) 받은 수를 202 로 돌려준다.
+        func answerAlert(_ alert: SiteAlert) {
+            phase = .responding
+            timer?.cancel()
+            let alerts = server.alerts
+            let box = WeakBox(self)
+            let queue = server.queue
+            askTask = Task {
+                let accepted = await alerts?.handleSiteAlert(host: alert.host, kind: alert.kind, title: alert.title, body: alert.body) ?? 0
+                queue.async {
+                    guard let c = box.value, c.phase != .closed else { return }
+                    c.respondJSON(202, PanelJSON.encode(["accepted": accepted]))
                 }
             }
         }
@@ -423,6 +477,7 @@ public final class PanelServer: @unchecked Sendable {
     fileprivate static func reason(_ status: Int) -> String {
         switch status {
         case 200: return "OK"
+        case 202: return "Accepted"
         case 204: return "No Content"
         case 400: return "Bad Request"
         case 403: return "Forbidden"

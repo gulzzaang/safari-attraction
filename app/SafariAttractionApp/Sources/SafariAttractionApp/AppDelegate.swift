@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var status: CLIStatusService?
     private var panelHost: PanelHost?
     private var panelService: PanelAskService?
+    /// 사이트 알림 길(`/alert-hosts` · `/alert`) — 서버가 허브보다 먼저 만들어져서, 허브를 만든 뒤 이 다리에 잇는다.
+    private let alertRelay = PanelAlertRelay()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 로그인 셸 PATH(`zsh -lic` 는 사용자 rc 를 실행한다)는 앱이 켜질 때 읽지 않는다 —
@@ -69,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 workDirectory: { try AppPaths.workDirectory() },
                 geminiLoggedOut: { await vm.loginState(for: .gemini) == .loggedOut },
                 onRateLimits: { snap in Task { @MainActor in status.applyLiveUsage(.claude, snap) } })
-            let host = PanelHost(directory: support, backend: panelService)
+            let host = PanelHost(directory: support, backend: panelService, alerts: alertRelay)
             self.panelService = panelService
             panelHost = host
             Task {
@@ -108,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.viewModel = vm
         self.agent = agent
         self.hub = hub
+        alertRelay.attach(hub)
         self.controller = controller
 
         let keys = HotKeys { [weak self] in self?.controller?.toggle() }

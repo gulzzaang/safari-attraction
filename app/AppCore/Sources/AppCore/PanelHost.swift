@@ -5,13 +5,15 @@ import Foundation
 public final class PanelHost: @unchecked Sendable {
     private let directory: URL
     private let backend: PanelBackend
+    private let alerts: PanelAlertHandling?
     private let lock = NSLock()
     private var server: PanelServer?
     private var stopped = false
 
     /// `directory` 는 앱 지원 폴더(`AppPaths.supportDirectory()`) — 시험은 임시 폴더를 넘긴다.
-    public init(directory: URL, backend: PanelBackend) {
-        self.directory = directory; self.backend = backend
+    /// `alerts` — 사이트 알림 길(`/alert-hosts` · `/alert`)을 받는 쪽(앱에서는 `PanelAlertRelay`).
+    public init(directory: URL, backend: PanelBackend, alerts: PanelAlertHandling? = nil) {
+        self.directory = directory; self.backend = backend; self.alerts = alerts
     }
 
     /// 서버가 듣고 있는 포트(켜지기 전 · 멈춘 뒤엔 nil).
@@ -20,7 +22,7 @@ public final class PanelHost: @unchecked Sendable {
     /// 서버를 켜고 연결 파일을 쓴다. 이미 `shutdown` 이 불렸으면 아무것도 남기지 않고 `PanelServerError.stopped`.
     public func start() async throws {
         let token = try PanelLink.makeToken()
-        let server = PanelServer(token: token, backend: backend)
+        let server = PanelServer(token: token, backend: backend, alerts: alerts)
         let alreadyStopped: Bool = lock.withLock {
             if stopped { return true }
             self.server = server
