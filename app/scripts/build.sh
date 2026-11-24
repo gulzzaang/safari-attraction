@@ -46,6 +46,15 @@ for f in "${BUNDLE_FILES[@]}"; do
     exit 1
   fi
 done
+# 묶음 신선도 — plugin/server.mjs 가 src/ 에서 다시 묶은 것과 같은지(node 가 있을 때). 옛 묶음을 앱에 넣지 않으려는 확인이다.
+if command -v node >/dev/null 2>&1; then
+  if ! (cd "$REPO_ROOT" && sh scripts/check-bundle.sh); then
+    echo "빌드 실패: plugin/server.mjs 가 src/ 와 달라요 — npm run build 먼저" >&2
+    exit 1
+  fi
+else
+  echo "경고: node 가 없어 plugin/server.mjs 가 src/ 와 같은지 확인하지 못했어요(저장소 루트에서 npm run check:bundle)" >&2
+fi
 mkdir -p "$BUNDLE_RES/jxa"
 cp "$REPO_ROOT/plugin/run.sh" "$BUNDLE_RES/run.sh"
 cp "$REPO_ROOT/plugin/server.mjs" "$BUNDLE_RES/server.mjs"
