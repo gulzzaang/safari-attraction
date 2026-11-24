@@ -31,15 +31,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSLog("사파리-어트랙션: 앱 전용 CLI 설정 폴더를 만들지 못했어요 — 사용자 CLI 설정을 그대로 써요")
         }
         let cliEnv = claudeEnv
+        let settings = AppSettingsStore(directory: support)
+        // 제미나이(agy)의 `HOME` · opencode 의 `XDG_*` 는 그 CLI 를 띄울 때만 — 클로드 · codex 의 자식에는 안 샌다.
+        // agy 방식(앱 전용 폴더 / 내 설정 함께 쓰기)은 설정에서 바뀔 수 있어서 띄우는 순간마다 읽는다.
+        let folderReady = !claudeEnv.isEmpty
+        let executableEnv: @Sendable (String) -> [String: String] = { exe in
+            folderReady ? CLIEnvironment.executableEnvironment(executable: exe, support: support, agyMode: settings.current.agyMode) : [:]
+        }
         // 로그인 상태 · 모델 목록 · 남은 양은 읽는 일마다 새 실행기로(질문이 도는 중에도 부딪히지 않게). 앱을 켤 때는 읽지 않는다.
         let status = CLIStatusService(loginPath: { ShellPath.loginPath() },
-                                      runnerFactory: { ProcessRunner(environmentOverrides: cliEnv) })
-        let settings = AppSettingsStore(directory: support)
-        let vm = ChatViewModel(runner: ProcessRunner(environmentOverrides: claudeEnv), bridge: bridge, loginPath: { ShellPath.loginPath() },
-                               settings: settings, status: status)
+                                      runnerFactory: { ProcessRunner(environmentOverrides: cliEnv, executableEnvironment: executableEnv) })
+        let vm = ChatViewModel(runner: ProcessRunner(environmentOverrides: claudeEnv, executableEnvironment: executableEnv), bridge: bridge,
+                               loginPath: { ShellPath.loginPath() }, settings: settings, status: status)
         let deviceLogin = CodexDeviceLogin(runner: ProcessRunner(environmentOverrides: cliEnv), loginPath: { ShellPath.loginPath() })
         self.deviceLogin = deviceLogin
-        settingsWindow = SettingsWindowController(status: status, login: deviceLogin, support: support)
+        settingsWindow = SettingsWindowController(status: status, login: deviceLogin, support: support, settings: settings)
         // 일 맡기기 — 서버 묶음은 앱 안(Resources/safari-attraction), 기억 · 사이트 허락 · 관문 소켓은 앱 지원 폴더.
         // 이 시점엔 폴더만 준비하고 클로드 · 사파리는 건드리지 않는다(첫 일 맡기기 때 시작).
         let siteModes = SiteModeStore(directory: support)

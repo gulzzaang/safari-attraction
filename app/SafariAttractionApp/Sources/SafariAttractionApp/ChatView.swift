@@ -9,6 +9,7 @@ extension ModelKind {
         case .claude: return "Claude"
         case .gemini: return "제미나이"
         case .chatgpt: return "ChatGPT"
+        case .opencode: return "opencode"
         }
     }
 }
@@ -138,7 +139,10 @@ struct ChatView: View {
     private var cliPicker: some View {
         HStack(spacing: 6) {
             ForEach(vm.availableModels, id: \.self) { kind in
-                cliChip(kind, selected: vm.model == kind, dimmed: vm.loginState(for: kind) == .loggedOut) { vm.selectCLI(kind) }
+                cliChip(kind, selected: vm.model == kind, dimmed: vm.loginState(for: kind) == .loggedOut) {
+                    // 바꿨으면 그 CLI 의 상태 · 목록 · 남은 양을 읽는다(5분 안에 읽었으면 다시 읽지 않는다 — 메인 밖).
+                    if vm.selectCLI(kind), let status = vm.status { Task { await status.refresh(kind, force: false) } }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -158,12 +162,12 @@ struct ChatView: View {
         .help(dimmed ? "로그인이 안 돼 있어요 — 설정에서 로그인" : "")
     }
 
-    /// 입력 칸 아래 — 모델 고르기 · 마지막 답에 쓴 양(작게). 남은 양은 설정 창에만 둔다.
+    /// 입력 칸 아래 — 모델 고르기 · 마지막 답에 쓴 양(작게). 남은 양 한 줄은 `askComposer` 가 그 아래에 둔다.
     private func modelRow(kind: ModelKind, disabled: Bool, usage: String?) -> some View {
         HStack(spacing: 8) {
             let choices = vm.modelChoices(for: kind)
             if choices.isEmpty {
-                Text(CLIModels.codexLoadFailureNote).font(.caption).foregroundStyle(.secondary)
+                Text(kind == .opencode ? "모델 목록은 설정 창에서 새로 고치면 보여요" : CLIModels.codexLoadFailureNote).font(.caption).foregroundStyle(.secondary)
             } else {
                 Picker("모델", selection: Binding(get: { vm.selectedModelID(for: kind) ?? "" },
                                                  set: { vm.setModelID($0, for: kind) })) {
@@ -257,6 +261,11 @@ struct ChatView: View {
                 }
             }
             modelRow(kind: vm.model, disabled: vm.isRunning, usage: vm.lastUsageText)
+            // 고른 CLI 의 남은 양 한 줄(예: 「5시간 23% 사용 · 주간 48%」) — 못 읽었으면 숨긴다.
+            if let remaining = vm.remainingUsageText {
+                Text(vm.model == .opencode ? remaining : "남은 양 · " + remaining).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                    .help("CLI 가 알려 주는 값이에요(옆 창을 열 때 5분에 한 번 읽어요)")
+            }
         }
     }
 
