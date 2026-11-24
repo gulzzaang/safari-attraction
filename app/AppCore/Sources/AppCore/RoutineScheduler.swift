@@ -34,6 +34,7 @@ public final class RoutineScheduler {
     public static let busyWaitSkipReason = "다른 일이 길어져 건너뛰었어요"
     public static let missedSkipReason = "지나침"
     public static let missingTaskReason = "저장한 일을 찾을 수 없어요"
+    public static let noSitesSkipReason = "갈 수 있는 사이트가 없어요"
     public static let storageFailedAnswer = "저장 실패 — 루틴 기록을 쓰지 못했어요"
 
     /// 지금 루틴을 돌고 있으면 그 루틴(화면 표시용). 기다리는 중에는 비어 있다.
@@ -61,7 +62,7 @@ public final class RoutineScheduler {
     public init(store: RoutineStore,
                 runner: RoutineRunning,
                 preflight: RoutinePreflight = RoutinePreflight(),
-                calendar: Calendar = .current,
+                calendar: Calendar = .autoupdatingCurrent,
                 clock: @escaping @MainActor () -> Date = { Date() },
                 sleep: @escaping @MainActor (TimeInterval) async -> Void = { seconds in try? await Task.sleep(for: .seconds(seconds)) }) {
         self.store = store
@@ -105,6 +106,8 @@ public final class RoutineScheduler {
 
     public var isTicking: Bool { tickTask != nil }
 
+    var calendarForTesting: Calendar { calendar }
+
     // MARK: 살피기
 
     /// 지금 켜진 루틴을 살펴 때가 된 것을 처리한다 — 앱을 켤 때 · 잠에서 깰 때(`NSWorkspace.didWakeNotification`) 부른다.
@@ -142,6 +145,10 @@ public final class RoutineScheduler {
     }
 
     private func runDue(_ routine: Routine, scheduled: Date) async {
+        if Self.hasNoSites(routine) {   // 갈 곳이 없으면 클로드를 띄우지 않는다
+            finish(routine: routine, status: RoutineRecord.statusSkipped(Self.noSitesSkipReason), answer: "", scheduled: scheduled)
+            return
+        }
         if case .skip(let reason) = preflight.check() {
             finish(routine: routine, status: RoutineRecord.statusSkipped(reason), answer: "", scheduled: scheduled)
             return
@@ -170,6 +177,10 @@ public final class RoutineScheduler {
             finish(routine: fresh, status: RoutineRecord.statusSkipped(Self.missingTaskReason), answer: "", scheduled: scheduled)
             return
         }
+        if Self.hasNoSites(fresh) {   // 기다린 사이 목록을 비웠을 수 있다
+            finish(routine: fresh, taskName: task.name, status: RoutineRecord.statusSkipped(Self.noSitesSkipReason), answer: "", scheduled: scheduled)
+            return
+        }
         activeRoutineID = fresh.id
         let outcome = await runner.runRoutine(text: task.text, sites: fresh.sites)
         activeRoutineID = nil
@@ -187,6 +198,9 @@ public final class RoutineScheduler {
         guard let task = store.savedTask(id: routine.taskID) else {
             return finish(routine: routine, status: RoutineRecord.statusSkipped(Self.missingTaskReason), answer: "", scheduled: nil)
         }
+        if Self.hasNoSites(routine) {
+            return finish(routine: routine, taskName: task.name, status: RoutineRecord.statusSkipped(Self.noSitesSkipReason), answer: "", scheduled: nil)
+        }
         if case .skip(let reason) = preflight.check() {
             return finish(routine: routine, taskName: task.name, status: RoutineRecord.statusSkipped(reason), answer: "", scheduled: nil)
         }
@@ -195,6 +209,11 @@ public final class RoutineScheduler {
         let outcome = await runner.runRoutine(text: task.text, sites: routine.sites)
         if claimed { activeRoutineID = nil }
         return finish(routine: routine, taskName: task.name, status: outcome.status, answer: outcome.answer, scheduled: nil)
+    }
+
+    /// 사이트 목록이 비었거나 공백뿐이면 갈 수 있는 곳이 없다.
+    private static func hasNoSites(_ routine: Routine) -> Bool {
+        routine.sites.allSatisfy { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     // MARK: 기록

@@ -352,6 +352,39 @@ final class RoutineSchedulerTests: XCTestCase {
     // MARK: 지금 한 번
 
     @MainActor
+    func testEmptySiteListSkipsWithoutRunningClaudeOnSchedule() async throws {
+        let r = try addRoutine(sites: [])
+        let rig = makeRig(now: nine.addingTimeInterval(60))
+        await rig.scheduler.checkNow()
+        XCTAssertEqual(rig.runner.calls.count, 0, "사이트가 없으면 클로드를 띄우지 않는다")
+        XCTAssertEqual(safari.calls, 0)
+        XCTAssertEqual(store.history().map(\.status), [RoutineRecord.statusSkipped(RoutineScheduler.noSitesSkipReason)])
+        XCTAssertEqual(RoutineScheduler.noSitesSkipReason, "갈 수 있는 사이트가 없어요")
+        let saved = store.routine(id: r.id)
+        XCTAssertEqual(saved?.lastHandled, nine, "일정 기준은 건너뜀도 저장한다")
+        XCTAssertNil(saved?.lastRun)
+        await rig.scheduler.checkNow()
+        XCTAssertEqual(store.history().count, 1, "같은 칸은 다시 처리하지 않는다")
+    }
+
+    @MainActor
+    func testEmptySiteListSkipsRunNow() async throws {
+        let r = try addRoutine(sites: [])
+        let rig = makeRig(now: t0)
+        let rec = await rig.scheduler.runNow(routineID: r.id)
+        XCTAssertEqual(rec?.status, RoutineRecord.statusSkipped(RoutineScheduler.noSitesSkipReason))
+        XCTAssertEqual(rig.runner.calls.count, 0)
+        XCTAssertNil(store.routine(id: r.id)?.lastHandled)
+        XCTAssertNil(store.routine(id: r.id)?.lastRun)
+    }
+
+    @MainActor
+    func testDefaultCalendarIsAutoupdatingCurrent() throws {
+        let s = RoutineScheduler(store: store, runner: FakeRoutineRunner())
+        XCTAssertEqual(s.calendarForTesting, Calendar.autoupdatingCurrent)
+    }
+
+    @MainActor
     func testRunNowGoesThroughPreflightThenRunsIgnoringSchedule() async throws {
         let r = try addRoutine()
         let rig = makeRig(now: t0)   // 08:00 — 아직 때가 아님
