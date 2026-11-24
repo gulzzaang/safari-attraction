@@ -99,7 +99,7 @@ final class StreamParserTests: XCTestCase {
         XCTAssertEqual(ev, [.text("터미널에서 Please run /login 이라고 치면 돼요")])
     }
     func testLoginMessagesPerModel() {
-        XCTAssertEqual(ModelKind.claude.loginNeededMessage, "로그인이 필요해요 — 터미널에서 claude 를 열어 /login 으로 로그인해 주세요")
+        XCTAssertEqual(ModelKind.claude.loginNeededMessage, "앱 전용 클로드 로그인이 필요해요 — 터미널에서 한 번: CLAUDE_CONFIG_DIR=\"$HOME/Library/Application Support/SafariAttractionApp/claude-config\" claude auth login")
         XCTAssertEqual(ModelKind.chatgpt.loginNeededMessage, "로그인이 필요해요 — 터미널에서 codex login 으로 로그인해 주세요")
         XCTAssertTrue(ModelKind.gemini.loginNeededMessage.hasPrefix("로그인이 필요해요 — 터미널에서 agy"))
         XCTAssertFalse(ModelKind.gemini.loginNeededMessage.contains("agy login"))

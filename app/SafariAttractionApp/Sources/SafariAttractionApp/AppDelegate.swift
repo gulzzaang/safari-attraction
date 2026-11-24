@@ -9,13 +9,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var agent: AgentSession?
     private var hub: RoutineHub?
     private var controller: SidePanelController?
-    private var hotKey: HotKey?
+    private var hotKeys: HotKeys?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 로그인 셸 PATH(`zsh -lic` 는 사용자 rc 를 실행한다)는 앱이 켜질 때 읽지 않는다 —
         // 사용자가 첫 질문을 보낼 때 ChatViewModel 이 메인 밖에서 처음 읽고 캐시한다.
         let bridge = AppleScriptSafariBridge()
-        let vm = ChatViewModel(runner: ProcessRunner(), bridge: bridge, loginPath: { ShellPath.loginPath() })
+        // 앱이 띄우는 모든 claude(묻기 · 일 맡기기 · 루틴)는 앱 전용 설정 폴더(CLAUDE_CONFIG_DIR)를 쓴다 —
+        // 사용자 클로드 설정이 문서 폴더 경로를 가리켜 맥이 문서 폴더 허락 창을 띄우는 것을 피한다.
+        // 같은 값을 묻기 · 일 맡기기(루틴은 일 맡기기 세션을 탄다)가 함께 쓴다.
+        let claudeEnv: [String: String]
+        if let dir = try? AppPaths.claudeConfigDirectory() {
+            claudeEnv = ProcessRunner.claudeEnvironmentOverrides(configDirectory: dir)
+        } else {
+            claudeEnv = [:]
+            NSLog("사파리-어트랙션: 앱 전용 클로드 설정 폴더를 만들지 못했어요 — 사용자 클로드 설정을 그대로 써요")
+        }
+        let vm = ChatViewModel(runner: ProcessRunner(environmentOverrides: claudeEnv), bridge: bridge, loginPath: { ShellPath.loginPath() })
         // 일 맡기기 — 서버 묶음은 앱 안(Resources/safari-attraction), 기억 · 사이트 허락 · 관문 소켓은 앱 지원 폴더.
         // 이 시점엔 폴더만 준비하고 클로드 · 사파리는 건드리지 않는다(첫 일 맡기기 때 시작).
         let support = (try? AppPaths.supportDirectory()) ?? FileManager.default.temporaryDirectory
@@ -25,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             memoryHome: support.appendingPathComponent("memory", isDirectory: true),
             siteModes: siteModes,
             gateFactory: { try GateServer(directory: try AppPaths.supportDirectory()) },
+            runnerFactory: { ProcessRunner(environmentOverrides: claudeEnv) },
             loginPath: { ShellPath.loginPath() })
         // 자주 하는 일 · 루틴 — 저장소는 폴더당 인스턴스 하나(화면과 시계가 같은 것을 쓴다). 시계는 루틴이 하나라도 켜져 있을 때만 돈다.
         // 알림 허락은 여기서 묻지 않는다(「끝나면 알림」 을 켤 때만).
@@ -42,9 +53,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.hub = hub
         self.controller = controller
 
-        hotKey = HotKey(keyCode: HotKey.toggleKeyCode, modifiers: HotKey.toggleModifiers) { [weak self] in
-            self?.controller?.toggle()
-        }
+        let keys = HotKeys { [weak self] in self?.controller?.toggle() }
+        keys.start()
+        hotKeys = keys
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: Self.idleSymbol, accessibilityDescription: "사파리-어트랙션")
@@ -88,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         var title = "옆 창 열기 · 닫기"
-        title += (hotKey?.registrationError == nil) ? " (\(HotKey.toggleLabel))" : " (단축키를 못 써요)"
+        title += hotKeys?.statusSuffix ?? ""
         if isWaiting { title += " — 승인 기다리는 카드가 있어요" }
         toggleItem?.title = title
     }
@@ -119,7 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         viewModel?.shutdown()
         agent?.shutdown()
         controller?.shutdown()
-        hotKey?.unregister()
+        hotKeys?.shutdown()
     }
 
     // MARK: 개발 · 시험용 열쇠 — `DEV=1 app/scripts/build.sh` 로 만든 빌드에서만 들어 있다(평소 빌드엔 주소 등록도 코드도 없음).

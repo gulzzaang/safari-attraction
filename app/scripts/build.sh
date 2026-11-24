@@ -1,6 +1,7 @@
 #!/bin/zsh
 # 앱 빌드 — Xcode 없이 SwiftPM 으로 빌드하고 .app 묶음을 직접 조립한다(ad-hoc 서명). 만들기만 하고 띄우지 않는다.
-# 결과: app/.build/SafariAttractionApp.app
+# 결과: app/.build/SafariAttractionApp.app — 그리고 문서 폴더 밖인 ~/Applications/SafariAttractionApp.app 으로 복사한다(거기서 여세요:
+# 문서 폴더 안의 앱을 열면 맥이 문서 폴더 허락을 앱 이름으로 묻는 일이 잦다). 복사가 실패해도 빌드는 성공이고 경고만 한다.
 # 개발용 열쇠(safariattraction:// 주소 · dev-last.json 기록)는 `DEV=1 app/scripts/build.sh` 로 만든 빌드에만 들어간다.
 set -euo pipefail
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -113,3 +114,15 @@ fi
 echo "서버 묶음 확인:"
 ls -l "$BUNDLE_RES" "$BUNDLE_RES/jxa"
 echo "앱 만듦: $APP"
+
+# 문서 폴더 밖으로 복사 — ~/Applications/SafariAttractionApp.app (있으면 바꿔치기). 실패해도 위 빌드는 성공으로 둔다.
+INSTALL_DIR="$HOME/Applications"
+INSTALLED="$INSTALL_DIR/SafariAttractionApp.app"
+if mkdir -p "$INSTALL_DIR" \
+   && rm -rf "$INSTALLED" \
+   && ditto "$APP" "$INSTALLED" \
+   && codesign --verify --verbose=2 "$INSTALLED"; then
+  echo "여기서 여세요: ~/Applications/SafariAttractionApp.app"
+else
+  echo "경고: ~/Applications 로 복사하지 못했어요 — 빌드는 성공했어요($APP). 문서 폴더 밖에서 열려면 직접 복사하세요: ditto \"$APP\" \"$INSTALLED\"" >&2
+fi

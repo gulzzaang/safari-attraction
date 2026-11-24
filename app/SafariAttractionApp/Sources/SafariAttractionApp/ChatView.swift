@@ -118,7 +118,7 @@ struct ChatView: View {
                     .disabled(mode == .ask ? (vm.messages.isEmpty && !vm.isRunning) : (agent.messages.isEmpty && !agent.isRunning))
                 Button(action: onClose) { Image(systemName: "xmark") }
                     .buttonStyle(.borderless)
-                    .help("닫기 (\(HotKey.toggleLabel))")
+                    .help("닫기 (\(HotKeys.toggleLabel))")
             }
             if mode == .ask, vm.availableModels.count > 1 {
                 Picker("모델", selection: $vm.model) {

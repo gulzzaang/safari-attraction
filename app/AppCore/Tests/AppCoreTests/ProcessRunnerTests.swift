@@ -173,6 +173,39 @@ final class ProcessRunnerTests: XCTestCase {
         let env = ProcessRunner.childEnvironment(base: base, path: "/new:/p")
         XCTAssertEqual(env, ["CLAUDE_CONFIG_DIR": "/keep", "HOME": "/h", "PATH": "/new:/p", "ANTHROPIC_API_KEY": "k"])
     }
+    func testChildEnvironmentOverridesBeatUserValue() {
+        let base = ["CLAUDE_CONFIG_DIR": "/user", "HOME": "/h"]
+        let env = ProcessRunner.childEnvironment(base: base, path: "/p",
+                                                 overrides: ProcessRunner.claudeEnvironmentOverrides(configDirectory: URL(fileURLWithPath: "/app/claude-config")))
+        XCTAssertEqual(env["CLAUDE_CONFIG_DIR"], "/app/claude-config")
+        XCTAssertEqual(env["HOME"], "/h")
+        let none = ProcessRunner.childEnvironment(base: ["A": "1"], path: "/p")
+        XCTAssertNil(none["CLAUDE_CONFIG_DIR"])
+    }
+    /// 묻기(run) · 일 맡기기와 루틴(runInteractive) 두 길 모두 자식이 앱 전용 설정 폴더를 본다 — 사용자 환경에 값이 있어도.
+    func testChildSeesAppConfigDirOnRunAndRunInteractive() async {
+        setenv("CLAUDE_CONFIG_DIR", "/user/own", 1)
+        defer { unsetenv("CLAUDE_CONFIG_DIR") }
+        let o = ProcessRunner.claudeEnvironmentOverrides(configDirectory: URL(fileURLWithPath: "/app/claude-config"))
+        let c1 = Collector()
+        _ = await run(ProcessRunner(environmentOverrides: o), "/usr/bin/env", [], c1)
+        XCTAssertTrue(c1.stdout.contains("CLAUDE_CONFIG_DIR=/app/claude-config\n"))
+        XCTAssertFalse(c1.stdout.contains("/user/own"))
+        let c2 = Collector()
+        let r = ProcessRunner(environmentOverrides: o)
+        let out = await r.runInteractive(executable: "/usr/bin/env", arguments: [], workDir: URL(fileURLWithPath: NSTemporaryDirectory()),
+                                         path: "/bin:/usr/bin", timeout: 20, initialLines: [], onEvent: { c2.handle($0) })
+        XCTAssertEqual(out, .finished(code: 0))
+        XCTAssertTrue(c2.stdout.contains("CLAUDE_CONFIG_DIR=/app/claude-config\n"))
+    }
+    func testClaudeConfigDirectoryIsCreatedPrivate() throws {
+        let base = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("sa-cfg-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let dir = try AppPaths.claudeConfigDirectory(supportDirectory: base)
+        XCTAssertEqual(dir.lastPathComponent, "claude-config")
+        let perms = try FileManager.default.attributesOfItem(atPath: dir.path)[.posixPermissions] as? Int
+        XCTAssertEqual(perms, 0o700)
+    }
     func testChildActuallyDoesNotSeeClaudeCodeVars() async {
         setenv("CLAUDECODE", "1", 1); setenv("CLAUDE_CODE_TEST_X", "1", 1)
         defer { unsetenv("CLAUDECODE"); unsetenv("CLAUDE_CODE_TEST_X") }

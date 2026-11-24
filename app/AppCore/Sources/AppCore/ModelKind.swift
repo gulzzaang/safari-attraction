@@ -29,7 +29,7 @@ public enum ModelKind: String, CaseIterable, Sendable, Equatable {
     /// agy 에는 `login` 하위 명령이 없어서(`agy --help` 확인) 「agy 를 열어」 로만 안내한다.
     public var loginNeededMessage: String {
         switch self {
-        case .claude: return "로그인이 필요해요 — 터미널에서 claude 를 열어 /login 으로 로그인해 주세요"
+        case .claude: return "앱 전용 클로드 로그인이 필요해요 — 터미널에서 한 번: CLAUDE_CONFIG_DIR=\"$HOME/Library/Application Support/SafariAttractionApp/claude-config\" claude auth login"
         case .gemini: return "로그인이 필요해요 — 터미널에서 agy 를 열어 로그인해 주세요"
         case .chatgpt: return "로그인이 필요해요 — 터미널에서 codex login 으로 로그인해 주세요"
         }

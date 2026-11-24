@@ -55,9 +55,19 @@ public final class ProcessRunner: @unchecked Sendable {
     /// 입력 파이프가 이만큼(초) 동안 조금도 비워지지 않으면 `write` 가 `.stalled` 를 던진다(기본 5초, 시험에서 줄일 수 있음).
     private let writeStallLimit: TimeInterval
 
-    public init(killGrace: TimeInterval = 2, writeStallLimit: TimeInterval = 5) {
+    /// 자식 환경에 덮어쓸 값(사용자 환경에 같은 이름이 있어도 이 값이 이긴다) — 앱은 `CLAUDE_CONFIG_DIR` 하나를 넣는다.
+    private let environmentOverrides: [String: String]
+
+    public init(killGrace: TimeInterval = 2, writeStallLimit: TimeInterval = 5, environmentOverrides: [String: String] = [:]) {
         self.killGrace = killGrace
         self.writeStallLimit = writeStallLimit
+        self.environmentOverrides = environmentOverrides
+    }
+
+    /// 앱이 띄우는 claude(묻기 · 일 맡기기 · 루틴)의 환경 덮어쓰기 — 앱 전용 클로드 설정 폴더.
+    /// 사용자의 `~/.claude.json` · 플러그인 장터가 문서 폴더 경로를 가리켜서 claude 가 문서 폴더를 건드리고 맥이 허락 창을 띄우는 것을 피한다.
+    public static func claudeEnvironmentOverrides(configDirectory: URL) -> [String: String] {
+        ["CLAUDE_CONFIG_DIR": configDirectory.path]
     }
 
     /// 마지막으로 띄운 자식의 pid(시험 · 진단용). 아직 안 띄웠으면 0.
@@ -185,8 +195,10 @@ public final class ProcessRunner: @unchecked Sendable {
     }
 
     /// 자식 CLI 에 넘길 환경 — 이 앱을 띄운 Claude 의 내부 값(`CLAUDECODE` · `CLAUDE_CODE_*`)은 빼고 나머지는 그대로, PATH 는 지정값.
-    public static func childEnvironment(base: [String: String], path: String) -> [String: String] {
+    /// `overrides` 는 사용자 환경에 같은 이름이 있어도 덮어쓴다.
+    public static func childEnvironment(base: [String: String], path: String, overrides: [String: String] = [:]) -> [String: String] {
         var env = base.filter { $0.key != "CLAUDECODE" && !$0.key.hasPrefix("CLAUDE_CODE_") }
+        for (k, v) in overrides { env[k] = v }
         env["PATH"] = path
         return env
     }
@@ -251,7 +263,7 @@ public final class ProcessRunner: @unchecked Sendable {
         posix_spawn_file_actions_adddup2(&actions, errFds[1], 2)
         let chdirRC = posix_spawn_file_actions_addchdir_np(&actions, workDir.path)
 
-        let env = Self.childEnvironment(base: ProcessInfo.processInfo.environment, path: path)
+        let env = Self.childEnvironment(base: ProcessInfo.processInfo.environment, path: path, overrides: environmentOverrides)
         let argv = ([exe] + arguments).map { strdup($0) } + [nil]
         let envp = env.map { strdup("\($0.key)=\($0.value)") } + [nil]
         defer { argv.forEach { free($0) }; envp.forEach { free($0) } }

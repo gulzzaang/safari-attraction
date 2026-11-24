@@ -84,4 +84,14 @@ public enum AppPaths {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
+
+    /// `~/Library/Application Support/SafariAttractionApp/claude-config` — 앱이 띄우는 claude 만 쓰는 설정 폴더(`CLAUDE_CONFIG_DIR`).
+    /// 없으면 0700 으로 만든다. 박정욱이 이 폴더로 한 번 로그인한다(`CLAUDE_CONFIG_DIR=… claude auth login`).
+    public static func claudeConfigDirectory(supportDirectory: URL? = nil) throws -> URL {
+        let support = try supportDirectory ?? Self.supportDirectory()
+        let dir = support.appendingPathComponent("claude-config", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        return dir
+    }
 }
