@@ -30,19 +30,33 @@ public enum AgentCommandBuilder {
         return ("claude", args)
     }
 
-    static func mcpConfigJSON(resources: URL, gate: GateInfo, memoryHome: URL) -> String {
+    /// 사람 없이 도는 루틴용 명령줄 — 일 맡기기와 같되 내장 도구 없음(`--tools ""` — MCP 만) · 계획 모드 아님(`--permission-mode manual`) ·
+    /// 이어 하기 없음, MCP 서버에 `SAFARI_ATTRACTION_UNATTENDED=1`(모든 이동 · fetch 를 관문에 묻고 사파리를 켜거나 새 창을 열지 않음).
+    public static func buildUnattended(resources: URL, gate: GateInfo, memoryHome: URL) -> (executable: String, arguments: [String]) {
+        let args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+                    "--model", CommandBuilder.claudeModel,
+                    "--setting-sources", "", "--strict-mcp-config",
+                    "--mcp-config", mcpConfigJSON(resources: resources, gate: gate, memoryHome: memoryHome, unattended: true),
+                    "--tools", "",
+                    "--permission-prompt-tool", "stdio", "--permission-mode", "manual"]
+        return ("claude", args)
+    }
+
+    static func mcpConfigJSON(resources: URL, gate: GateInfo, memoryHome: URL, unattended: Bool = false) -> String {
         let runSh = resources.appendingPathComponent("safari-attraction/run.sh").path
+        var env = [
+            "SAFARI_ATTRACTION_GATE": gate.socketPath,
+            "SAFARI_ATTRACTION_GATE_TOKEN": gate.token,
+            "SAFARI_ATTRACTION_NO_PERMISSION_PROMPTS": "1",
+            "SAFARI_ATTRACTION_HOME": memoryHome.path,
+        ]
+        if unattended { env["SAFARI_ATTRACTION_UNATTENDED"] = "1" }
         let config: [String: Any] = [
             "mcpServers": [
                 mcpServerName: [
                     "command": "/bin/sh",
                     "args": [runSh],
-                    "env": [
-                        "SAFARI_ATTRACTION_GATE": gate.socketPath,
-                        "SAFARI_ATTRACTION_GATE_TOKEN": gate.token,
-                        "SAFARI_ATTRACTION_NO_PERMISSION_PROMPTS": "1",
-                        "SAFARI_ATTRACTION_HOME": memoryHome.path,
-                    ],
+                    "env": env,
                 ],
             ],
         ]

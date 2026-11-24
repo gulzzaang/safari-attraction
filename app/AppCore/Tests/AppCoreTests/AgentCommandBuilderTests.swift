@@ -86,4 +86,39 @@ final class AgentCommandBuilderTests: XCTestCase {
         XCTAssertEqual(a.first, "-p")
         XCTAssertFalse(a.contains("--allowedTools"))
     }
+    // MARK: 사람 없는 루틴
+
+    func testUnattendedArgumentOrderIsExactlyTheDesign() {
+        let (exe, a) = AgentCommandBuilder.buildUnattended(resources: res, gate: gate, memoryHome: home)
+        XCTAssertEqual(exe, "claude")
+        XCTAssertEqual(a.count, 19)
+        XCTAssertEqual(Array(a[0..<8]), ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--model", "sonnet"])
+        XCTAssertEqual(Array(a[8..<11]), ["--setting-sources", "", "--strict-mcp-config"])
+        XCTAssertEqual(a[11], "--mcp-config")
+        XCTAssertEqual(Array(a[13...]), ["--tools", "", "--permission-prompt-tool", "stdio", "--permission-mode", "manual"])
+    }
+    func testUnattendedHasNoBuiltInToolsNoPlanModeNoResume() {
+        let a = AgentCommandBuilder.buildUnattended(resources: res, gate: gate, memoryHome: home).arguments
+        XCTAssertEqual(a[a.firstIndex(of: "--tools")! + 1], "")
+        XCTAssertFalse(a.contains("ExitPlanMode,Write"))
+        XCTAssertFalse(a.contains("plan"))
+        XCTAssertFalse(a.contains("--resume"))
+    }
+    func testUnattendedMcpEnvAddsTheUnattendedFlagAndKeepsTheRest() {
+        let a = AgentCommandBuilder.buildUnattended(resources: res, gate: gate, memoryHome: home).arguments
+        let s = (mcpJSON(a)["mcpServers"] as! [String: Any])["safari-attraction"] as! [String: Any]
+        XCTAssertEqual(s["env"] as? [String: String], [
+            "SAFARI_ATTRACTION_GATE": "/Users/x/Library/Application Support/SafariAttractionApp/gate/g.sock",
+            "SAFARI_ATTRACTION_GATE_TOKEN": token,
+            "SAFARI_ATTRACTION_NO_PERMISSION_PROMPTS": "1",
+            "SAFARI_ATTRACTION_HOME": "/Users/x/Library/Application Support/SafariAttractionApp/memory",
+            "SAFARI_ATTRACTION_UNATTENDED": "1",
+        ])
+        XCTAssertEqual(s["command"] as? String, "/bin/sh")
+    }
+    func testAttendedMcpEnvHasNoUnattendedFlag() {
+        let a = AgentCommandBuilder.build(resources: res, gate: gate, memoryHome: home, resumeSessionID: nil).arguments
+        let s = (mcpJSON(a)["mcpServers"] as! [String: Any])["safari-attraction"] as! [String: Any]
+        XCTAssertNil((s["env"] as! [String: String])["SAFARI_ATTRACTION_UNATTENDED"])
+    }
 }

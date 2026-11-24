@@ -20,6 +20,10 @@ extension GateServer: GateServing {}
 /// - 관문 요청은 `ActionPolicy` 로 판정 — 허락 · 거절은 바로, 카드면 동작 카드를 띄우고 답을 기다린다(300초 넘으면 거절).
 /// - 멈춤: 기다리는 카드 모두 거절 · 입력 닫기 · 프로세스 멈춤 · 관문 닫기. 일 하나가 900초를 넘으면 멈춤과 같게 + 안내.
 ///
+/// 사람 없는 실행(`runUnattended`) — 예약 루틴이 같은 프로세스 · 관문 · 정리 길을 쓴다. 카드를 만들지 않고 사람을 기다리지 않는다:
+/// 관문은 `RoutinePolicy`, 도구 물음은 거절 · 허락만(덧막이 낱말이 든 `repl` 거절), 600초, 결과는 `RoutineOutcome`.
+/// 일 맡기기의 대화(`messages`) · 이어 하기(세션 ID)에는 아무것도 남기지 않는다.
+///
 /// 모든 상태 변경은 메인 액터. 막힐 수 있는 일(로그인 PATH · 폴더 만들기 · 클로드 입력 쓰기)은 메인 밖에서 돈다.
 /// `ChatViewModel`(묻기)과는 따로다 — 화면이 모드에 따라 둘 중 하나를 보여 준다.
 @MainActor @Observable
@@ -28,6 +32,11 @@ public final class AgentSession {
     public static let jobTimeout: TimeInterval = 900
     public static let stoppedNotice = "멈췄어요"
     public static let jobTimeoutNotice = "15분이 지나 일을 멈췄어요 — 다시 시도해 주세요"
+    public static let routineTimeoutNotice = "10분이 지나 루틴을 멈췄어요"
+    public static let routineNoAnswerNotice = "클로드가 답을 내기 전에 끝났어요"
+    public static let routineBusyReason = "다른 일이 도는 중이에요"
+    public static let routineCodeRefusedMessage = "사람 없이 도는 루틴은 이 코드를 실행하지 않아요"
+    static let routineUnknownFailure = "루틴을 끝까지 돌리지 못했어요"
     public static let cardExpiredReason = "시간이 지나 거절했어요"
     public static let cardRejectedReason = "카드에서 거절했어요"
     public static let toolNotAllowedMessage = "이 도구는 쓸 수 없어요"
@@ -47,6 +56,8 @@ public final class AgentSession {
         didSet { notifyPendingCardChange() }
     }
     public private(set) var isRunning = false
+    /// 돌고 있는 것이 사람 없는 루틴이다(`isRunning` 도 함께 true — 그동안 새 입력 · 다른 루틴은 받지 않는다).
+    public private(set) var isRoutineRunning = false
     /// 멈추라고 했지만 프로세스가 아직 안 끝났다 — 화면은 「멈추는 중…」, 새 입력은 받지 않는다.
     public private(set) var isStopping = false
     /// 진행 한 줄(예: 사파리 click 하는 중이에요…).
@@ -165,22 +176,56 @@ public final class AgentSession {
 
     /// 대화를 비우고 처음부터(세션 ID 도 잊는다). 일하는 중이었으면 멈춘다.
     public func newTask() {
-        stop()
+        if run?.unattended == nil { stop() }   // 돌고 있는 루틴은 대화 비우기로 멈추지 않는다
         generation += 1
         messages = []
         sessionID = nil
         activity = nil
     }
 
+    /// 저장한 일을 사람 없이 한 번 돈다(예약 루틴). 이미 다른 일이 돌고 있으면 시작하지 않고 `건너뜀` 을 돌려준다.
+    /// 질문 앞에 「사람 없이 도는 루틴이에요…」 글을 붙이고, 관문 · 승인 묻기는 사람 없이 정해진 대로 판정한다.
+    /// 일이 끝나면(오류 · 멈춤 · 600초 포함) 상태와 답을 돌려준다 — 거절이 한 번이라도 있었으면 `일부만 됨`.
+    public func runUnattended(text: String, sites: [String]) async -> RoutineOutcome {
+        guard !isRunning else {
+            return RoutineOutcome(status: RoutineRecord.statusSkipped(Self.routineBusyReason), answer: "")
+        }
+        let state = UnattendedState(sites: sites)
+        let run = Run(id: newRunID(), generation: generation, runner: runnerFactory(), resumed: false, unattended: state)
+        self.run = run
+        isRunning = true
+        isRoutineRunning = true
+        isStopping = false
+        activity = nil
+        let t = Task { [self] in await perform(run, text: RoutinePolicy.promptPrefix(sites: sites) + text) }
+        task = t
+        await t.value
+        return state.outcome ?? RoutineOutcome(status: RoutineRecord.statusFailed, answer: Self.routineUnknownFailure)
+    }
+
     // MARK: 한 번의 일(입력 하나)
 
     private enum StopReason { case none, user, timeout }
+
+    /// 사람 없는 실행의 모은 것(답 · 오류 · 거절 수) — 끝나면 `outcome` 이 채워진다.
+    private final class UnattendedState {
+        let sites: [String]
+        var answerParts: [String] = []
+        var sawText = false
+        var sawResult = false
+        var errors: [String] = []
+        var denied = 0
+        var outcome: RoutineOutcome?
+        init(sites: [String]) { self.sites = sites }
+    }
 
     private final class Run {
         let id: Int
         let generation: Int
         let runner: InteractiveRunning
         let resumed: Bool
+        /// nil 이면 사람이 맡긴 일, 아니면 사람 없는 루틴.
+        let unattended: UnattendedState?
         var gate: GateServing?
         var closing = false
         var stopReason = StopReason.none
@@ -193,8 +238,9 @@ public final class AgentSession {
         var jobTimer: Task<Void, Never>?
         /// 클로드의 물음 번호 → 카드 번호(취소 요청이 오면 그 카드를 거둔다).
         var requestCards: [String: Int] = [:]
-        init(id: Int, generation: Int, runner: InteractiveRunning, resumed: Bool) {
+        init(id: Int, generation: Int, runner: InteractiveRunning, resumed: Bool, unattended: UnattendedState? = nil) {
             self.id = id; self.generation = generation; self.runner = runner; self.resumed = resumed
+            self.unattended = unattended
         }
     }
 
@@ -259,7 +305,7 @@ public final class AgentSession {
         let path: String, dir: URL
         switch prepared {
         case .failure(let e):
-            if run.generation == generation { append(.error("작업 폴더를 만들지 못했어요 — \(e.localizedDescription)")) }
+            reportError("작업 폴더를 만들지 못했어요 — \(e.localizedDescription)", run: run)
             finishRun(run, outcome: .failed("작업 폴더"), reportsOutcome: false)
             return
         case .success(let p): path = p.path; dir = p.dir
@@ -268,7 +314,7 @@ public final class AgentSession {
         // 관문 서버(메인 액터에서 만들고 시작 — start · stop 은 한 줄로 이어서 부른다).
         let gate: GateServing
         do { gate = try gateFactory() } catch {
-            if run.generation == generation { append(.error("동작 관문을 열지 못했어요 — \(error.localizedDescription)")) }
+            reportError("동작 관문을 열지 못했어요 — \(error.localizedDescription)", run: run)
             finishRun(run, outcome: .failed("동작 관문"), reportsOutcome: false)
             return
         }
@@ -279,10 +325,12 @@ public final class AgentSession {
             return await self.handleGate(request, runID: runID)
         }
 
-        let (exe, args) = AgentCommandBuilder.build(resources: resources, gate: gate.info, memoryHome: memoryHome,
-                                                    resumeSessionID: sessionID)
+        let (exe, args) = run.unattended == nil
+            ? AgentCommandBuilder.build(resources: resources, gate: gate.info, memoryHome: memoryHome, resumeSessionID: sessionID)
+            : AgentCommandBuilder.buildUnattended(resources: resources, gate: gate.info, memoryHome: memoryHome)
+        let limit = run.unattended == nil ? Self.jobTimeout : RoutinePolicy.timeout
         run.jobTimer = Task { [self] in
-            do { try await sleep(Self.jobTimeout) } catch { return }
+            do { try await sleep(limit) } catch { return }
             jobTimedOut(runID: runID)
         }
 
@@ -292,7 +340,7 @@ public final class AgentSession {
             for await e in stream { handle(e, run: run) }
         }
         let outcome = await run.runner.runInteractive(
-            executable: exe, arguments: args, workDir: dir, path: path, timeout: Self.jobTimeout + 60,
+            executable: exe, arguments: args, workDir: dir, path: path, timeout: limit + 60,
             initialLines: [ClaudeControl.userMessage(text)]
         ) { event in
             for e in box.handle(event) { cont.yield(e) }
@@ -303,6 +351,12 @@ public final class AgentSession {
         finishRun(run, outcome: outcome)
     }
 
+    /// 화면에 보일 오류 — 일 맡기기는 대화에 오류 줄로, 루틴은 결과의 실패 이유로.
+    private func reportError(_ message: String, run: Run) {
+        if let u = run.unattended { u.errors.append(message) }
+        else if run.generation == generation { append(.error(message)) }
+    }
+
     private func finishRun(_ run: Run, outcome: RunOutcome, reportsOutcome: Bool = true) {
         run.jobTimer?.cancel()
         run.jobTimer = nil
@@ -310,7 +364,10 @@ public final class AgentSession {
         resolveAllWaiters(.stopped)       // 프로세스가 끝났으니 더 기다릴 카드는 없다
         run.gate?.stop()
         run.gate = nil
-        if run.generation == generation {
+        if let u = run.unattended {
+            u.outcome = Self.routineOutcome(u, stopReason: run.stopReason, runOutcome: outcome)
+            isRoutineRunning = false
+        } else if run.generation == generation {
             switch run.stopReason {
             case .user: append(.notice(Self.stoppedNotice))
             case .timeout: append(.notice(Self.jobTimeoutNotice))
@@ -330,7 +387,7 @@ public final class AgentSession {
     }
 
     private func handle(_ event: AgentEvent, run: Run) {
-        guard run.generation == generation else { return }
+        guard run.unattended != nil || run.generation == generation else { return }
         switch event {
         case .stream(let e): apply(e, run: run)
         case .control(.permission(let req)): startPermission(req, run: run)
@@ -346,6 +403,7 @@ public final class AgentSession {
     }
 
     private func apply(_ event: StreamEvent, run: Run) {
+        if let u = run.unattended { applyUnattended(event, run: run, state: u); return }
         switch event {
         case .text(let t):
             activity = nil
@@ -371,6 +429,43 @@ public final class AgentSession {
         }
     }
 
+    /// 사람 없는 실행 — 대화 · 진행 줄 · 세션 ID 를 건드리지 않고 답 · 오류만 모은다.
+    private func applyUnattended(_ event: StreamEvent, run: Run, state u: UnattendedState) {
+        switch event {
+        case .text(let t):
+            u.sawText = true
+            if !Self.isBlank(t) { u.answerParts.append(t) }
+        case .toolUse, .sessionID:
+            break
+        case .result(let isError, let text):
+            u.sawResult = true
+            if isError { u.errors.append(text.isEmpty ? "오류가 났어요" : text) }
+            else if !u.sawText, !text.isEmpty { u.answerParts.append(text) }
+            closeInputInBackground(run)
+        case .error(let msg):
+            if !u.errors.contains(msg) { u.errors.append(msg) }
+        }
+    }
+
+    /// 사람 없는 실행의 결과 — 오류 · 멈춤 · 600초 · 답 없이 끝남은 `실패`, 거절이 있었으면 `일부만 됨`, 아니면 `끝남`.
+    private static func routineOutcome(_ u: UnattendedState, stopReason: StopReason, runOutcome: RunOutcome) -> RoutineOutcome {
+        let text = u.answerParts.joined(separator: "\n\n")
+        var reasons = u.errors
+        switch stopReason {
+        case .user: reasons.append(stoppedNotice)
+        case .timeout: reasons.append(routineTimeoutNotice)
+        case .none:
+            if case .timedOut = runOutcome { reasons.append(routineTimeoutNotice) }
+            else if case .stopped = runOutcome { reasons.append(stoppedNotice) }
+            else if !u.sawResult, reasons.isEmpty { reasons.append(routineNoAnswerNotice) }
+        }
+        if !reasons.isEmpty {
+            let reason = reasons.joined(separator: "\n")
+            return RoutineOutcome(status: RoutineRecord.statusFailed, answer: text.isEmpty ? reason : reason + "\n\n" + text)
+        }
+        return RoutineOutcome(status: u.denied > 0 ? RoutineRecord.statusPartial : RoutineRecord.statusDone, answer: text)
+    }
+
     static func progressLine(toolName name: String) -> String {
         if name == "ExitPlanMode" { return "작업 목록을 정리하는 중이에요…" }
         if name.hasPrefix(mcpToolPrefix) { return "사파리 \(name.dropFirst(mcpToolPrefix.count)) 하는 중이에요…" }
@@ -382,6 +477,7 @@ public final class AgentSession {
     private func startPermission(_ req: PermissionRequest, run: Run) {
         guard !run.closing else { return }   // 멈추는 중 — 더 묻지 않는다(프로세스는 곧 끝난다)
         let input = req.input
+        if let u = run.unattended { decideUnattendedPermission(req, run: run, state: u); return }
         if req.toolName == "ExitPlanMode" {
             // 계획 글 사다리: 입력의 plan → 이번 실행의 마지막 클로드 글 → 빈 것.
             let given = (input["plan"] as? String) ?? ""
@@ -437,6 +533,24 @@ public final class AgentSession {
         }
     }
 
+    /// 사람 없는 실행의 도구 물음 — 카드 없이 바로: `repl` 은 덧막이 낱말이 있으면 거절(거절 한 번), 그 밖의 사파리 도구는 허락, 나머지(ExitPlanMode 포함)는 거절.
+    private func decideUnattendedPermission(_ req: PermissionRequest, run: Run, state u: UnattendedState) {
+        let input = req.input
+        if req.toolName == Self.replToolName {
+            let code = (input["code"] as? String) ?? ""
+            if Self.hasWrapperWord(code) {
+                u.denied += 1
+                reply(ClaudeControl.deny(requestID: req.requestID, message: Self.routineCodeRefusedMessage), run: run)
+            } else {
+                reply(ClaudeControl.allow(requestID: req.requestID, updatedInput: input, setModeManual: false), run: run)
+            }
+        } else if req.toolName.hasPrefix(Self.mcpToolPrefix) {
+            reply(ClaudeControl.allow(requestID: req.requestID, updatedInput: input, setModeManual: false), run: run)
+        } else {
+            reply(ClaudeControl.deny(requestID: req.requestID, message: Self.toolNotAllowedMessage), run: run)
+        }
+    }
+
     static func isBlank(_ s: String) -> Bool { s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     static func hasWrapperWord(_ code: String) -> Bool {
@@ -448,6 +562,14 @@ public final class AgentSession {
     /// 관문 서버가 부른다(어느 스레드에서든 — 메인 액터로 건너와 판정한다). 손님이 답 전에 끊으면 이 작업이 취소되어 카드를 거둔다.
     private func handleGate(_ req: GateRequest, runID: Int) async -> GateDecision {
         guard let run, run.id == runID, !run.closing else { return .deny(GateServer.stoppedReason) }
+        if let u = run.unattended {
+            // 사람 없음 — 사이트 모드 · 카드 없이 루틴 판정만. 거절이 하나라도 있으면 결과가 `일부만 됨`.
+            let method = req.action == "fetch" ? RoutinePolicy.fetchMethod(fromTarget: req.target) : nil
+            let decision = RoutinePolicy.decide(action: req.action, host: req.host, irreversible: req.irreversible,
+                                                method: method, sites: u.sites)
+            if !decision.allow { u.denied += 1 }
+            return decision
+        }
         let mode = siteModes.mode(for: req.host)
         switch ActionPolicy.decide(phase: phase, mode: mode, action: req.action, irreversible: req.irreversible) {
         case .allow:

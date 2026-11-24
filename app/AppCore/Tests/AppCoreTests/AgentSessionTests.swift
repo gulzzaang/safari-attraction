@@ -1004,4 +1004,274 @@ final class AgentSessionTests: XCTestCase {
         try await waitUntil("프로세스") { self.runners.made.first?.call != nil }
         return (runners.made[0], (), t)
     }
+
+    // MARK: 사람 없는 실행(루틴)
+
+    /// 루틴 하나를 시작하고 프로세스가 뜰 때까지 기다린다.
+    @discardableResult
+    func startRoutine(_ text: String = "쿠팡 우유 가격 알려 줘", sites: [String] = ["coupang.com"],
+                      index: Int? = nil) async throws -> (runner: FakeInteractiveRunner, gate: FakeGate, task: Task<RoutineOutcome, Never>) {
+        let i = index ?? runners.made.count
+        let s = session!
+        let t = Task { @MainActor in await s.runUnattended(text: text, sites: sites) }
+        try await waitUntil("루틴 프로세스 \(i)") { self.runners.made.count > i && self.runners.made[i].call != nil && self.gates.count > i }
+        return (runners.made[i], gates[i], t)
+    }
+
+    func testRoutineCommandIsUnattendedAndPrefixIsExactlyTheDesign() async throws {
+        let (r, gate, t) = try await startRoutine("우유 가격 알려 줘", sites: ["coupang.com", "naver.com"])
+        let call = r.call!
+        let a = call.arguments
+        XCTAssertEqual(a[a.firstIndex(of: "--tools")! + 1], "")
+        XCTAssertEqual(a[a.firstIndex(of: "--permission-mode")! + 1], "manual")
+        XCTAssertTrue(a.contains("--permission-prompt-tool"))
+        XCTAssertFalse(a.contains("--resume"))
+        let mcp = a[a.firstIndex(of: "--mcp-config")! + 1]
+        XCTAssertTrue(mcp.contains("SAFARI_ATTRACTION_UNATTENDED"))
+        XCTAssertTrue(mcp.contains(gate.info.token))
+        XCTAssertTrue(mcp.contains(memoryHome.path))
+        XCTAssertEqual(call.initialLines, [ClaudeControl.userMessage(
+            "사람 없이 도는 루틴이에요. 읽기만 할 수 있고 누르기 · 입력은 거절돼요. 갈 수 있는 사이트: coupang.com, naver.com. 되묻지 말고 읽은 것을 정리해 답하세요.\n\n우유 가격 알려 줘")])
+        XCTAssertEqual(call.timeout, 660, "프로세스 상한은 600초 + 여유 60초")
+        XCTAssertTrue(sleeper.requested.contains(600))
+        XCTAssertEqual(RoutinePolicy.timeout, 600)
+        XCTAssertTrue(gate.started)
+        XCTAssertTrue(session.isRunning)
+        XCTAssertTrue(session.isRoutineRunning)
+        XCTAssertTrue(session.messages.isEmpty, "루틴은 일 맡기기 대화에 아무것도 남기지 않는다")
+        r.emit(result(text: "끝"))
+        _ = await t.value
+        XCTAssertFalse(session.isRunning)
+        XCTAssertFalse(session.isRoutineRunning)
+        XCTAssertGreaterThanOrEqual(gate.stopCount, 1)
+    }
+
+    func testRoutineGateAllowsReadsOnListedSitesAndDeniesTheRest() async throws {
+        let (r, g, t) = try await startRoutine(sites: ["coupang.com"])
+        let d1 = await g.request(gateRequest(host: "www.coupang.com", action: "goto", irreversible: false)).value
+        XCTAssertEqual(d1, .allow)
+        let d2 = await g.request(gateRequest(host: "www.coupang.com", action: "open", irreversible: false)).value
+        XCTAssertEqual(d2, .allow)
+        let d3 = await g.request(gateRequest(host: "www.coupang.com", action: "nav", irreversible: false)).value
+        XCTAssertEqual(d3, .allow)
+        let d4 = await g.request(gateRequest(host: "www.coupang.com", action: "fetch", target: "GET https://www.coupang.com/x", irreversible: false)).value
+        XCTAssertEqual(d4, .allow)
+        let d5 = await g.request(gateRequest(host: "evil.com", action: "goto", irreversible: false)).value
+        XCTAssertEqual(d5, .deny(RoutinePolicy.notAllowedSiteReason))
+        let d6 = await g.request(gateRequest(host: "www.coupang.com", action: "click", irreversible: false)).value
+        XCTAssertEqual(d6, .deny(RoutinePolicy.readOnlyReason))
+        let d7 = await g.request(gateRequest(host: "www.coupang.com", action: "fetch", target: "POST https://www.coupang.com/x", irreversible: true)).value
+        XCTAssertEqual(d7, .deny(RoutinePolicy.readOnlyReason))
+        let d8 = await g.request(gateRequest(host: "", action: "goto", irreversible: false)).value
+        XCTAssertEqual(d8, .deny(RoutinePolicy.notAllowedSiteReason))
+        XCTAssertTrue(cards.isEmpty, "루틴은 카드를 만들지 않는다")
+        XCTAssertFalse(session.hasPendingCard)
+        XCTAssertTrue(session.messages.isEmpty)
+        r.finish(.finished(code: 0)); _ = await t.value
+    }
+
+    func testRoutineIgnoresSiteModesAndNeverAsksAHuman() async throws {
+        try siteModes.setMode(.allowAll, for: "www.coupang.com")
+        let (r, g, t) = try await startRoutine(sites: ["coupang.com"])
+        let d = await g.request(gateRequest(host: "www.coupang.com", action: "click", irreversible: false)).value
+        XCTAssertEqual(d, .deny(RoutinePolicy.readOnlyReason), "사이트가 다 허락이어도 루틴은 읽기만")
+        XCTAssertTrue(cards.isEmpty)
+        r.finish(.finished(code: 0)); _ = await t.value
+    }
+
+    func testRoutineExitPlanModeIsDeniedWithoutCardAndRunContinues() async throws {
+        let (r, _, t) = try await startRoutine()
+        r.emit(canUseTool("plan1", "ExitPlanMode", ["plan": "1. 간다"]))
+        try await waitUntil("거절 답") { self.reply(r, "plan1") != nil }
+        XCTAssertEqual(reply(r, "plan1")?.behavior, "deny")
+        XCTAssertTrue(cards.isEmpty)
+        XCTAssertFalse(reply(r, "plan1")?.setMode ?? true)
+        XCTAssertTrue(session.isRunning)
+        r.emit(result(text: "끝")); _ = await t.value
+    }
+
+    func testRoutineReplWrapperWordIsDeniedWithoutCardAndPlainReplAllowed() async throws {
+        let (r, _, t) = try await startRoutine()
+        r.emit(canUseTool("r1", AgentSession.replToolName, ["code": "return process.env"]))
+        r.emit(canUseTool("r2", AgentSession.replToolName, ["code": "return await page.title()"]))
+        r.emit(canUseTool("r3", "mcp__safari-attraction__status", [:]))
+        r.emit(canUseTool("r4", "Bash", ["command": "ls"]))
+        r.emit(canUseTool("r5", AgentSession.replToolName, ["code": "page.evaluate(() => 1)"]))
+        try await waitUntil("답 다섯") { self.replies(r).count == 5 }
+        XCTAssertEqual(reply(r, "r1")?.behavior, "deny")
+        XCTAssertEqual(reply(r, "r2")?.behavior, "allow")
+        XCTAssertEqual(reply(r, "r3")?.behavior, "allow")
+        XCTAssertEqual(reply(r, "r4")?.behavior, "deny")
+        XCTAssertEqual(reply(r, "r4")?.message, AgentSession.toolNotAllowedMessage)
+        XCTAssertEqual(reply(r, "r5")?.behavior, "allow", "낱말 경계 — page.evaluate 는 eval 에 걸리지 않는다")
+        XCTAssertTrue(cards.isEmpty)
+        XCTAssertFalse(session.hasPendingCard)
+        r.emit(result(text: "끝")); let o = await t.value
+        XCTAssertEqual(o.status, RoutineRecord.statusPartial, "덧막이 repl 거절도 거절 한 번")
+    }
+
+    func testRoutineCleanRunIsDoneWithTheAnswer() async throws {
+        let (r, g, t) = try await startRoutine()
+        let d = await g.request(gateRequest(host: "www.coupang.com", action: "goto", irreversible: false)).value
+        XCTAssertEqual(d, .allow)
+        r.emit(toolUse("mcp__safari-attraction__repl"))
+        r.emit(assistant("우유는 2,980원이에요"))
+        r.emit(assistant("재고도 있어요"))
+        r.emit(result(text: "우유는 2,980원이에요\n\n재고도 있어요"))
+        let o = await t.value
+        XCTAssertEqual(o, RoutineOutcome(status: RoutineRecord.statusDone, answer: "우유는 2,980원이에요\n\n재고도 있어요"))
+        XCTAssertGreaterThanOrEqual(r.closeCount, 1)
+    }
+
+    func testRoutineWithoutAssistantTextUsesTheResultText() async throws {
+        let (r, _, t) = try await startRoutine()
+        r.emit(result(text: "정리한 글"))
+        let o = await t.value
+        XCTAssertEqual(o, RoutineOutcome(status: RoutineRecord.statusDone, answer: "정리한 글"))
+    }
+
+    func testRoutineWithAGateDenialIsPartialButKeepsTheAnswer() async throws {
+        let (r, g, t) = try await startRoutine()
+        let d = await g.request(gateRequest(host: "www.coupang.com", action: "click")).value
+        XCTAssertFalse(d.allow)
+        r.emit(assistant("가격만 읽었어요"))
+        r.emit(result(text: "가격만 읽었어요"))
+        let o = await t.value
+        XCTAssertEqual(o, RoutineOutcome(status: RoutineRecord.statusPartial, answer: "가격만 읽었어요"))
+    }
+
+    func testRoutineAfterAPartialRunNextRoutineIsNormal() async throws {
+        let (r1, g1, t1) = try await startRoutine(index: 0)
+        _ = await g1.request(gateRequest(host: "evil.com", action: "goto", irreversible: false)).value
+        r1.emit(result(text: "일부")); let o1 = await t1.value
+        XCTAssertEqual(o1.status, RoutineRecord.statusPartial)
+        let (r2, g2, t2) = try await startRoutine(index: 1)
+        XCTAssertTrue(g2 !== g1, "루틴 하나마다 새 관문")
+        let d = await g2.request(gateRequest(host: "www.coupang.com", action: "goto", irreversible: false)).value
+        XCTAssertEqual(d, .allow)
+        r2.emit(result(text: "정상")); let o2 = await t2.value
+        XCTAssertEqual(o2, RoutineOutcome(status: RoutineRecord.statusDone, answer: "정상"))
+    }
+
+    func testRoutineTimesOutAt600SecondsAndFails() async throws {
+        let (r, g, t) = try await startRoutine()
+        try await waitUntil("루틴 시계") { self.sleeper.sleepingCount == 1 }
+        sleeper.advance(599)
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertTrue(session.isRunning)
+        XCTAssertEqual(r.stopCount, 0)
+        r.emit(assistant("읽는 중"))
+        sleeper.advance(1)
+        let o = await t.value
+        XCTAssertEqual(o.status, RoutineRecord.statusFailed)
+        XCTAssertTrue(o.answer.contains("10분"), o.answer)
+        XCTAssertGreaterThanOrEqual(r.stopCount, 1)
+        XCTAssertGreaterThanOrEqual(g.stopCount, 1)
+        XCTAssertFalse(session.isRunning)
+        XCTAssertFalse(session.isRoutineRunning)
+        XCTAssertTrue(session.messages.isEmpty)
+    }
+
+    func testRoutineErrorResultFails() async throws {
+        let (r, _, t) = try await startRoutine()
+        r.emit(result(isError: true, text: "로그인이 필요해요"))
+        let o = await t.value
+        XCTAssertEqual(o.status, RoutineRecord.statusFailed)
+        XCTAssertTrue(o.answer.contains("로그인이 필요해요"), o.answer)
+    }
+
+    func testRoutineRunnerFailureFails() async throws {
+        let (r, _, t) = try await startRoutine()
+        r.finish(.notFound("claude"))
+        let o = await t.value
+        XCTAssertEqual(o.status, RoutineRecord.statusFailed)
+        XCTAssertTrue(o.answer.contains("claude"), o.answer)
+    }
+
+    func testRoutineGateFactoryFailureFailsWithoutRunning() async throws {
+        struct Boom: Error, LocalizedError { var errorDescription: String? { "소켓 실패" } }
+        session = makeSession(gateFactory: { throw Boom() })
+        let o = await session.runUnattended(text: "일", sites: ["coupang.com"])
+        XCTAssertEqual(o.status, RoutineRecord.statusFailed)
+        XCTAssertTrue(o.answer.contains("소켓 실패"), o.answer)
+        XCTAssertTrue(runners.made.first?.call == nil)
+        XCTAssertFalse(session.isRunning)
+        XCTAssertFalse(session.isRoutineRunning)
+    }
+
+    func testStopDuringARoutineFailsWithStoppedAnswer() async throws {
+        let (r, g, t) = try await startRoutine()
+        session.stop()
+        let o = await t.value
+        XCTAssertEqual(o.status, RoutineRecord.statusFailed)
+        XCTAssertTrue(o.answer.contains(AgentSession.stoppedNotice), o.answer)
+        XCTAssertGreaterThanOrEqual(r.stopCount, 1)
+        XCTAssertGreaterThanOrEqual(g.stopCount, 1)
+    }
+
+    func testRoutineGateRequestAfterStopIsDeniedAndNotCounted() async throws {
+        let (r, g, t) = try await startRoutine()
+        session.stop()
+        let d = await g.request(gateRequest(host: "www.coupang.com", action: "click")).value
+        XCTAssertEqual(d, .deny(GateServer.stoppedReason))
+        let o = await t.value
+        XCTAssertEqual(o.status, RoutineRecord.statusFailed)
+        _ = r
+    }
+
+    func testRoutineDoesNotStartWhileAttendedRunIsActive() async throws {
+        let (r, _, t) = try await start("사람 일")
+        let o = await session.runUnattended(text: "루틴", sites: ["coupang.com"])
+        XCTAssertTrue(o.status.hasPrefix("건너뜀"), o.status)
+        XCTAssertEqual(runners.made.count, 1, "겹쳐 돌지 않는다")
+        XCTAssertTrue(session.isRunning)
+        r.finish(.finished(code: 0)); await t.value
+    }
+
+    func testAttendedSendIsIgnoredWhileARoutineRuns() async throws {
+        let (r, _, t) = try await startRoutine()
+        session.input = "사람 일"
+        XCTAssertNil(session.send())
+        XCTAssertEqual(session.input, "사람 일")
+        r.emit(result(text: "끝")); _ = await t.value
+        XCTAssertNotNil(session.send(), "루틴이 끝나면 사람 일을 받는다")
+        try await waitUntil { self.runners.made.count > 1 && self.runners.made[1].call != nil }
+        runners.made[1].finish(.finished(code: 0))
+    }
+
+    func testRoutineLeavesTheAttendedConversationAndSessionIDAlone() async throws {
+        let (r1, _, t1) = try await start("사람 일")
+        r1.emit(assistant("알겠어요")); r1.emit(result(text: "알겠어요")); await t1.value
+        let before = session.messages
+        let (r2, _, t2) = try await startRoutine(index: 1)
+        r2.emit(assistant("루틴 답", session: "routine-sess")); r2.emit(result(text: "루틴 답", session: "routine-sess"))
+        _ = await t2.value
+        XCTAssertEqual(session.messages, before)
+        let (r3, _, t3) = try await start("다음 사람 일", index: 2)
+        let a = r3.call!.arguments
+        XCTAssertEqual(a[a.firstIndex(of: "--resume")! + 1], "sess-1", "루틴의 세션이 아니라 사람 일의 세션을 이어 간다")
+        XCTAssertEqual(a[a.firstIndex(of: "--permission-mode")! + 1], "plan")
+        r3.finish(.finished(code: 0)); await t3.value
+    }
+
+    func testRoutineNeverFiresPendingCardCallbackAndNewTaskDoesNotStopIt() async throws {
+        var fired = 0
+        session.onPendingCardChange = { _ in fired += 1 }
+        let (r, _, t) = try await startRoutine()
+        session.newTask()
+        XCTAssertTrue(session.isRunning, "새 일(대화 비우기)이 돌고 있는 루틴을 멈추지 않는다")
+        XCTAssertEqual(r.stopCount, 0)
+        r.emit(assistant("답")); r.emit(result(text: "답"))
+        let o = await t.value
+        XCTAssertEqual(o, RoutineOutcome(status: RoutineRecord.statusDone, answer: "답"))
+        XCTAssertEqual(fired, 0)
+    }
+
+    func testRoutineErrorTakesPriorityOverPartial() async throws {
+        let (r, g, t) = try await startRoutine()
+        _ = await g.request(gateRequest(host: "evil.com", action: "goto", irreversible: false)).value
+        r.emit(result(isError: true, text: "오류"))
+        let o = await t.value
+        XCTAssertEqual(o.status, RoutineRecord.statusFailed)
+    }
 }
