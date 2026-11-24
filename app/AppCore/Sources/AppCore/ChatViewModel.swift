@@ -235,15 +235,6 @@ public final class ChatViewModel {
         var modelID: String?
     }
 
-    /// 한 번의 실행 동안 CLI 가 내는 이벤트를 읽는 쪽(전용 큐에서 불리므로 잠근다).
-    private final class ReaderBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var reader: ModelOutputReader
-        init(model: ModelKind) { reader = ModelOutputReader(model: model) }
-        func handle(_ e: RunEvent) -> [StreamEvent] { lock.withLock { reader.handle(e) } }
-        func finish(_ o: RunOutcome) -> [StreamEvent] { lock.withLock { reader.finish(outcome: o) } }
-    }
-
     private func perform(_ job: Job) async {
         let started = now()
         var page: PageContext?
@@ -258,79 +249,27 @@ public final class ChatViewModel {
         if !Task.isCancelled {
             let request = AskRequest(question: job.question, model: job.model, webSearch: job.webSearch,
                                      page: page, history: job.history, claudeSessionID: job.sessionID, modelID: job.modelID)
-            if let notice = CommandBuilder.notice(for: request) { update(job.answerID) { $0.notice = notice } }
-
-            if CommandBuilder.exceedsPromptLimit(request) {
-                // 너무 긴 질문은 CLI 를 띄우지 않고 그 답 말풍선에 한 줄로 알린다.
-                update(job.answerID) { $0.error = CommandBuilder.promptTooLongMessage }
-                finish(job, outcome: .failed(CommandBuilder.promptTooLongMessage), page: page, session: nil, started: started)
-                return
-            }
-
-            // 막힐 수 있는 일(로그인 셸 PATH 는 앱이 켜진 뒤 첫 질문에서 처음 읽고 캐시 — 최대 8초)은 메인 밖에서.
-            let loginPath = self.loginPath, workDirectory = self.workDirectory
-            let prepared: Result<(path: String, dir: URL), Error> = await Task.detached(priority: .userInitiated) {
-                do { return .success((loginPath(), try workDirectory())) } catch { return .failure(error) }
-            }.value
-
-            if Task.isCancelled {
-                outcome = .stopped
-            } else {
-                switch prepared {
-                case .failure(let e):
-                    outcome = .failed("작업 폴더를 만들지 못했어요(\(e.localizedDescription))")
-                    update(job.answerID) { $0.error = "작업 폴더를 만들지 못했어요 — \(e.localizedDescription)" }
-                case .success(let p):
-                    if job.model == .chatgpt, !(await codexReady(p, job: job)) {
-                        outcome = Task.isCancelled ? .stopped : .failed("codex 로그인을 확인하지 못했어요")
-                        break
+            // 가운데(안내 · 상한 · 로그인 확인 · CLI 실행 · 출력 읽기)는 페이지 패널 서버와 같이 쓰는 `AskFlow` — 단계는 순서대로 이 메인 액터에서 반영한다.
+            let (stream, cont) = AsyncStream.makeStream(of: AskFlow.Step.self)
+            let consumer = Task { [self] in
+                var session: String?
+                for await step in stream {
+                    switch step {
+                    case .notice(let n): update(job.answerID) { $0.notice = n }
+                    case .failure(let message): update(job.answerID) { $0.error = message }
+                    case .event(let e): if let s = apply(e, to: job) { session = s }
                     }
-                    if job.model == .gemini, loginState(for: .gemini) == .loggedOut {
-                        // 로그인이 안 된 걸 이미 아는 agy 는 띄우지 않는다(로그인 안 된 채 -p 가 어떻게 끝나는지 모름).
-                        update(job.answerID) { $0.error = ModelKind.gemini.loginNeededMessage }
-                        outcome = .failed(ModelKind.gemini.loginNeededMessage)
-                        break
-                    }
-                    let (exe, args) = CommandBuilder.build(request, workDir: p.dir)
-                    let box = ReaderBox(model: job.model)
-                    let (stream, cont) = AsyncStream.makeStream(of: StreamEvent.self)
-                    let consumer = Task { [self] in
-                        var session: String?
-                        for await e in stream { if let s = apply(e, to: job) { session = s } }
-                        return session
-                    }
-                    outcome = await runner.run(executable: exe, arguments: args, workDir: p.dir, path: p.path,
-                                               timeout: timeout) { event in
-                        for e in box.handle(event) { cont.yield(e) }
-                    }
-                    for e in box.finish(outcome) { cont.yield(e) }
-                    cont.finish()
-                    turnSession = await consumer.value
                 }
+                return session
             }
+            outcome = await AskFlow.run(request: request, runner: runner, loginPath: loginPath, workDirectory: workDirectory,
+                                        timeout: timeout,
+                                        geminiLoggedOut: { [self] in await loginState(for: .gemini) == .loggedOut },
+                                        emit: { cont.yield($0) })
+            cont.finish()
+            turnSession = await consumer.value
         }
         finish(job, outcome: outcome, page: page, session: turnSession, started: started)
-    }
-
-    /// codex 는 묻기 전에 늘 `codex login status`(같은 환경) — 로그인이 안 됐으면 프로세스를 띄우지 않는다
-    /// (로그인 안 된 채 `codex exec` 는 20초 넘게 재시도한다). 막았으면 그 답 말풍선에 한국어 한 줄을 달고 false.
-    private func codexReady(_ p: (path: String, dir: URL), job: Job) async -> Bool {
-        let c = CLICommands.codexLoginStatus
-        let o = await runner.run(executable: c.executable, arguments: c.arguments, workDir: p.dir, path: p.path,
-                                 timeout: CLICommands.readTimeout) { _ in }
-        if Task.isCancelled { return false }
-        let message: String
-        switch o {
-        case .finished(0): return true
-        case .finished(1): message = ModelKind.chatgpt.loginNeededMessage
-        case .finished(let code): message = "codex 로그인 상태를 확인하지 못했어요(종료 코드 \(code)) — 설정에서 확인해 주세요"
-        case .notFound: message = ModelKind.chatgpt.notFoundMessage
-        case .stopped: return false
-        case .failed(let why) where why.hasPrefix("앱 전용 설정 폴더"): message = why
-        case .timedOut, .failed: message = "codex 로그인 상태를 확인하지 못했어요 — 설정에서 확인해 주세요"
-        }
-        update(job.answerID) { $0.error = message }
-        return false
     }
 
     /// 이벤트 하나를 답 말풍선에 반영한다. Claude session_id 가 나오면 돌려준다.

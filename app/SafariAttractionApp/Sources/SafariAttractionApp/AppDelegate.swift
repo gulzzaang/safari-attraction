@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var settingsWindow: SettingsWindowController?
     private var deviceLogin: CodexDeviceLogin?
     private var status: CLIStatusService?
+    private var panelHost: PanelHost?
+    private var panelService: PanelAskService?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 로그인 셸 PATH(`zsh -lic` 는 사용자 rc 를 실행한다)는 앱이 켜질 때 읽지 않는다 —
@@ -25,10 +27,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 덮어쓰기 사전(경로 글자)은 폴더를 만들었든 못 만들었든 **늘** 적용한다. 폴더를 못 만들었으면 CLI 를 하나도 띄우지 않는다
         // (안 그러면 사용자 `~/.codex` · `~/.claude` 로 되돌아가 문서 폴더 허락 창이 뜰 수 있다) — 묻기 · 상태 · 로그인이 이유를 한국어로 알린다.
         var folderError: String?
+        var supportFailed = false
         let support: URL
         do { support = try AppPaths.supportDirectory() } catch {
             support = FileManager.default.temporaryDirectory
             folderError = error.localizedDescription
+            supportFailed = true
         }
         if folderError == nil {
             do { try CLIEnvironment.prepareDirectories(support: support) } catch { folderError = error.localizedDescription }
@@ -52,6 +56,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.status = status
         let askRunner: CommandRunning = blocked ?? ProcessRunner(environmentOverrides: claudeEnv, executableEnvironment: executableEnv)
         let vm = ChatViewModel(runner: askRunner, bridge: bridge, loginPath: { ShellPath.loginPath() }, settings: settings, status: status)
+        // 페이지 패널(사파리 확장)이 묻는 로컬 서버 — 127.0.0.1 에만 열고 연결 파일(`panel-link.json`)을 쓴다. 지원 폴더가 없으면 연결 파일 자리가 없으니 켜지 않는다.
+        // 질문마다 새 실행기를 같은 공장으로 만든다(옆 창 질문과 부딪히지 않게). 폴더를 못 만들었으면 막힌 실행기가 그대로 안내를 낸다.
+        if !supportFailed {
+            let panelService = PanelAskService(
+                selection: { waitForStatus in await vm.panelSelection(waitForStatus: waitForStatus) },
+                runnerFactory: { () -> CommandRunning in
+                    if let blocked { return blocked }
+                    return ProcessRunner(environmentOverrides: claudeEnv, executableEnvironment: executableEnv)
+                },
+                loginPath: { ShellPath.loginPath() },
+                workDirectory: { try AppPaths.workDirectory() },
+                geminiLoggedOut: { await vm.loginState(for: .gemini) == .loggedOut },
+                onRateLimits: { snap in Task { @MainActor in status.applyLiveUsage(.claude, snap) } })
+            let host = PanelHost(directory: support, backend: panelService)
+            self.panelService = panelService
+            panelHost = host
+            Task {
+                do { try await host.start() } catch { NSLog("사파리-어트랙션: 페이지 패널 서버를 켜지 못했어요 (%@)", error.localizedDescription) }
+            }
+        }
         let loginRunner: CommandRunning = blocked ?? ProcessRunner(environmentOverrides: cliEnv)
         let deviceLogin = CodexDeviceLogin(runner: loginRunner, loginPath: { ShellPath.loginPath() })
         self.deviceLogin = deviceLogin
@@ -146,15 +170,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: 끝낼 때
 
-    /// 답하는 중(묻기 · 일 맡기기)이면 CLI 를 먼저 멈춘다 — 멈춤은 SIGTERM, 2초 뒤 SIGKILL 이라 정리될 때까지 잠깐(최대 3초) 기다린다.
+    /// 답하는 중(묻기 · 일 맡기기 · 페이지 패널 질문)이면 CLI 를 먼저 멈춘다 — 멈춤은 SIGTERM, 2초 뒤 SIGKILL 이라 정리될 때까지 잠깐(최대 3초) 기다린다.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         hub?.shutdown()   // 끝내는 중에 새 루틴이 시작되지 않게 시계부터 끈다
-        let vm = viewModel, agent = agent
-        guard (vm?.isRunning ?? false) || (agent?.isRunning ?? false) else { return .terminateNow }
+        panelHost?.shutdown()   // 페이지 패널 질문의 CLI 도 멈추고 연결 파일을 지운다
+        let vm = viewModel, agent = agent, panel = panelService
+        guard (vm?.isRunning ?? false) || (agent?.isRunning ?? false) || (panel?.isRunning ?? false) else { return .terminateNow }
         vm?.shutdown()
         agent?.shutdown()
         Task { @MainActor in
-            for _ in 0..<30 where (vm?.isRunning ?? false) || (agent?.isRunning ?? false) {
+            for _ in 0..<30 where (vm?.isRunning ?? false) || (agent?.isRunning ?? false) || (panel?.isRunning ?? false) {
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
             NSApp.reply(toApplicationShouldTerminate: true)
@@ -164,6 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         hub?.shutdown()
+        panelHost?.shutdown()   // 두 끝내기 길 모두에서(여러 번 불려도 된다)
         viewModel?.shutdown()
         agent?.shutdown()
         settingsWindow?.shutdown()   // 도는 기기 코드 로그인을 멈춘다
