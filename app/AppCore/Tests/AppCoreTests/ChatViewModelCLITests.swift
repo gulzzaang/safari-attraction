@@ -83,14 +83,15 @@ final class ChatViewModelCLITests: XCTestCase {
         XCTAssertTrue(second.hasSuffix("둘째 질문"))
     }
 
-    func testCodexWebSearchOnShowsNoticeAndSameCommand() async {
+    func testCodexWebSearchIsAlwaysLiveWithNoNotice() async {
         runner.setScript { call, emit in
             if call.arguments.first == "exec" { emit(codexAnswer("답", usage: false)) }
             return .finished(code: 0)
         }
-        let vm = makeVM(); vm.model = .chatgpt; vm.webSearch = true
+        let vm = makeVM(); vm.model = .chatgpt
         await ask(vm, "최신 뉴스")
-        XCTAssertEqual(vm.messages.last?.notice, "이 CLI 는 웹 검색을 못 해요 — 검색 없이 답해요")
+        XCTAssertNil(vm.messages.last?.notice)
+        XCTAssertTrue(runner.calls.last!.arguments.contains(#"web_search="live""#))
     }
 
     // MARK: 모델 고르기 · 설정 저장

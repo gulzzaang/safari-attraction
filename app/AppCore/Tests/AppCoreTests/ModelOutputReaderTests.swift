@@ -53,7 +53,7 @@ final class ModelOutputReaderTests: XCTestCase {
         XCTAssertEqual(r.finish(outcome: .notFound("agy")),
                        [.error("agy 를 찾지 못했어요 — 설치돼 있는지, 터미널에서 agy 가 실행되는지 확인해 주세요")])
         var r2 = ModelOutputReader(model: .claude)
-        XCTAssertEqual(r2.finish(outcome: .timedOut), [.error("180초가 지나 멈췄어요 — 질문을 줄이거나 다시 시도해 주세요")])
+        XCTAssertEqual(r2.finish(outcome: .timedOut), [.error("300초가 지나 멈췄어요 — 질문을 줄이거나 다시 시도해 주세요")])
         var r3 = ModelOutputReader(model: .claude)
         XCTAssertEqual(r3.finish(outcome: .stopped), [])
     }

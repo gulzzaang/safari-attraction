@@ -6,7 +6,7 @@ import Foundation
 public enum AskFlow {
     /// 흐름이 밖으로 내는 것. `emit` 은 어느 스레드에서 불려도 된다(순서는 지킨다).
     public enum Step: Sendable, Equatable {
-        /// 답 앞에 보일 안내(웹 검색을 못 하는 CLI).
+        /// 답 앞에 보일 안내.
         case notice(String)
         /// CLI 출력에서 읽은 이벤트.
         case event(StreamEvent)
@@ -21,6 +21,13 @@ public enum AskFlow {
         init(model: ModelKind) { reader = ModelOutputReader(model: model) }
         func handle(_ e: RunEvent) -> [StreamEvent] { lock.withLock { reader.handle(e) } }
         func finish(_ o: RunOutcome) -> [StreamEvent] { lock.withLock { reader.finish(outcome: o) } }
+    }
+
+    private final class ErrorBuffer: @unchecked Sendable {
+        private let lock = NSLock()
+        private var items: [String] = []
+        func append(_ m: String) { lock.withLock { items.append(m) } }
+        var all: [String] { lock.withLock { items } }
     }
 
     /// - Parameters:
@@ -61,15 +68,44 @@ public enum AskFlow {
                 emit(.failure(ModelKind.gemini.loginNeededMessage))
                 return .failed(ModelKind.gemini.loginNeededMessage)
             }
-            let (exe, args) = CommandBuilder.build(request, workDir: p.dir)
-            let box = ReaderBox(model: request.model)
-            let outcome = await runner.run(executable: exe, arguments: args, workDir: p.dir, path: p.path,
-                                           timeout: timeout) { event in
-                for e in box.handle(event) { emit(.event(e)) }
+
+            let effort = request.effort?.isEmpty == false ? request.effort : nil
+            let canRetryVariant = request.model == .opencode && effort != nil
+            let firstErrors = ErrorBuffer()
+            let first = await execute(request: request, runner: runner, path: p.path, workDir: p.dir, timeout: timeout) { e in
+                if canRetryVariant, case .error(let msg) = e {
+                    firstErrors.append(msg)
+                } else {
+                    emit(.event(e))
+                }
             }
-            for e in box.finish(outcome) { emit(.event(e)) }
-            return outcome
+            if canRetryVariant, let effort {
+                let errs = firstErrors.all
+                let variantUnavailable = errs.contains { $0.localizedCaseInsensitiveContains("variant unavailable") }
+                if variantUnavailable, !Task.isCancelled, first != .stopped {
+                    emit(.notice("이 모델은 「\(Effort.label(effort))」 을 못 받아서 기본으로 물었어요"))
+                    var retry = request
+                    retry.effort = nil
+                    return await execute(request: retry, runner: runner, path: p.path, workDir: p.dir, timeout: timeout) { e in
+                        emit(.event(e))
+                    }
+                }
+                for msg in errs { emit(.event(.error(msg))) }
+            }
+            return first
         }
+    }
+
+    private static func execute(request: AskRequest, runner: CommandRunning, path: String, workDir: URL,
+                                timeout: TimeInterval, emit: @escaping @Sendable (StreamEvent) -> Void) async -> RunOutcome {
+        let built = CommandBuilder.build(request, workDir: workDir)
+        let box = ReaderBox(model: request.model)
+        let outcome = await runner.run(executable: built.executable, arguments: built.arguments, workDir: workDir,
+                                       path: path, timeout: timeout, environment: built.environment) { event in
+            for e in box.handle(event) { emit(e) }
+        }
+        for e in box.finish(outcome) { emit(e) }
+        return outcome
     }
 
     /// codex 는 묻기 전에 늘 `codex login status`(같은 환경) — 로그인이 안 됐으면 프로세스를 띄우지 않는다

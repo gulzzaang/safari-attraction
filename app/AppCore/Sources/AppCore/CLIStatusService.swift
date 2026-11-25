@@ -61,9 +61,9 @@ final class GuardedRunner: CLIRunner, @unchecked Sendable {
     init(inner: any CLIRunner, box: RunnerBox) { self.inner = inner; self.box = box }
 
     func run(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
-             onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+             environment: [String: String], onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
         if box.isStopped { return .stopped }
-        return await inner.run(executable: executable, arguments: arguments, workDir: workDir, path: path, timeout: timeout, onEvent: onEvent)
+        return await inner.run(executable: executable, arguments: arguments, workDir: workDir, path: path, timeout: timeout, environment: environment, onEvent: onEvent)
     }
     func runInteractive(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
                         initialLines: [String], onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
@@ -108,6 +108,7 @@ public final class CLIStatusService {
     @ObservationIgnored private let loginPath: @Sendable () -> String
     @ObservationIgnored private let runnerFactory: @Sendable () -> any CLIRunner
     @ObservationIgnored private let workDirectory: @Sendable () throws -> URL
+    @ObservationIgnored private let supportDirectory: @Sendable () throws -> URL
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let timeout: TimeInterval
     @ObservationIgnored private let minInterval: TimeInterval
@@ -120,11 +121,12 @@ public final class CLIStatusService {
     public init(loginPath: @escaping @Sendable () -> String,
                 runnerFactory: @escaping @Sendable () -> any CLIRunner,
                 workDirectory: @escaping @Sendable () throws -> URL = { try AppPaths.workDirectory() },
+                supportDirectory: @escaping @Sendable () throws -> URL = { try AppPaths.supportDirectory() },
                 now: @escaping @Sendable () -> Date = { Date() },
                 timeout: TimeInterval = CLICommands.readTimeout,
                 minInterval: TimeInterval = CLIStatusService.minInterval) {
         self.loginPath = loginPath; self.runnerFactory = runnerFactory; self.workDirectory = workDirectory
-        self.now = now; self.timeout = timeout; self.minInterval = minInterval
+        self.supportDirectory = supportDirectory; self.now = now; self.timeout = timeout; self.minInterval = minInterval
         var s: [ModelKind: CLIState] = [:]
         for k in ModelKind.subscriptionCLIs { s[k] = CLIState() }
         s[.claude]?.models = CLIModels.claudeChoices
@@ -188,11 +190,11 @@ public final class CLIStatusService {
 
         let box = RunnerBox(), boxID = UUID()
         boxes[boxID] = box
-        let loginPath = self.loginPath, workDirectory = self.workDirectory, timeout = self.timeout
+        let loginPath = self.loginPath, workDirectory = self.workDirectory, supportDirectory = self.supportDirectory, timeout = self.timeout
         let base = self.runnerFactory
         let factory: @Sendable () -> any CLIRunner = { let r = base(); box.add(r); return GuardedRunner(inner: r, box: box) }
         let result = await Task.detached(priority: .userInitiated) {
-            await Self.read(kind: kind, loginPath: loginPath, workDirectory: workDirectory, runnerFactory: factory, timeout: timeout)
+            await Self.read(kind: kind, loginPath: loginPath, workDirectory: workDirectory, supportDirectory: supportDirectory, runnerFactory: factory, timeout: timeout)
         }.value
         boxes[boxID] = nil
         var s = states[kind] ?? CLIState()
@@ -222,6 +224,7 @@ public final class CLIStatusService {
 
     /// 실제 읽기(메인 밖). 각 단계가 실패해도 다음 단계로 — 모두 「알 수 없음」 으로 끝난다.
     nonisolated static func read(kind: ModelKind, loginPath: @Sendable () -> String, workDirectory: @Sendable () throws -> URL,
+                                 supportDirectory: @Sendable () throws -> URL = { try AppPaths.supportDirectory() },
                                  runnerFactory: @Sendable () -> any CLIRunner, timeout: TimeInterval) async -> ReadResult {
         var r = ReadResult()
         let path = loginPath()
@@ -239,7 +242,9 @@ public final class CLIStatusService {
         }
         switch kind {
         case .claude, .chatgpt: await readClaudeOrCodex(kind, into: &r, path: path, dir: dir, runnerFactory: runnerFactory, timeout: timeout)
-        case .gemini: await readAgy(into: &r, path: path, dir: dir, runnerFactory: runnerFactory, timeout: timeout)
+        case .gemini:
+            let support = (try? supportDirectory()) ?? dir.deletingLastPathComponent()
+            await readAgy(into: &r, path: path, dir: dir, geminiDir: CLIEnvironment.agyGeminiDirectory(support: support), runnerFactory: runnerFactory, timeout: timeout)
         case .opencode: await readOpenCode(into: &r, path: path, dir: dir, runnerFactory: runnerFactory, timeout: timeout)
         }
         return r
@@ -299,9 +304,9 @@ public final class CLIStatusService {
     }
 
     /// agy — `agy models` 한 번이 로그인 상태이자 모델 목록이다. 로그인됐을 때만 `/usage`(모델 호출 아님)를 읽는다.
-    nonisolated static func readAgy(into r: inout ReadResult, path: String, dir: URL,
+    nonisolated static func readAgy(into r: inout ReadResult, path: String, dir: URL, geminiDir: URL,
                                     runnerFactory: @Sendable () -> any CLIRunner, timeout: TimeInterval) async {
-        let m = await CLICapture.run(runner: runnerFactory(), command: CLICommands.agyModels, workDir: dir, path: path, timeout: timeout)
+        let m = await CLICapture.run(runner: runnerFactory(), command: CLICommands.agyModels(geminiDir: geminiDir), workDir: dir, path: path, timeout: timeout)
         switch m.outcome {
         case .finished(let code):
             let parsed = CLIAccountParser.parseAgyStatus(stdout: m.stdout, stderr: m.stderr, exitCode: code)
@@ -316,7 +321,7 @@ public final class CLIStatusService {
             r.usageNote = r.login == .loggedOut ? "로그인하면 보여요" : "알 수 없음"
             return
         }
-        let u = await CLICapture.run(runner: runnerFactory(), command: CLICommands.agyUsage, workDir: dir, path: path, timeout: timeout)
+        let u = await CLICapture.run(runner: runnerFactory(), command: CLICommands.agyUsage(geminiDir: geminiDir), workDir: dir, path: path, timeout: timeout)
         if case .finished(0) = u.outcome, let snap = AgyUsageParser.parse(streamOutput: u.stdout) { r.usage = snap }
         if r.usage == nil { r.usageNote = "알 수 없음" }
     }

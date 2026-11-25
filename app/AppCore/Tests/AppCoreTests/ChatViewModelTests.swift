@@ -26,6 +26,7 @@ final class FakeRunner: CommandRunning, @unchecked Sendable {
         var workDir: URL
         var path: String
         var timeout: TimeInterval
+        var environment: [String: String] = [:]
         /// `-p` 다음에 오는 질문(프롬프트) 전체.
         var prompt: String { arguments.firstIndex(of: "-p").map { arguments[$0 + 1] } ?? (arguments.last ?? "") }
     }
@@ -45,8 +46,8 @@ final class FakeRunner: CommandRunning, @unchecked Sendable {
     func setScript(_ s: @escaping Script) { lock.withLock { _script = s } }
 
     func run(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
-             onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
-        let call = Call(executable: executable, arguments: arguments, workDir: workDir, path: path, timeout: timeout)
+             environment: [String: String], onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+        let call = Call(executable: executable, arguments: arguments, workDir: workDir, path: path, timeout: timeout, environment: environment)
         let script = lock.withLock { _calls.append(call); return _script }
         return await script(call, onEvent)
     }
@@ -202,33 +203,18 @@ final class ChatViewModelTests: XCTestCase {
             emit(claudeAssistantLine("결과"))
             return .finished(code: 0)
         }
-        vm.webSearch = true
         vm.input = "검색"
         let t = vm.send()
         try await waitUntil { self.vm.activity != nil }
-        XCTAssertTrue(vm.activity?.contains("웹") == true)
+        XCTAssertEqual(vm.activity, "검색 중 …")
         await gate.open(); await t?.value
         XCTAssertNil(vm.activity)
     }
 
-    func testClaudeWebSearchToggleReachesCommand() async {
-        vm.webSearch = true
+    func testClaudeWebSearchAlwaysEnabledInCommand() async {
         await ask("q")
         XCTAssertTrue(runner.calls[0].arguments.contains("WebSearch,WebFetch"))
-        vm.webSearch = false
-        await ask("q2")
-        XCTAssertFalse(runner.calls[1].arguments.contains("WebSearch,WebFetch"))
-    }
-
-    func testChatGPTWebSearchShowsNotice() async {
-        vm.model = .chatgpt; vm.webSearch = true
-        runner.setScript { call, emit in
-            if call.arguments.first == "exec" { emit(.stdout(jsonLine(["type": "item.completed", "item": ["type": "agent_message", "text": "답"]]))) }
-            return .finished(code: 0)
-        }
-        await ask("q")
-        XCTAssertEqual(vm.messages.last?.notice, CommandBuilder.chatgptNoWebNotice)
-        XCTAssertEqual(vm.messages.last?.text, "답")
+        XCTAssertNil(vm.messages.last?.notice)
     }
 
     // MARK: Claude 이어 묻기 · 모델 바꾸기

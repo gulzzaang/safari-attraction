@@ -4,9 +4,17 @@ import Foundation
 public protocol CommandRunning: Sendable {
     /// `onEvent` 는 어느 스레드에서 불려도 된다(실제 구현은 전용 직렬 큐). `run` 이 돌아오기 전에 모두 전달된다.
     func run(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
-             onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome
+             environment: [String: String], onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome
     /// 돌고 있는 것을 멈춘다(돌고 있지 않으면 아무 일도 없다).
     func stop()
+}
+
+public extension CommandRunning {
+    func run(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
+             onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+        await run(executable: executable, arguments: arguments, workDir: workDir, path: path, timeout: timeout,
+                  environment: [:], onEvent: onEvent)
+    }
 }
 
 extension ProcessRunner: CommandRunning {}
@@ -31,7 +39,7 @@ public final class FolderBlockedRunner: CommandRunning, InteractiveRunning, @unc
     public init(reason: String) { message = "앱 전용 설정 폴더를 만들지 못했어요 — \(reason)" }
 
     public func run(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
-                    onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+                    environment: [String: String], onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
         .failed(message)
     }
     public func runInteractive(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,

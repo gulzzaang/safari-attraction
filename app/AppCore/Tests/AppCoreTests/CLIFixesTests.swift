@@ -12,7 +12,7 @@ final class GatedStatusRunner: CommandRunning, InteractiveRunning, @unchecked Se
     var statusCalls: Int { lock.withLock { _statusCalls } }
     var stops: Int { lock.withLock { _stops } }
     func run(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
-             onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+             environment: [String: String], onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
         let n = lock.withLock { () -> Int in _statusCalls += 1; return _statusCalls }
         if n == 1 { await gate.wait() }
         return .finished(code: 1)   // claude auth status 종료 1 = 로그인 안 됨 → 한 번 읽기 = 이 호출 하나
@@ -79,23 +79,25 @@ final class ManagedConfigTests: XCTestCase {
 
     func testPrepareDirectoriesWritesBothFilesPrivately() throws {
         let s = tempDir()
-        try CLIEnvironment.prepareDirectories(support: s)
+        let res = s.appendingPathComponent("res", isDirectory: true)
+        try CLIEnvironment.prepareDirectories(support: s, resources: res)
         let toml = CLIManagedConfig.codexConfigURL(support: s)
         XCTAssertEqual(toml.path, s.path + "/codex-home/config.toml")
         XCTAssertEqual(try String(contentsOf: toml, encoding: .utf8), CLIManagedConfig.codexConfig(merging: nil))
-        let json = CLIManagedConfig.opencodeConfigURL(support: s)
-        XCTAssertEqual(json.path, s.path + "/opencode-xdg/config/opencode/opencode.json")
-        XCTAssertEqual(try String(contentsOf: json, encoding: .utf8), CLIManagedConfig.opencodeConfigJSON + "\n")
-        for u in [toml, json] {
+        let mcp = CLIManagedConfig.agyMCPConfigURL(support: s)
+        XCTAssertEqual(mcp.path, s.path + "/agy-gemini/config/mcp_config.json")
+        XCTAssertEqual(try String(contentsOf: mcp, encoding: .utf8), CLIManagedConfig.agyMCPConfigJSON(support: s, resources: res) + "\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: CLIManagedConfig.opencodeConfigURL(support: s).path), "opencode.json 은 더 쓰지 않는다")
+        for u in [toml, mcp] {
             let perm = (try FileManager.default.attributesOfItem(atPath: u.path)[.posixPermissions] as? NSNumber)?.intValue
             XCTAssertEqual(perm, 0o600)
         }
         // 고쳐 놓아도 다음 준비 때 다시 맞춘다.
         try "[features]\nshell_tool = true\n".write(to: toml, atomically: true, encoding: .utf8)
-        try "{}".write(to: json, atomically: true, encoding: .utf8)
-        try CLIEnvironment.prepareDirectories(support: s)
+        try "{}".write(to: mcp, atomically: true, encoding: .utf8)
+        try CLIEnvironment.prepareDirectories(support: s, resources: res)
         XCTAssertEqual(try String(contentsOf: toml, encoding: .utf8), CLIManagedConfig.codexConfig(merging: nil))
-        XCTAssertEqual(try String(contentsOf: json, encoding: .utf8), CLIManagedConfig.opencodeConfigJSON + "\n")
+        XCTAssertEqual(try String(contentsOf: mcp, encoding: .utf8), CLIManagedConfig.agyMCPConfigJSON(support: s, resources: res) + "\n")
     }
 
     func testOpenCodeConfigContentDeniesEverything() throws {
@@ -110,35 +112,40 @@ final class ManagedConfigTests: XCTestCase {
 }
 
 final class AgySettingsTests: XCTestCase {
-    func testDenyJSONExactAndWebSearchOpensReadURL() throws {
-        XCTAssertEqual(CLICommands.agySettingsJSON(webSearch: false),
-                       #"{"permissions":{"deny":["read_file(*)","write_file(*)","command(*)","read_url(*)","execute_url(*)","mcp(*)"]}}"#)
-        XCTAssertEqual(CLICommands.agySettingsJSON(webSearch: true),
+    let support = URL(fileURLWithPath: "/tmp/sa-support")
+    var gdir: URL { CLIEnvironment.agyGeminiDirectory(support: support) }
+
+    func testDenyJSONExactAndSafariToolsOpensMCPOnly() throws {
+        XCTAssertEqual(CLICommands.agySettingsJSON(safariTools: false),
                        #"{"permissions":{"deny":["read_file(*)","write_file(*)","command(*)","execute_url(*)","mcp(*)"]}}"#)
-        for w in [false, true] {
-            let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(CLICommands.agySettingsJSON(webSearch: w).utf8)) as? [String: Any])
+        XCTAssertEqual(CLICommands.agySettingsJSON(safariTools: true),
+                       #"{"permissions":{"allow":["mcp(safari-attraction/*)"],"deny":["read_file(*)","write_file(*)","command(*)","execute_url(*)"]}}"#)
+        for s in [false, true] {
+            let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(CLICommands.agySettingsJSON(safariTools: s).utf8)) as? [String: Any])
             XCTAssertNotNil((obj["permissions"] as? [String: Any])?["deny"] as? [String])
         }
     }
 
     func testAgyAskAndUsageCarryTheSettingsButModelsDoesNot() {
-        let off = CLICommands.agySettingsJSON(webSearch: false), on = CLICommands.agySettingsJSON(webSearch: true)
+        let off = CLICommands.agySettingsJSON(safariTools: false), on = CLICommands.agySettingsJSON(safariTools: true)
         func settings(_ a: [String]) -> String? { a.firstIndex(of: "--settings").map { a[$0 + 1] } }
-        XCTAssertNil(settings(CLICommands.agyModels.arguments), "agy models 는 --settings 가 정의돼 있지 않아 종료 1")
-        XCTAssertEqual(CLICommands.agyModels.arguments, ["models"])
-        XCTAssertEqual(settings(CLICommands.agyUsage.arguments), off)
-        XCTAssertEqual(settings(CLICommands.agyAsk(prompt: "q", modelID: nil).arguments), off)
-        XCTAssertEqual(settings(CLICommands.agyAsk(prompt: "q", modelID: nil, webSearch: true).arguments), on)
+        XCTAssertNil(settings(CLICommands.agyModels(geminiDir: gdir).arguments), "agy models 는 --settings 가 정의돼 있지 않아 종료 1")
+        XCTAssertEqual(CLICommands.agyModels(geminiDir: gdir).arguments, ["--gemini_dir", gdir.path, "models"])
+        XCTAssertEqual(settings(CLICommands.agyUsage(geminiDir: gdir).arguments), off)
+        XCTAssertEqual(settings(CLICommands.agyAsk(prompt: "q", modelID: nil, geminiDir: gdir).arguments), off)
+        XCTAssertEqual(settings(CLICommands.agyAsk(prompt: "q", modelID: nil, safariTools: true, geminiDir: gdir).arguments), on)
         XCTAssertEqual(CLICommands.agyLogin.arguments, [], "로그인 TUI 는 인자 없이")
     }
 
-    func testCommandBuilderPassesWebSearchToTheSettings() {
-        let work = URL(fileURLWithPath: "/tmp")
-        let web = CommandBuilder.build(AskRequest(question: "q", model: .gemini, webSearch: true), workDir: work).arguments
-        XCTAssertFalse(web.last!.contains("read_url"), "웹 검색을 켜면 검색 결과 페이지를 읽게")
-        XCTAssertTrue(web.last!.contains("command(*)"))
+    func testCommandBuilderPassesSafariToolsToTheSettings() {
+        let work = support.appendingPathComponent("work")
+        let tools = SafariTools(runScript: "/r.sh", gateFile: support.appendingPathComponent("gate-link.json").path, memoryHome: support.appendingPathComponent("memory").path)
+        let withTools = CommandBuilder.build(AskRequest(question: "q", model: .gemini, safariTools: tools), workDir: work).arguments
+        XCTAssertFalse(withTools.last!.contains("mcp(*)"))
+        XCTAssertTrue(withTools.last!.contains("mcp(safari-attraction/*)"))
+        XCTAssertTrue(withTools.last!.contains("command(*)"))
         let plain = CommandBuilder.build(AskRequest(question: "q", model: .gemini), workDir: work).arguments
-        XCTAssertTrue(plain.last!.contains("read_url(*)"))
+        XCTAssertTrue(plain.last!.contains("mcp(*)"))
     }
 }
 
@@ -269,12 +276,13 @@ final class LoginCommandFileTests: XCTestCase {
 }
 
 final class OpenCodeFreeLimitTests: XCTestCase {
-    let msg = "opencode 무료 사용량이 다 찼어요 — 설정에서 opencode 로그인을 해 주세요"
+    let msg = "무료 한도가 찼어요 — OpenCode Go 로 로그인하면 계속 쓸 수 있어요"
     func run(_ s: String) -> [StreamEvent] { var p = OpenCodeStreamParser(); return p.feed(Data(s.utf8)) + p.finish() }
 
     func testFreeLimitInAnyField() {
         XCTAssertEqual(run(#"{"type":"error","error":{"name":"APIError","data":{"message":"Free usage limit reached","code":"provider.free-limit"}}}"# + "\n"), [.error(msg)])
         XCTAssertEqual(run(#"{"type":"error","error":{"name":"provider.free-limit"}}"# + "\n"), [.error(msg)])
+        XCTAssertEqual(run(#"{"type":"error","error":{"name":"APIError","data":{"message":"Insufficient balance"}}}"# + "\n"), [.error(msg)])
         XCTAssertEqual(run("Error: Free usage limit reached\n"), [.error(msg)])
         XCTAssertEqual(ModelKind.opencodeFreeLimitMessage, msg)
     }
@@ -361,13 +369,15 @@ final class StatusFlowFixesTests: XCTestCase {
     // HOME 방식의 제미나이는 자동으로 읽지 않는다
     func testIsolatedAgyIsNotAutoReadUntilAPersonRefreshes() async {
         let r = ScriptedCLIRunner()
-        r.reply(cmdKey(CLICommands.agyModels), stdout: "gemini-3.8-flash-medium\tM\n")
-        r.reply(cmdKey(CLICommands.agyUsage), stdout: agyUsageSample)
+        let sup = URL(fileURLWithPath: "/tmp/sa-support")
+        let gdir = CLIEnvironment.agyGeminiDirectory(support: sup)
+        r.reply(cmdKey(CLICommands.agyModels(geminiDir: gdir)), stdout: "gemini-3.8-flash-medium\tM\n")
+        r.reply(cmdKey(CLICommands.agyUsage(geminiDir: gdir)), stdout: agyUsageSample)
         r.reply("claude auth status", stdout: #"{"loggedIn":true}"#)
         r.reply("claude -p /usage --output-format json", stdout: #"{"result":"Current session: 8% used"}"#)
         let bin = fakeBin(["claude", "codex", "agy", "opencode"])
         let clock = FakeClock()
-        let svc = CLIStatusService(loginPath: { bin }, runnerFactory: { r }, workDirectory: { URL(fileURLWithPath: "/tmp") }, now: { clock.date }, timeout: 5)
+        let svc = CLIStatusService(loginPath: { bin }, runnerFactory: { r }, workDirectory: { URL(fileURLWithPath: "/tmp") }, supportDirectory: { sup }, now: { clock.date }, timeout: 5)
         await svc.refreshForPanel(selected: .gemini, agyAutoRead: false)
         XCTAssertEqual(r.commands, [], "옆 창을 열어도 agy 를 안 띄운다")
         await svc.refreshAll(force: false, agyAutoRead: false)
@@ -387,11 +397,12 @@ final class StatusFlowFixesTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
         let store = AppSettingsStore(directory: dir)
+        let gdir = CLIEnvironment.agyGeminiDirectory(support: dir)
         let r = ScriptedCLIRunner()
-        r.reply(cmdKey(CLICommands.agyModels), stdout: "gemini-3.8-flash-medium\tM\n")
-        r.reply(cmdKey(CLICommands.agyUsage), stdout: agyUsageSample)
+        r.reply(cmdKey(CLICommands.agyModels(geminiDir: gdir)), stdout: "gemini-3.8-flash-medium\tM\n")
+        r.reply(cmdKey(CLICommands.agyUsage(geminiDir: gdir)), stdout: agyUsageSample)
         let bin = fakeBin(["agy"])
-        let svc = CLIStatusService(loginPath: { bin }, runnerFactory: { r }, workDirectory: { URL(fileURLWithPath: "/tmp") }, timeout: 5)
+        let svc = CLIStatusService(loginPath: { bin }, runnerFactory: { r }, workDirectory: { URL(fileURLWithPath: "/tmp") }, supportDirectory: { dir }, timeout: 5)
         let vm = ChatViewModel(runner: FakeRunner(), bridge: FakeBridge(), loginPath: { "/x" }, settings: store, status: svc)
         XCTAssertFalse(vm.agyAutoRead, "기본(앱 전용 HOME)은 자동으로 읽지 않는다")
         await vm.refreshStatus(for: .gemini)
@@ -399,7 +410,7 @@ final class StatusFlowFixesTests: XCTestCase {
         try store.update { $0.agyMode = .shared }
         XCTAssertTrue(vm.agyAutoRead)
         await vm.refreshStatus(for: .gemini)
-        XCTAssertEqual(r.commands, [cmdKey(CLICommands.agyModels), cmdKey(CLICommands.agyUsage)])
+        XCTAssertEqual(r.commands, [cmdKey(CLICommands.agyModels(geminiDir: gdir)), cmdKey(CLICommands.agyUsage(geminiDir: gdir))])
     }
 
     func testBlockedRunnerGivesUnknownStatusNotACrash() async {
@@ -420,7 +431,7 @@ final class FirstBlockingRunner: CommandRunning, InteractiveRunning, @unchecked 
     let gate = Gate()
     var executed: [String] { lock.withLock { _executed } }
     func run(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
-             onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+             environment: [String: String], onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
         let n = lock.withLock { () -> Int in _executed.append(([executable] + arguments).joined(separator: " ")); return _executed.count }
         if n == 1 { await gate.wait(); return .stopped }
         return .finished(code: 0)

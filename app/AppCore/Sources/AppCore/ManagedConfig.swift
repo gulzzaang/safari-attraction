@@ -11,8 +11,69 @@ public enum CLIManagedConfig {
         "image_generation", "skill_mcp_dependency_install", "workspace_dependencies", "worktrees",
     ]
 
-    /// opencode 의 도구 · 권한을 모두 끈다. 실제로 막히는지는 로그인 뒤 맥 앞 확인.
+    /// opencode 의 도구 · 권한을 모두 끈다(기본 설정).
     public static let opencodeConfigJSON = #"{"$schema":"https://opencode.ai/config.json","permission":{"*":"deny","edit":"deny","bash":"deny","webfetch":"deny","read":"deny","external_directory":"deny"},"tools":{"bash":false,"read":false,"write":false,"edit":false,"list":false,"glob":false,"grep":false,"webfetch":false,"patch":false,"task":false,"todowrite":false,"todoread":false}}"#
+
+    /// `OPENCODE_CONFIG_CONTENT` 에 넣을 JSON — `safariTools` 가 있으면 `safari-attraction_*` 허용과 로컬 MCP 서버를 더한다.
+    public static func opencodeConfigJSON(safariTools: SafariTools?) -> String {
+        guard let tools = safariTools else { return opencodeConfigJSON }
+        let obj: [String: Any] = [
+            "$schema": "https://opencode.ai/config.json",
+            "permission": [
+                "*": "deny",
+                "edit": "deny",
+                "bash": "deny",
+                "webfetch": "deny",
+                "read": "deny",
+                "external_directory": "deny",
+                "\(AgentCommandBuilder.mcpServerName)_*": "allow",
+            ],
+            "tools": [
+                "bash": false, "read": false, "write": false, "edit": false,
+                "list": false, "glob": false, "grep": false, "webfetch": false,
+                "patch": false, "task": false, "todowrite": false, "todoread": false,
+            ],
+            "mcp": [
+                AgentCommandBuilder.mcpServerName: [
+                    "type": "local",
+                    "command": ["/bin/sh", tools.runScript],
+                    "environment": [
+                        "SAFARI_ATTRACTION_GATE_FILE": tools.gateFile,
+                        "SAFARI_ATTRACTION_NO_PERMISSION_PROMPTS": "1",
+                        "SAFARI_ATTRACTION_HOME": tools.memoryHome,
+                    ],
+                ],
+            ],
+        ]
+        return ClaudeControl.json(obj)
+    }
+
+    public static func agyMCPConfigURL(support: URL) -> URL {
+        CLIEnvironment.agyGeminiDirectory(support: support)
+            .appendingPathComponent("config", isDirectory: true)
+            .appendingPathComponent("mcp_config.json")
+    }
+
+    /// `<지원>/agy-gemini/config/mcp_config.json` 에 쓸 내용 — `safari-attraction` 서버 하나, 토큰은 넣지 않는다.
+    public static func agyMCPConfigJSON(support: URL, resources: URL) -> String {
+        let runSh = resources.appendingPathComponent("safari-attraction/run.sh").path
+        let gateFile = GateLink.url(support: support).path
+        let memoryHome = support.appendingPathComponent("memory", isDirectory: true).path
+        let obj: [String: Any] = [
+            "mcpServers": [
+                AgentCommandBuilder.mcpServerName: [
+                    "command": "/bin/sh",
+                    "args": [runSh],
+                    "env": [
+                        "SAFARI_ATTRACTION_GATE_FILE": gateFile,
+                        "SAFARI_ATTRACTION_NO_PERMISSION_PROMPTS": "1",
+                        "SAFARI_ATTRACTION_HOME": memoryHome,
+                    ],
+                ],
+            ],
+        ]
+        return ClaudeControl.json(obj)
+    }
 
     static let topBegin = "# >>> safari-attraction:top"
     static let topEnd = "# <<< safari-attraction:top"
@@ -89,11 +150,17 @@ public enum CLIManagedConfig {
         return ([top] + (bodyText.isEmpty ? [] : [bodyText]) + [features]).joined(separator: "\n\n") + "\n"
     }
 
-    /// 두 파일을 쓴다(폴더는 `prepareDirectories` 가 먼저 만든다). 내용이 같으면 건드리지 않고, 쓰면 0600. 못 쓰면 던진다.
-    static func write(support: URL) throws {
+    /// 앱 설정 파일(`codex config.toml` · `agy-gemini/config/mcp_config.json`)을 쓴다. 내용이 같으면 건드리지 않고, 쓰면 0600. 못 쓰면 던진다.
+    /// `opencode.json` 은 더 이상 쓰지 않는다(`OPENCODE_CONFIG_CONTENT` 사용, 옛 파일은 지우지 않음).
+    public static func write(support: URL, resources: URL? = nil) throws {
         let codexURL = codexConfigURL(support: support)
         try writeIfChanged(codexConfig(merging: try? String(contentsOf: codexURL, encoding: .utf8)), to: codexURL)
-        try writeIfChanged(opencodeConfigJSON + "\n", to: opencodeConfigURL(support: support))
+        if let resources {
+            let mcpURL = agyMCPConfigURL(support: support)
+            try FileManager.default.createDirectory(at: mcpURL.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try writeIfChanged(agyMCPConfigJSON(support: support, resources: resources) + "\n", to: mcpURL)
+        }
     }
 
     private static func writeIfChanged(_ text: String, to url: URL) throws {

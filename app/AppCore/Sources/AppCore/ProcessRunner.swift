@@ -33,7 +33,7 @@ public enum RunOutcome: Sendable, Equatable {
 /// - 한 객체로 한 번에 하나만 돌린다(끝난 뒤 다시 `run` 가능).
 public final class ProcessRunner: @unchecked Sendable {
     /// 시간 상한(초) — 설계 값.
-    public static let defaultTimeout: TimeInterval = 180
+    public static let defaultTimeout: TimeInterval = 300
 
     private enum Reason { case timedOut, stopped, inputFailed }
 
@@ -130,9 +130,10 @@ public final class ProcessRunner: @unchecked Sendable {
     /// `onEvent` 는 이 객체 안의 전용 직렬 큐에서 순서대로 불리고, `run` 이 돌아오기 전에 모두 전달된다.
     /// 메인 스레드가 아니므로 화면을 만지는 쪽은 스스로 스레드를 옮겨야 한다.
     public func run(executable: String, arguments: [String], workDir: URL, path: String,
-                    timeout: TimeInterval, onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+                    timeout: TimeInterval, environment: [String: String] = [:],
+                    onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
         await runAsync(interactive: false, initialLines: [], executable: executable, arguments: arguments, workDir: workDir,
-                       path: path, timeout: timeout, onEvent: onEvent)
+                       path: path, timeout: timeout, extraEnvironment: environment, onEvent: onEvent)
     }
 
     /// `run` 과 같되 자식의 표준 입력이 `/dev/null` 이 아니라 파이프다 — `write` 로 줄을 보내고 `closeInput` 으로 닫는다.
@@ -142,17 +143,18 @@ public final class ProcessRunner: @unchecked Sendable {
                                timeout: TimeInterval, initialLines: [String] = [],
                                onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
         await runAsync(interactive: true, initialLines: initialLines, executable: executable, arguments: arguments,
-                       workDir: workDir, path: path, timeout: timeout, onEvent: onEvent)
+                       workDir: workDir, path: path, timeout: timeout, extraEnvironment: [:], onEvent: onEvent)
     }
 
     private func runAsync(interactive: Bool, initialLines: [String], executable: String, arguments: [String], workDir: URL, path: String,
-                          timeout: TimeInterval, onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+                          timeout: TimeInterval, extraEnvironment: [String: String],
+                          onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
         guard begin() else { return .failed("이미 실행 중이에요") }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (cont: CheckedContinuation<RunOutcome, Never>) in
                 DispatchQueue.global(qos: .userInitiated).async {
                     cont.resume(returning: self.execute(interactive: interactive, initialLines: initialLines, executable: executable, arguments: arguments,
-                                                        workDir: workDir, path: path, timeout: timeout, onEvent: onEvent))
+                                                        workDir: workDir, path: path, timeout: timeout, extraEnvironment: extraEnvironment, onEvent: onEvent))
                 }
             }
         } onCancel: {
@@ -165,7 +167,7 @@ public final class ProcessRunner: @unchecked Sendable {
                      timeout: TimeInterval, onEvent: @escaping @Sendable (RunEvent) -> Void) -> RunOutcome {
         guard begin() else { return .failed("이미 실행 중이에요") }
         return execute(interactive: false, initialLines: [], executable: executable, arguments: arguments, workDir: workDir, path: path,
-                       timeout: timeout, onEvent: onEvent)
+                       timeout: timeout, extraEnvironment: [:], onEvent: onEvent)
     }
 
     // MARK: - 내부
@@ -227,7 +229,8 @@ public final class ProcessRunner: @unchecked Sendable {
     }
 
     private func execute(interactive: Bool, initialLines: [String], executable: String, arguments: [String], workDir: URL, path: String,
-                         timeout: TimeInterval, onEvent: @escaping @Sendable (RunEvent) -> Void) -> RunOutcome {
+                         timeout: TimeInterval, extraEnvironment: [String: String],
+                         onEvent: @escaping @Sendable (RunEvent) -> Void) -> RunOutcome {
         defer { closeInput(); finishRun() }
         guard let exe = Self.resolve(executable, path: path) else { return .notFound(executable) }
 
@@ -271,7 +274,9 @@ public final class ProcessRunner: @unchecked Sendable {
         posix_spawn_file_actions_adddup2(&actions, errFds[1], 2)
         let chdirRC = posix_spawn_file_actions_addchdir_np(&actions, workDir.path)
 
-        let overrides = environmentOverrides.merging(executableEnvironment((executable as NSString).lastPathComponent)) { _, new in new }
+        let overrides = environmentOverrides
+            .merging(executableEnvironment((executable as NSString).lastPathComponent)) { _, new in new }
+            .merging(extraEnvironment) { _, new in new }
         let env = Self.childEnvironment(base: ProcessInfo.processInfo.environment, path: path, overrides: overrides)
         let argv = ([exe] + arguments).map { strdup($0) } + [nil]
         let envp = env.map { strdup("\($0.key)=\($0.value)") } + [nil]

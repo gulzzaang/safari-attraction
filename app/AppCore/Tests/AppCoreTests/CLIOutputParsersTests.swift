@@ -117,4 +117,13 @@ final class CLIOutputParsersTests: XCTestCase {
         let ev = p.feed(line(#"{"type":"result","is_error":false,"result":"파랑","usage":{"input_tokens":10,"cache_creation_input_tokens":5,"cache_read_input_tokens":100,"output_tokens":7}}"#))
         XCTAssertEqual(ev, [.result(isError: false, text: "파랑"), .usage(TokenUsage(input: 15, cachedInput: 100, output: 7))])
     }
+
+    func testCodexToolUseEvents() {
+        var p = CodexStreamParser()
+        let ev = p.feed(
+            line(#"{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"safari-attraction","tool":"ping","status":"in_progress"}}"#)
+            + line(#"{"type":"item.started","item":{"id":"item_2","type":"web_search","status":"in_progress"}}"#)
+        )
+        XCTAssertEqual(ev, [.toolUse(name: "safari-attraction/ping"), .toolUse(name: "web_search")])
+    }
 }

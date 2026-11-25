@@ -36,8 +36,8 @@ public enum ModelKind: String, CaseIterable, Sendable, Equatable {
         }
     }
 
-    /// opencode 가 `provider.free-limit` · 「Free usage limit reached」 로 거절했을 때.
-    public static let opencodeFreeLimitMessage = "opencode 무료 사용량이 다 찼어요 — 설정에서 opencode 로그인을 해 주세요"
+    /// opencode 가 `provider.free-limit` · 「Free usage limit reached」 · 「Insufficient balance」 로 거절했을 때.
+    public static let opencodeFreeLimitMessage = "무료 한도가 찼어요 — OpenCode Go 로 로그인하면 계속 쓸 수 있어요"
 
     public var notFoundMessage: String {
         "\(cliName) 를 찾지 못했어요 — 설치돼 있는지, 터미널에서 \(cliName) 가 실행되는지 확인해 주세요"

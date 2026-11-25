@@ -23,7 +23,7 @@ final class ScriptedCLIRunner: CommandRunning, InteractiveRunning, @unchecked Se
     var stops: Int { lock.withLock { _stops } }
 
     func run(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
-             onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+             environment: [String: String], onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
         let key = ([executable] + arguments).joined(separator: " ")
         let r: Reply? = lock.withLock { _commands.append(key); return replies[key] }
         guard let r else { return .failed("대본 없음: \(key)") }

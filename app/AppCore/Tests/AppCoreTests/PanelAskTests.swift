@@ -104,15 +104,14 @@ final class PanelAskTests: XCTestCase {
         XCTAssertEqual(factory.all.map { $0.calls.count }, [1, 1])
     }
 
-    func testOpencodeWebSearchNoticeComesFirstAsADelta() async throws {
+    func testOpencodeWebSearchFieldIsIgnoredAndProducesAnswer() async throws {
         let factory = RunnerFactoryLog { _, emit in
             emit(.stdout(jsonLine(["type": "text", "part": ["text": "hello"]])))
             return .finished(code: 0)
         }
         let port = try await serve(service(factory, kind: .opencode))
         let r = await ask(port, PanelTest.askBody(webSearch: true))
-        XCTAssertEqual(r?.lines.first, "{\"t\":\"delta\",\"text\":\"(\(CommandBuilder.chatgptNoWebNotice))\\n\\n\"}")
-        XCTAssertEqual(r?.lines.last, #"{"t":"done","usage":null}"#)
+        XCTAssertEqual(r?.lines, [#"{"t":"delta","text":"hello"}"#, #"{"t":"done","usage":null}"#])
     }
 
     func testUsageComesInTheDoneLine() async throws {
@@ -379,7 +378,7 @@ final class PanelAskTests: XCTestCase {
         private var _calls = 0
         var calls: Int { lock.withLock { _calls } }
         func run(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
-                 onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
+                 environment: [String: String], onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome {
             lock.withLock { _calls += 1 }
             await gate.wait()
             return .finished(code: 1)

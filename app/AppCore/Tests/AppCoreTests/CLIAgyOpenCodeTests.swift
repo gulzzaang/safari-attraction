@@ -56,46 +56,52 @@ final class CLIEnvironmentFourTests: XCTestCase {
     }
 
     func testAgyIsolatedGetsOnlyHomeAndSharedGetsNothing() {
-        XCTAssertEqual(CLIEnvironment.executableEnvironment(executable: "agy", support: support, agyMode: .isolated),
-                       ["HOME": "/tmp/sa-support/agy-home"])
-        XCTAssertEqual(CLIEnvironment.executableEnvironment(executable: "/opt/homebrew/bin/agy", support: support, agyMode: .isolated),
-                       ["HOME": "/tmp/sa-support/agy-home"])
-        XCTAssertEqual(CLIEnvironment.executableEnvironment(executable: "agy", support: support, agyMode: .shared), [:], "내 설정 함께 쓰기 = 사용자 HOME 그대로")
+        for mode in AgyMode.allCases {
+            XCTAssertEqual(CLIEnvironment.executableEnvironment(executable: "agy", support: support, agyMode: mode), [:])
+            XCTAssertEqual(CLIEnvironment.executableEnvironment(executable: "/opt/homebrew/bin/agy", support: support, agyMode: mode), [:])
+        }
     }
 
     func testOpenCodeEnvironmentIsXDGFourPlusDisableFlags() {
         let env = CLIEnvironment.executableEnvironment(executable: "opencode", support: support, agyMode: .shared)
         XCTAssertEqual(env, [
             "XDG_CONFIG_HOME": "/tmp/sa-support/opencode-xdg/config",
-            "XDG_DATA_HOME": "/tmp/sa-support/opencode-xdg/data",
             "XDG_STATE_HOME": "/tmp/sa-support/opencode-xdg/state",
             "XDG_CACHE_HOME": "/tmp/sa-support/opencode-xdg/cache",
             "OPENCODE_DISABLE_CLAUDE_CODE": "1",
             "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
             "OPENCODE_DISABLE_AUTOUPDATE": "1",
+            "OPENCODE_CONFIG_CONTENT": CLIManagedConfig.opencodeConfigJSON,
         ])
+        XCTAssertNil(env["XDG_DATA_HOME"])
         XCTAssertNil(env["HOME"])
     }
 
     func testEnvironmentForKindMatchesWhatLoginFilesGet() {
-        XCTAssertEqual(CLIEnvironment.environment(for: .gemini, support: support), ["HOME": "/tmp/sa-support/agy-home"])
+        XCTAssertEqual(CLIEnvironment.environment(for: .gemini, support: support), [:])
         XCTAssertEqual(CLIEnvironment.environment(for: .gemini, support: support, agyMode: .shared), [:])
         XCTAssertEqual(CLIEnvironment.environment(for: .opencode, support: support).count, 7)
+        XCTAssertNil(CLIEnvironment.environment(for: .opencode, support: support)["XDG_DATA_HOME"])
     }
 
     func testUserValuesLoseToAppValuesForAgyAndOpenCode() {
         let overrides = CLIEnvironment.executableEnvironment(executable: "agy", support: support, agyMode: .isolated)
         let child = ProcessRunner.childEnvironment(base: ["HOME": "/Users/me"], path: "/bin", overrides: overrides)
-        XCTAssertEqual(child["HOME"], "/tmp/sa-support/agy-home")
-        let oc = ProcessRunner.childEnvironment(base: ["XDG_DATA_HOME": "/Users/me/.local/share"], path: "/bin",
+        XCTAssertEqual(child["HOME"], "/Users/me", "agy 는 HOME 을 바꾸지 않는다")
+        let oc = ProcessRunner.childEnvironment(base: ["XDG_CONFIG_HOME": "/Users/me/.config", "XDG_DATA_HOME": "/Users/me/.local/share"], path: "/bin",
                                                 overrides: CLIEnvironment.opencodeEnvironment(support: support))
-        XCTAssertEqual(oc["XDG_DATA_HOME"], "/tmp/sa-support/opencode-xdg/data")
+        XCTAssertEqual(oc["XDG_CONFIG_HOME"], "/tmp/sa-support/opencode-xdg/config")
+        XCTAssertEqual(oc["XDG_DATA_HOME"], "/Users/me/.local/share", "XDG_DATA_HOME 은 사용자 기본을 함께 쓴다")
     }
 
     func testPrepareDirectoriesAlsoMakesAgyHomeAndOpenCodeXDG0700() throws {
         let s = tempDir()
         try CLIEnvironment.prepareDirectories(support: s)
-        var dirs = [CLIEnvironment.agyHomeDirectory(support: s), CLIEnvironment.opencodeXDGRoot(support: s)]
+        var dirs = [
+            CLIEnvironment.agyGeminiDirectory(support: s),
+            CLIEnvironment.agyGeminiDirectory(support: s).appendingPathComponent("config", isDirectory: true),
+            CLIEnvironment.opencodeXDGRoot(support: s),
+        ]
         dirs += CLIEnvironment.opencodeXDGDirectories(support: s).values
         XCTAssertEqual(dirs.count, 6)
         for d in dirs {
@@ -130,19 +136,22 @@ final class CLIEnvironmentFourTests: XCTestCase {
 
     // MARK: 명령줄
     func testAgyCommands() {
-        XCTAssertEqual(CLICommands.agyModels.arguments, ["models"], "agy models 는 --settings 를 받지 않는다")
-        XCTAssertEqual(CLICommands.agyUsage.arguments, ["-p", "/usage", "--output-format", "stream-json", "--settings", CLICommands.agySettingsJSON(webSearch: false)])
+        let gdir = CLIEnvironment.agyGeminiDirectory(support: support)
+        XCTAssertEqual(CLICommands.agyModels(geminiDir: gdir).arguments, ["--gemini_dir", gdir.path, "models"], "agy models 는 --settings 를 받지 않는다")
+        XCTAssertEqual(CLICommands.agyUsage(geminiDir: gdir).arguments, ["--gemini_dir", gdir.path, "-p", "/usage", "--output-format", "stream-json", "--settings", CLICommands.agySettingsJSON(safariTools: false)])
         XCTAssertEqual(CLICommands.agyLogin.arguments, [])
-        XCTAssertEqual(CLICommands.agyAsk(prompt: "질문", modelID: "gemini-4-neon-low").arguments,
-                       ["-p", "질문", "--model", "gemini-4-neon-low", "--output-format", "stream-json", "--settings", CLICommands.agySettingsJSON(webSearch: false)])
-        XCTAssertEqual(CLICommands.agyAsk(prompt: "q", modelID: nil).arguments[3], "gemini-3.8-flash-medium")
-        XCTAssertEqual(CLICommands.agyAsk(prompt: "q", modelID: "--evil").arguments[3], "gemini-3.8-flash-medium", "안전하지 않은 id 는 기본으로")
+        XCTAssertEqual(CLICommands.agyAsk(prompt: "질문", modelID: "gemini-4-neon-low", geminiDir: gdir).arguments,
+                       ["--gemini_dir", gdir.path, "-p", "질문", "--model", "gemini-4-neon-low", "--output-format", "stream-json", "--settings", CLICommands.agySettingsJSON(safariTools: false)])
+        XCTAssertEqual(CLICommands.agyAsk(prompt: "q", modelID: nil, geminiDir: gdir).arguments[5], "gemini-3.8-flash-medium")
+        XCTAssertEqual(CLICommands.agyAsk(prompt: "q", modelID: "--evil", geminiDir: gdir).arguments[5], "gemini-3.8-flash-medium", "안전하지 않은 id 는 기본으로")
     }
 
     func testOpenCodeRunShapeAndEveryOpenCodeCommandIsStandalone() {
         let run = CLICommands.opencodeRun(prompt: "질문 $(x)", modelID: "opencode/deepseek-v4.1-flash-free")
         XCTAssertEqual(run.executable, "opencode")
         XCTAssertEqual(run.arguments, ["run", "질문 $(x)", "-m", "opencode/deepseek-v4.1-flash-free", "--format", "json", "--archived", "--standalone"])
+        let withEffort = CLICommands.opencodeRun(prompt: "q", modelID: "opencode/deepseek-v4.1-flash-free", effort: "high")
+        XCTAssertEqual(withEffort.arguments, ["run", "q", "-m", "opencode/deepseek-v4.1-flash-free#high", "--format", "json", "--archived", "--standalone"])
         XCTAssertFalse(CLICommands.opencodeRun(prompt: "q", modelID: nil).arguments.contains("-m"))
         XCTAssertFalse(CLICommands.opencodeRun(prompt: "q", modelID: "-evil/x").arguments.contains("-m"))
         let all = [CLICommands.opencodeAuthList, CLICommands.opencodeModels, CLICommands.opencodeStats, CLICommands.opencodeLogin,
@@ -157,18 +166,15 @@ final class CLIEnvironmentFourTests: XCTestCase {
     }
 
     func testCommandBuilderRoutesNewKinds() {
-        let g = CommandBuilder.build(AskRequest(question: "q", model: .gemini, modelID: "gemini-4-neon-low"), workDir: support)
+        let work = support.appendingPathComponent("work")
+        let gdir = CLIEnvironment.agyGeminiDirectory(support: support)
+        let g = CommandBuilder.build(AskRequest(question: "q", model: .gemini, modelID: "gemini-4-neon-low"), workDir: work)
         XCTAssertEqual(g.executable, "agy")
-        XCTAssertEqual(g.arguments, ["-p", "q", "--model", "gemini-4-neon-low", "--output-format", "stream-json", "--settings", CLICommands.agySettingsJSON(webSearch: false)])
-        let w = CommandBuilder.build(AskRequest(question: "q", model: .gemini, webSearch: true), workDir: support)
-        XCTAssertEqual(w.arguments[1], "웹에서 찾아서 답해 줘. 출처 주소도 적어 줘.\n\nq")
-        let o = CommandBuilder.build(AskRequest(question: "-x", model: .opencode, modelID: "opencode/a-free"), workDir: support)
+        XCTAssertEqual(g.arguments, ["--gemini_dir", gdir.path, "-p", "q", "--model", "gemini-4-neon-low", "--output-format", "stream-json", "--settings", CLICommands.agySettingsJSON(safariTools: false)])
+        let o = CommandBuilder.build(AskRequest(question: "-x", model: .opencode, modelID: "opencode/a-free"), workDir: work)
         XCTAssertEqual(o.executable, "opencode")
         XCTAssertEqual(o.arguments, ["run", "질문: -x", "-m", "opencode/a-free", "--format", "json", "--archived", "--standalone"])
-        XCTAssertEqual(CommandBuilder.notice(for: AskRequest(question: "q", model: .opencode, webSearch: true)),
-                       "이 CLI 는 웹 검색을 못 해요 — 검색 없이 답해요")
-        XCTAssertNil(CommandBuilder.notice(for: AskRequest(question: "q", model: .opencode, webSearch: false)))
-        XCTAssertNil(CommandBuilder.notice(for: AskRequest(question: "q", model: .gemini, webSearch: true)), "agy 는 웹 검색을 한다(질문 앞 안내)")
+        XCTAssertNil(CommandBuilder.notice(for: AskRequest(question: "q", model: .opencode)))
     }
 
     // MARK: 로그인 .command
@@ -180,12 +186,11 @@ final class CLIEnvironmentFourTests: XCTestCase {
         XCTAssertEqual(perm, 0o755)
         let t = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(t.hasPrefix("#!/bin/zsh -l\n"))
-        XCTAssertTrue(t.contains("export HOME='\(s.path)/agy-home'"))
+        XCTAssertFalse(t.contains("export HOME="))
         let lines = t.components(separatedBy: "\n")
         let hint = try XCTUnwrap(lines.firstIndex { $0.contains("/quit") })
         let run = try XCTUnwrap(lines.firstIndex { $0 == "'agy'" })
         XCTAssertLessThan(hint, run, "TUI 가 창을 차지하기 전에 끝내는 법을 먼저 보인다")
-        XCTAssertGreaterThan(run, lines.firstIndex { $0.hasPrefix("export HOME=") } ?? Int.max)
         XCTAssertTrue(t.contains("로그인을 마친 뒤 /quit"))
     }
 
@@ -198,7 +203,8 @@ final class CLIEnvironmentFourTests: XCTestCase {
     func testOpenCodeLoginFileHasXDGAndStandalone() throws {
         let s = tempDir()
         let t = try String(contentsOf: TerminalLogin.writeLoginFile(kind: .opencode, support: s), encoding: .utf8)
-        XCTAssertTrue(t.contains("export XDG_DATA_HOME='\(s.path)/opencode-xdg/data'"))
+        XCTAssertFalse(t.contains("XDG_DATA_HOME"), "평소 opencode DB 를 함께 쓴다")
+        XCTAssertTrue(t.contains("export XDG_CONFIG_HOME='\(s.path)/opencode-xdg/config'"))
         XCTAssertTrue(t.contains("export OPENCODE_DISABLE_CLAUDE_CODE='1'"))
         XCTAssertTrue(t.contains("'opencode' 'auth' 'login' '--standalone'"))
         XCTAssertFalse(t.contains("export HOME"))
@@ -320,9 +326,20 @@ final class AgyStreamParserTests: XCTestCase {
     }
 
     func testReaderSignInOnStderrWithNonZeroExit() {
-        var r = ModelOutputReader(model: .gemini)
-        _ = r.handle(.stderr(Data("Error: Please sign in to view available models. Launch the CLI without arguments to sign in.\n".utf8)))
-        XCTAssertEqual(r.finish(outcome: .finished(code: 1)), [.error("설정에서 제미나이 로그인을 해 주세요")])
+        var r2 = ModelOutputReader(model: .gemini)
+        _ = r2.handle(.stderr(Data("Error: Please sign in to view available models. Launch the CLI without arguments to sign in.\n".utf8)))
+        XCTAssertEqual(r2.finish(outcome: .finished(code: 1)), [.error("설정에서 제미나이 로그인을 해 주세요")])
+    }
+
+    func testAgyToolUseStepUpdate() {
+        var p = AgyStreamParser()
+        let ev = agyChunks(&p, """
+        {"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"call_mcp_tool","tool_info":{"parameters":{"ServerName":"safari-attraction","ToolName":"ping","Arguments":{}}}}}
+        {"event":"step_update","step_update":{"step_index":3,"state":"ACTIVE","step_type":"tool","tool_name":"search_web"}}
+        {"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_type":"tool","tool_name":"call_mcp_tool"}}
+
+        """)
+        XCTAssertEqual(ev, [.toolUse(name: "ping"), .toolUse(name: "search_web")])
     }
 }
 
@@ -371,6 +388,14 @@ final class OpenCodeStreamParserTests: XCTestCase {
         var r2 = ModelOutputReader(model: .opencode)
         _ = r2.handle(.stderr(Data("Error: not authenticated\n".utf8)))
         XCTAssertEqual(r2.finish(outcome: .finished(code: 1)), [.error(ModelKind.opencode.loginNeededMessage)])
+    }
+
+    func testOpenCodeToolUseAndInsufficientBalance() {
+        let toolLine = #"{"type":"tool_use","part":{"type":"tool","tool":"safari-attraction_ping","state":{"status":"completed"}}}"# + "\n"
+        XCTAssertEqual(run(toolLine), [.toolUse(name: "safari-attraction_ping")])
+
+        let balLine = #"{"type":"error","error":{"name":"APIError","data":{"message":"Insufficient balance"}}}"# + "\n"
+        XCTAssertEqual(run(balLine), [.error("무료 한도가 찼어요 — OpenCode Go 로 로그인하면 계속 쓸 수 있어요")])
     }
 }
 
@@ -527,45 +552,48 @@ final class CLIStatusServiceFourTests: XCTestCase {
         return dir.path
     }
 
+    let testGeminiDir = CLIEnvironment.agyGeminiDirectory(support: URL(fileURLWithPath: "/tmp/sa-support"))
+
     func make(_ r: ScriptedCLIRunner, bin: [String] = ["claude", "codex", "agy", "opencode"]) -> CLIStatusService {
         let path = fakeBin(bin)
-        return CLIStatusService(loginPath: { path }, runnerFactory: { r }, workDirectory: { URL(fileURLWithPath: NSTemporaryDirectory()) }, timeout: 5)
+        return CLIStatusService(loginPath: { path }, runnerFactory: { r }, workDirectory: { URL(fileURLWithPath: NSTemporaryDirectory()) },
+                                supportDirectory: { URL(fileURLWithPath: "/tmp/sa-support") }, timeout: 5)
     }
 
     func testAgyLoggedInGivesModelsAndUsage() async {
         let r = ScriptedCLIRunner()
-        r.reply(cmdKey(CLICommands.agyModels), stdout: agyModelsOut)
-        r.reply(cmdKey(CLICommands.agyUsage), stdout: agyUsageSample)
+        r.reply(cmdKey(CLICommands.agyModels(geminiDir: testGeminiDir)), stdout: agyModelsOut)
+        r.reply(cmdKey(CLICommands.agyUsage(geminiDir: testGeminiDir)), stdout: agyUsageSample)
         let svc = make(r)
         await svc.refresh(.gemini, force: true)
         let s = svc.state(.gemini)
         XCTAssertTrue(s.isLoggedIn)
         XCTAssertEqual(s.models.map(\.id), ["gemini-3.8-flash-low", "gemini-3.8-flash-medium", "claude-opus-5-5-high"])
         XCTAssertEqual(s.usage?.windows.count, 4)
-        XCTAssertEqual(r.commands, [cmdKey(CLICommands.agyModels), cmdKey(CLICommands.agyUsage)], "agy 만 불렀다")
+        XCTAssertEqual(r.commands, [cmdKey(CLICommands.agyModels(geminiDir: testGeminiDir)), cmdKey(CLICommands.agyUsage(geminiDir: testGeminiDir))], "agy 만 불렀다")
     }
 
     func testAgyLoggedOutSkipsUsage() async {
         let r = ScriptedCLIRunner()
-        r.reply(cmdKey(CLICommands.agyModels), outcome: .finished(code: 1), stderr: "Error: Please sign in to view available models.\n")
+        r.reply(cmdKey(CLICommands.agyModels(geminiDir: testGeminiDir)), outcome: .finished(code: 1), stderr: "Error: Please sign in to view available models.\n")
         let svc = make(r)
         await svc.refresh(.gemini, force: true)
         let s = svc.state(.gemini)
         XCTAssertEqual(s.login, .loggedOut)
         XCTAssertEqual(s.models, [])
         XCTAssertEqual(s.usageNote, "로그인하면 보여요")
-        XCTAssertEqual(r.commands, [cmdKey(CLICommands.agyModels)])
+        XCTAssertEqual(r.commands, [cmdKey(CLICommands.agyModels(geminiDir: testGeminiDir))])
     }
 
     func testAgyTimeoutAndEmptyListAreUnknownNotLoggedOut() async {
         let r = ScriptedCLIRunner()
-        r.reply(cmdKey(CLICommands.agyModels), outcome: .timedOut)
+        r.reply(cmdKey(CLICommands.agyModels(geminiDir: testGeminiDir)), outcome: .timedOut)
         let svc = make(r)
         await svc.refresh(.gemini, force: true)
         XCTAssertEqual(svc.state(.gemini).login, .unknown)
         XCTAssertTrue(svc.state(.gemini).loginNote?.hasPrefix("알 수 없음") == true)
         let r2 = ScriptedCLIRunner()
-        r2.reply(cmdKey(CLICommands.agyModels), stdout: "")
+        r2.reply(cmdKey(CLICommands.agyModels(geminiDir: testGeminiDir)), stdout: "")
         let svc2 = make(r2)
         await svc2.refresh(.gemini, force: true)
         XCTAssertEqual(svc2.state(.gemini).login, .unknown)
@@ -675,10 +703,13 @@ final class ChatViewModelFourTests: XCTestCase {
                       workDirectory: { URL(fileURLWithPath: "/tmp/work-test") }, settings: settings, status: status)
     }
 
+    var testGeminiDir: URL { CLIEnvironment.agyGeminiDirectory(support: dir) }
+
     func status(_ script: (ScriptedCLIRunner) -> Void, refresh: [ModelKind]) async -> CLIStatusService {
         let r = ScriptedCLIRunner(); script(r)
         let bin = fakeBin()
-        let svc = CLIStatusService(loginPath: { bin }, runnerFactory: { r }, workDirectory: { URL(fileURLWithPath: "/tmp") }, timeout: 5)
+        let sup = dir!
+        let svc = CLIStatusService(loginPath: { bin }, runnerFactory: { r }, workDirectory: { URL(fileURLWithPath: "/tmp") }, supportDirectory: { sup }, timeout: 5)
         for k in refresh { await svc.refresh(k, force: true) }
         return svc
     }
@@ -693,32 +724,32 @@ final class ChatViewModelFourTests: XCTestCase {
         XCTAssertNil(vm.messages.last?.error)
         XCTAssertEqual(vm.lastUsageText, "쓴 양 128 토큰 (입력 120 · 출력 8)")
         XCTAssertEqual(runner.calls[0].executable, "agy")
-        XCTAssertEqual(runner.calls[0].arguments, ["-p", "안녕", "--model", "gemini-3.8-flash-medium", "--output-format", "stream-json", "--settings", CLICommands.agySettingsJSON(webSearch: false)])
+        XCTAssertEqual(runner.calls[0].arguments, ["--gemini_dir", "/tmp/agy-gemini", "-p", "안녕", "--model", "gemini-3.8-flash-medium", "--output-format", "stream-json", "--settings", CLICommands.agySettingsJSON(safariTools: false)])
     }
 
     func testAgyUsesTheChosenModelFromTheLoadedList() async {
-        let st = await status({ $0.reply(cmdKey(CLICommands.agyModels), stdout: "gemini-4-neon-low\tN\ngemini-3.8-flash-medium\tM\n")
-                                $0.reply(cmdKey(CLICommands.agyUsage), stdout: agyUsageSample) }, refresh: [.gemini])
+        let st = await status({ $0.reply(cmdKey(CLICommands.agyModels(geminiDir: testGeminiDir)), stdout: "gemini-4-neon-low\tN\ngemini-3.8-flash-medium\tM\n")
+                                $0.reply(cmdKey(CLICommands.agyUsage(geminiDir: testGeminiDir)), stdout: agyUsageSample) }, refresh: [.gemini])
         let store = AppSettingsStore(directory: dir)
         let vm = makeVM(status: st, settings: store); vm.model = .gemini
         XCTAssertEqual(vm.selectedModelID(for: .gemini), "gemini-3.8-flash-medium", "기본")
         vm.setModelID("gemini-4-neon-low", for: .gemini)
         runner.setScript { _, emit in emit(.stdout(Data(agySample.utf8))); return .finished(code: 0) }
         await ask(vm, "q")
-        XCTAssertEqual(runner.calls[0].arguments[3], "gemini-4-neon-low")
+        XCTAssertEqual(runner.calls[0].arguments[5], "gemini-4-neon-low")
         XCTAssertEqual(AppSettingsStore(directory: dir).current.models["gemini"], "gemini-4-neon-low")
     }
 
-    func testAgyWebSearchPrefixGoesIntoThePrompt() async {
+    func testAgyPromptHasNoWebSearchPrefixAndNoNotice() async {
         runner.setScript { _, emit in emit(.stdout(Data(agySample.utf8))); return .finished(code: 0) }
-        let vm = makeVM(); vm.model = .gemini; vm.webSearch = true
+        let vm = makeVM(); vm.model = .gemini
         await ask(vm, "날씨")
-        XCTAssertEqual(runner.calls[0].arguments[1], "웹에서 찾아서 답해 줘. 출처 주소도 적어 줘.\n\n날씨")
+        XCTAssertEqual(runner.calls[0].arguments[3], "날씨")
         XCTAssertNil(vm.messages.last?.notice)
     }
 
     func testAgyKnownLoggedOutNeverStartsAProcess() async {
-        let st = await status({ $0.reply(cmdKey(CLICommands.agyModels), outcome: .finished(code: 1), stderr: "Please sign in") }, refresh: [.gemini])
+        let st = await status({ $0.reply(cmdKey(CLICommands.agyModels(geminiDir: testGeminiDir)), outcome: .finished(code: 1), stderr: "Please sign in") }, refresh: [.gemini])
         let vm = makeVM(status: st)
         XCTAssertFalse(vm.selectCLI(.gemini), "로그인 안 된 걸 알면 고르지 못한다")
         XCTAssertEqual(vm.hint, "제미나이(agy) 로그인이 안 돼 있어요 — 메뉴 막대 「설정…」 에서 로그인해 주세요")
@@ -728,7 +759,7 @@ final class ChatViewModelFourTests: XCTestCase {
         XCTAssertEqual(vm.messages.last?.error, "설정에서 제미나이 로그인을 해 주세요")
     }
 
-    func testOpenCodeAnswerWithFreeModelDefaultAndNotice() async {
+    func testOpenCodeAnswerWithFreeModelDefaultAndNoNotice() async {
         let st = await status({ $0.reply("opencode auth list --standalone", stdout: "OpenCode Console  Personal  stored\n")
                                 $0.reply("opencode models --standalone", stdout: "opencode/pro\nopencode/x-free\n")
                                 $0.reply("opencode stats --json --days 7 --standalone", stdout: #"{"totalCost":0,"totalTokens":5}"#) }, refresh: [.opencode])
@@ -737,11 +768,10 @@ final class ChatViewModelFourTests: XCTestCase {
         XCTAssertEqual(vm.model, .opencode)
         XCTAssertEqual(vm.selectedModelID(for: .opencode), "opencode/x-free")
         runner.setScript { _, emit in emit(.stdout(Data(opencodeSample.utf8))); return .finished(code: 0) }
-        vm.webSearch = true
         await ask(vm, "안녕")
         XCTAssertEqual(runner.calls[0].arguments, ["run", "안녕", "-m", "opencode/x-free", "--format", "json", "--archived", "--standalone"])
         XCTAssertEqual(vm.messages.last?.text, "안녕하세요")
-        XCTAssertEqual(vm.messages.last?.notice, "이 CLI 는 웹 검색을 못 해요 — 검색 없이 답해요")
+        XCTAssertNil(vm.messages.last?.notice)
         XCTAssertEqual(vm.lastUsageText, "쓴 양 62 토큰 (입력 55 · 출력 7 · 캐시 20)")
         XCTAssertEqual(vm.remainingUsageText, "최근 7일 이 맥에서 쓴 양 — 토큰 5 · 비용 $0.00")
     }
@@ -764,8 +794,8 @@ final class ChatViewModelFourTests: XCTestCase {
     }
 
     func testRemainingUsageLineFollowsTheChosenCLIAndModelGroup() async {
-        let st = await status({ $0.reply(cmdKey(CLICommands.agyModels), stdout: "gemini-3.8-flash-medium\tM\nclaude-opus-5-5-high\tO\n")
-                                $0.reply(cmdKey(CLICommands.agyUsage), stdout: agyUsageSample)
+        let st = await status({ $0.reply(cmdKey(CLICommands.agyModels(geminiDir: testGeminiDir)), stdout: "gemini-3.8-flash-medium\tM\nclaude-opus-5-5-high\tO\n")
+                                $0.reply(cmdKey(CLICommands.agyUsage(geminiDir: testGeminiDir)), stdout: agyUsageSample)
                                 $0.reply("claude auth status", stdout: #"{"loggedIn":true}"#)
                                 $0.reply("claude -p /usage --output-format json", stdout: #"{"result":"Current session: 8% used\nCurrent week (all models): 48% used"}"#) },
                               refresh: [.gemini, .claude])

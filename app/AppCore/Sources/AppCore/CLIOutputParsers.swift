@@ -79,6 +79,20 @@ public struct CodexStreamParser: StreamParsing {
             return []
         }
         switch d["type"] as? String {
+        case "item.started":
+            guard let item = d["item"] as? [String: Any], let itemType = item["type"] as? String else { return [] }
+            switch itemType {
+            case "mcp_tool_call":
+                let server = item["server"] as? String ?? ""
+                let tool = item["tool"] as? String ?? ""
+                if !server.isEmpty && !tool.isEmpty { return [.toolUse(name: "\(server)/\(tool)")] }
+                if !tool.isEmpty { return [.toolUse(name: tool)] }
+                return []
+            case "web_search":
+                return [.toolUse(name: "web_search")]
+            default:
+                return []
+            }
         case "item.completed":
             guard let item = d["item"] as? [String: Any], (item["type"] as? String) == "agent_message",
                   let text = item["text"] as? String, !text.isEmpty else { return [] }
@@ -181,7 +195,13 @@ public struct AgyStreamParser: StreamParsing {
         case "step_update":
             guard let su = d["step_update"] as? [String: Any] else { return [] }
             var events: [StreamEvent] = []
-            if (su["step_type"] as? String) == "agent_response", let t = su["text_delta"] as? String, !t.isEmpty {
+            let stepType = su["step_type"] as? String
+            if stepType == "tool", (su["state"] as? String) == "ACTIVE" {
+                let params = (su["tool_info"] as? [String: Any])?["parameters"] as? [String: Any]
+                let name = (params?["ToolName"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                    ?? (su["tool_name"] as? String)
+                if let name, !name.isEmpty { events.append(.toolUse(name: name)) }
+            } else if stepType == "agent_response", let t = su["text_delta"] as? String, !t.isEmpty {
                 let idx = su["step_index"] as? Int
                 if sawDelta, let idx, let last = lastStepIndex, idx != last { events.append(.text("\n\n")) }   // 새 단계(도구를 쓴 뒤 이어지는 답)
                 if let idx { lastStepIndex = idx }
@@ -271,6 +291,9 @@ public struct OpenCodeStreamParser: StreamParsing {
             guard let part = d["part"] as? [String: Any], let t = part["text"] as? String,
                   !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
             return [.text(t)]
+        case "tool_use":
+            guard let part = d["part"] as? [String: Any], let tool = part["tool"] as? String, !tool.isEmpty else { return [] }
+            return [.toolUse(name: tool)]
         case "step_finish":
             guard let part = d["part"] as? [String: Any], let tk = part["tokens"] as? [String: Any] else { return [] }
             let cache = tk["cache"] as? [String: Any]
@@ -289,10 +312,10 @@ public struct OpenCodeStreamParser: StreamParsing {
         }
     }
 
-    /// 로그인 없이 쓰는 무료 사용량이 찼다는 거절.
+    /// 로그인 없이 쓰는 무료 사용량이 찼거나 잔액이 부족하다는 거절.
     static func looksLikeFreeLimit(_ text: String) -> Bool {
         let low = text.lowercased()
-        return low.contains("free-limit") || low.contains("free usage limit")
+        return low.contains("free-limit") || low.contains("free usage limit") || low.contains("insufficient balance")
     }
 
     /// `error.data.message` · `error.message` · `message` · `error.name`.

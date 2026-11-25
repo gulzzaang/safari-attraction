@@ -247,7 +247,7 @@ public final class ChatViewModel {
         }
 
         if !Task.isCancelled {
-            let request = AskRequest(question: job.question, model: job.model, webSearch: job.webSearch,
+            let request = AskRequest(question: job.question, model: job.model,
                                      page: page, history: job.history, claudeSessionID: job.sessionID, modelID: job.modelID)
             // 가운데(안내 · 상한 · 로그인 확인 · CLI 실행 · 출력 읽기)는 페이지 패널 서버와 같이 쓰는 `AskFlow` — 단계는 순서대로 이 메인 액터에서 반영한다.
             let (stream, cont) = AsyncStream.makeStream(of: AskFlow.Step.self)
@@ -283,7 +283,7 @@ public final class ChatViewModel {
                 m.text += t
             }
         case .toolUse(let name):
-            activity = (name == "WebSearch" || name == "WebFetch") ? "웹을 찾아보는 중이에요…" : "\(name) 쓰는 중이에요…"
+            activity = ToolActivity.label(for: name)
         case .sessionID(let id):
             if job.model == .claude { return id }
         case .result(let isError, let text):

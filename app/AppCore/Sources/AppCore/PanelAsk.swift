@@ -190,7 +190,7 @@ public final class PanelAskService: PanelBackend, @unchecked Sendable {
         let sel = await selection(true)
         if Task.isCancelled { return }
         let model = sel.kind
-        let request = AskRequest(question: PanelPrompt.compose(q), model: model, webSearch: q.webSearch,
+        let request = AskRequest(question: PanelPrompt.compose(q), model: model,
                                  page: nil, history: [], claudeSessionID: nil, modelID: sel.modelID)
         let runner = runnerFactory()   // 질문마다 새 실행기 — 옆 창 질문과 부딪히지 않는다
         let pending = Pending()

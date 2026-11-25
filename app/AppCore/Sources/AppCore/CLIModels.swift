@@ -7,6 +7,16 @@ public struct ModelChoice: Equatable, Sendable, Identifiable {
     public init(id: String, label: String) { self.id = id; self.label = label }
 }
 
+/// 제미나이(agy) 모델 묶음 — 모델 이름과 받는 생각 단계 목록.
+public struct AgyFamily: Equatable, Sendable {
+    public let base: String
+    public let levels: [String]
+    public init(base: String, levels: [String]) {
+        self.base = base
+        self.levels = levels
+    }
+}
+
 public enum CLIModels {
     /// 클로드 — 고정 목록(명령으로 목록을 얻을 수 없다). 첫 것이 기본.
     public static let claudeChoices: [ModelChoice] = [
@@ -127,5 +137,87 @@ public enum CLIModels {
     public static func resolve(selected: String?, in choices: [ModelChoice]) -> String? {
         if let s = selected, choices.contains(where: { $0.id == s }) { return s }
         return choices.first?.id
+    }
+
+    private static let agyLevelSuffixes = ["low", "medium", "high", "xhigh"]
+
+    /// `gemini-4-neon-xhigh` → `("gemini-4-neon", "xhigh")`, 접미사가 없으면 `(id, nil)`.
+    public static func agySplit(_ id: String) -> (base: String, level: String?) {
+        for suffix in agyLevelSuffixes {
+            let tail = "-" + suffix
+            if id.hasSuffix(tail), id.count > tail.count {
+                return (String(id.dropLast(tail.count)), suffix)
+            }
+        }
+        return (id, nil)
+    }
+
+    /// `agy models` id 목록을 접미사 `-(low|medium|high|xhigh)$` 로 묶는다. 순서는 처음 나온 순서.
+    public static func agyFamilies(_ ids: [String]) -> [AgyFamily] {
+        var order: [String] = []
+        var levelsByBase: [String: [String]] = [:]
+        for id in ids {
+            let (base, level) = agySplit(id)
+            if levelsByBase[base] == nil {
+                order.append(base)
+                levelsByBase[base] = []
+            }
+            if let level, !(levelsByBase[base]?.contains(level) ?? false) {
+                levelsByBase[base]?.append(level)
+            }
+        }
+        return order.map { AgyFamily(base: $0, levels: levelsByBase[$0] ?? []) }
+    }
+
+    /// 고른 단계가 있으면 `base-level`, nil 이면 `medium` 우선 없으면 첫 단계, 단계 없는 모델은 `base`.
+    public static func agyModelID(family: AgyFamily, level: String?) -> String {
+        guard !family.levels.isEmpty else { return family.base }
+        if let level, family.levels.contains(level) {
+            return "\(family.base)-\(level)"
+        }
+        let picked = family.levels.contains("medium") ? "medium" : family.levels[0]
+        return "\(family.base)-\(picked)"
+    }
+
+    /// `<codex-home>/models_cache.json` 에서 모델 `slug` 별 `supported_reasoning_levels[].effort` 목록을 읽는다.
+    public static func parseCodexEfforts(_ data: Data) -> [String: [String]] {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) else { return [:] }
+        var items: [[String: Any]] = []
+        if let dict = obj as? [String: Any], let arr = dict["models"] as? [[String: Any]] {
+            items = arr
+        } else if let arr = obj as? [[String: Any]] {
+            items = arr
+        }
+        var result: [String: [String]] = [:]
+        for item in items {
+            guard let slug = item["slug"] as? String, isSafeID(slug),
+                  let rawLevels = item["supported_reasoning_levels"] as? [[String: Any]] else { continue }
+            var efforts: [String] = []
+            for entry in rawLevels {
+                if let e = entry["effort"] as? String, !e.isEmpty, isSafeID(e), !efforts.contains(e) {
+                    efforts.append(e)
+                }
+            }
+            if !efforts.isEmpty { result[slug] = efforts }
+        }
+        return result
+    }
+
+    /// CLI · 모델에 맞는 생각 단계 목록.
+    public static func effortChoices(kind: ModelKind, modelID: String,
+                                     codexEfforts: [String: [String]],
+                                     agyFamilies: [AgyFamily]) -> [String] {
+        switch kind {
+        case .claude:
+            return Effort.claudeLevels
+        case .chatgpt:
+            if let list = codexEfforts[modelID], !list.isEmpty { return list }
+            return ["low", "medium", "high"]
+        case .gemini:
+            let base = agySplit(modelID).base
+            return agyFamilies.first(where: { $0.base == base })?.levels ?? []
+        case .opencode:
+            return Effort.opencodeLevels
+        }
     }
 }
