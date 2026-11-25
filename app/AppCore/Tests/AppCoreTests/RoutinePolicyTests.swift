@@ -81,4 +81,10 @@ final class RoutinePolicyTests: XCTestCase {
     func testTimeoutIs600Seconds() {
         XCTAssertEqual(RoutinePolicy.timeout, 600)
     }
+
+    func testCodeActionDenied() {
+        XCTAssertNotEqual(RoutinePolicy.decide(action: "code", host: "", irreversible: true, method: nil, sites: sites), .allow)
+        XCTAssertEqual(RoutinePolicy.decide(action: "code", host: "www.coupang.com", irreversible: true, method: nil, sites: sites),
+                       .deny(RoutinePolicy.readOnlyReason))
+    }
 }

@@ -72,4 +72,15 @@ final class ActionPolicyTests: XCTestCase {
         // 대소문자가 다른 이동 이름은 이동이 아니다(서버는 소문자만 보낸다)
         XCTAssertEqual(ActionPolicy.decide(phase: .planning, mode: .allowAll, action: "GOTO", irreversible: false), .deny(planningReason))
     }
+
+    func testCodeActionIsDangerCardInEveryMode() {
+        for mode in SiteMode.allCases {
+            for irr in [true, false, nil] as [Bool?] {
+                XCTAssertEqual(ActionPolicy.decide(phase: .executing, mode: mode, action: "code", irreversible: irr),
+                               .card(danger: true), "\(mode) \(String(describing: irr))")
+                XCTAssertEqual(ActionPolicy.decide(phase: .planning, mode: mode, action: "code", irreversible: irr),
+                               .deny(planningReason), "planning \(mode)")
+            }
+        }
+    }
 }

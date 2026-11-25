@@ -26,6 +26,7 @@ public enum RoutinePolicy {
 
     /// - Parameter method: `fetch` 의 메서드(모르면 nil — 되돌릴 수 없음 값만 본다).
     public static func decide(action: String, host: String, irreversible: Bool?, method: String?, sites: [String]) -> GateDecision {
+        if action == "code" { return .deny(readOnlyReason) }
         guard SiteList.allows(host: host, list: sites) else { return .deny(notAllowedSiteReason) }
         if readOnlyNavigation.contains(action) {
             return irreversible == true ? .deny(readOnlyReason) : .allow

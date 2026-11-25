@@ -28,6 +28,7 @@ public enum ActionPolicy {
     public static func decide(phase: AgentPhase, mode: SiteMode, action: String, irreversible: Bool?) -> PolicyOutcome {
         if navigationActions.contains(action) { return .allow }
         if phase == .planning { return .deny(planningReason) }
+        if action == "code" { return .card(danger: true) }
         switch mode {
         case .readOnly:
             return .deny(readOnlyReason)
