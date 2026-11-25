@@ -212,6 +212,8 @@ final class UpdateInstallerTests: XCTestCase {
         XCTAssertTrue(script.contains("pluginkit -a"))
         XCTAssertTrue(script.contains(#"env -i HOME="$HOME" USER="$USER" PATH=/usr/bin:/bin open "$OLD_APP""#))
         XCTAssertTrue(script.contains("rollback"))
+        // 옛 앱을 백업으로 옮기지 못해도 옛 앱을 다시 켠다(앱이 꺼진 채 남지 않게).
+        XCTAssertTrue(script.contains(#"if ! mv "$OLD_APP" "$BACKUP_APP"; then"#))
         XCTAssertTrue(script.contains(#"mv "$BACKUP_APP" "$OLD_APP""#))
         XCTAssertTrue(script.contains(#"rm -rf "$BACKUP_APP""#))
         // `sa-update-*` 임시 폴더가 아닌 임의의 상위 폴더는 지우지 않는다.

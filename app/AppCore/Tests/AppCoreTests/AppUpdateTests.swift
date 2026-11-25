@@ -47,6 +47,25 @@ final class AppUpdateTests: XCTestCase {
         XCTAssertEqual(v020, AppVersion("0.2.0"))
     }
 
+    func testPickLatestChoosesHighestAmongValidAppReleases() throws {
+        func rel(_ tag: String, _ v: String) -> String {
+            let base = "https://github.com/gulzzaang/safari-attraction/releases/download/\(tag)"
+            return """
+            {"tag_name":"\(tag)","draft":false,"prerelease":false,
+             "html_url":"https://github.com/gulzzaang/safari-attraction/releases/tag/\(tag)",
+             "assets":[{"name":"SafariAttractionApp-\(v).zip","browser_download_url":"\(base)/SafariAttractionApp-\(v).zip","size":10},
+                       {"name":"SafariAttractionApp-\(v).zip.sig","browser_download_url":"\(base)/SafariAttractionApp-\(v).zip.sig","size":88}]}
+            """
+        }
+        // 순서를 섞고 MCP 서버 릴리스(v0.9.0)도 끼운다 — 앱 릴리스 중 가장 높은 0.10.0 을 골라야 한다.
+        let json = "[\(rel("app-v0.3.0", "0.3.0")),\(rel("v0.9.0", "0.9.0")),\(rel("app-v0.10.0", "0.10.0")),\(rel("app-v0.4.1", "0.4.1"))]"
+        let picked = try XCTUnwrap(AppUpdate.pickLatest(Data(json.utf8), newerThan: try XCTUnwrap(AppVersion("0.2.0"))))
+        XCTAssertEqual(picked.version, AppVersion("0.10.0"))
+        XCTAssertEqual(picked.tag, "app-v0.10.0")
+        // 지금 버전이 가장 높은 것과 같으면 업데이트가 없다.
+        XCTAssertNil(AppUpdate.pickLatest(Data(json.utf8), newerThan: try XCTUnwrap(AppVersion("0.10.0"))))
+    }
+
     func testPickLatestFiltersMixedDraftPrereleaseMissingAssetsAndBrokenTags() throws {
         let data = try fixtureData()
         let current = try XCTUnwrap(AppVersion("0.2.0"))

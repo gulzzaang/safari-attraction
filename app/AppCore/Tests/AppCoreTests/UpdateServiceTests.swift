@@ -85,6 +85,17 @@ final class UpdateServiceTests: XCTestCase {
         return false
     }
 
+    func testMalformedReleaseListIsFailureNotUpToDate() async throws {
+        let current = try XCTUnwrap(AppVersion("0.2.0"))
+        let svc = UpdateService(
+            currentVersion: current,
+            currentAppURL: URL(fileURLWithPath: "/tmp/Current.app"),
+            fetch: { url in (Data("<html>점검 중</html>".utf8), Self.httpResponse(url: url)) }
+        )
+        await svc.checkNow(userInitiated: true)
+        XCTAssertEqual(svc.state, .failed(UpdateMessages.checkFailed))
+    }
+
     func testCheckNowAutoFailureIsSilentAndUserFailureShowsFixedMessage() async throws {
         let current = try XCTUnwrap(AppVersion("0.2.0"))
         let svc = UpdateService(

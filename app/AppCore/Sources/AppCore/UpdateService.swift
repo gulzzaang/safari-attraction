@@ -238,6 +238,10 @@ public final class UpdateService {
             if let finalURL = http.url, !Self.isAllowedFeedURL(finalURL, allowLocalhostHTTP: allowLocalhostHTTP) {
                 throw URLError(.badURL)
             }
+            // 목록이 JSON 배열이 아니면(깨진 응답) 「새 버전 없음」이 아니라 확인 실패로 본다.
+            guard (try? JSONSerialization.jsonObject(with: data)) is [Any] else {
+                throw URLError(.cannotParseResponse)
+            }
             if let release = AppUpdate.pickLatest(data, newerThan: currentVersion, allowLocalhostHTTP: allowLocalhostHTTP) {
                 state = .available(release)
             } else if userInitiated {

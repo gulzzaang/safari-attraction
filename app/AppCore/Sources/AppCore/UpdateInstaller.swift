@@ -163,7 +163,10 @@ public final class UpdateInstaller: Sendable {
         }
 
         rm -rf "$BACKUP_APP" 2>/dev/null || true
-        mv "$OLD_APP" "$BACKUP_APP" || exit 1
+        if ! mv "$OLD_APP" "$BACKUP_APP"; then
+          env -i HOME="$HOME" USER="$USER" PATH=/usr/bin:/bin open "$OLD_APP" >/dev/null 2>&1 || true
+          exit 1
+        fi
         /usr/bin/ditto "$NEW_APP" "$OLD_APP" || rollback
         /usr/bin/xattr -cr "$OLD_APP" || rollback
         if [ -d "$APPEX" ]; then
