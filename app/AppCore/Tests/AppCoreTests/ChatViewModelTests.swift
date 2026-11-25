@@ -883,4 +883,13 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedModelID(for: .gemini), "gemini-4-neon-xhigh")
         XCTAssertEqual(vm.effortChoices(for: .gemini), ["low", "medium", "high", "xhigh"])
     }
+
+    func testEffortPickerHelpers() {
+        XCTAssertFalse(Effort.shouldShowPicker(choices: []))
+        XCTAssertTrue(Effort.shouldShowPicker(choices: ["low", "high"]))
+        XCTAssertEqual(Effort.pickerTitle(selected: nil), "생각: 기본")
+        XCTAssertEqual(Effort.pickerTitle(selected: ""), "생각: 기본")
+        XCTAssertEqual(Effort.pickerTitle(selected: "high"), "생각: 높음")
+        XCTAssertEqual(Effort.pickerTitle(selected: "xhigh"), "생각: 매우 높음")
+    }
 }

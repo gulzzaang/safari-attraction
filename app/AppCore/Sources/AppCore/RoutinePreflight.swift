@@ -48,7 +48,7 @@ public struct RoutinePreflight: Sendable {
     }
 
     public static let safariNotRunningReason = "사파리가 켜져 있지 않아 건너뛰었어요"
-    public static let automationMissingReason = "사파리 제어 허락이 아직 없어요 — 맥 앞에서 일 맡기기를 한 번 써 주세요"
+    public static let automationMissingReason = "사파리 제어 허락이 아직 없어요 — 맥 앞에서 AI에게 사파리 일을 한 번 시켜 주세요"
 
     private let safari: SafariRunningChecking
     private let automation: SafariAutomationChecking

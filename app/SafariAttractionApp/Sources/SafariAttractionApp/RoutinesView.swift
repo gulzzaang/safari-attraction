@@ -71,7 +71,9 @@ struct RoutinesView: View {
                 .disabled(hub.store.savedTasks.isEmpty)
             }
             if hub.store.savedTasks.isEmpty {
-                Text("먼저 일 맡기기 입력 칸의 「저장」 으로 일을 저장해 주세요.").font(.callout).foregroundStyle(.secondary)
+                Text("먼저 입력 칸의 「저장」 으로 일을 저장해 주세요.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } else if hub.store.routines.isEmpty {
                 Text("루틴이 없어요").font(.callout).foregroundStyle(.secondary)
             }

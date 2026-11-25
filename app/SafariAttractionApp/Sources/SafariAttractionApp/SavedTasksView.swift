@@ -1,11 +1,11 @@
 import AppCore
 import SwiftUI
 
-/// 「저장한 일」 — 일 맡기기 입력에 이름을 붙여 둔 것. 다시 부르기 · 고치기 · 지우기 · 「루틴으로」.
+/// 「저장한 일」 — 입력 칸에 쓴 글에 이름을 붙여 둔 것. 다시 부르기 · 고치기 · 지우기 · 「루틴으로」.
 /// 허락 창 · 확인 창을 쓰지 않고 목록 안에서 바로 묻는다(옆 창은 테두리 없는 창이라 시트가 어색하다).
 struct SavedTasksView: View {
     let hub: RoutineHub
-    let agent: AgentSession
+    let isBusy: Bool
     var onClose: () -> Void
     /// 「불러오기」 — 입력 칸에 글을 넣고 이 화면을 닫는다.
     var onLoad: (SavedTask) -> Void
@@ -34,8 +34,9 @@ struct SavedTasksView: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     if hub.store.savedTasks.isEmpty {
-                        Text("저장한 일이 없어요. 일 맡기기 입력 칸에 글을 쓰고 「저장」 을 눌러 보세요.")
+                        Text("저장한 일이 없어요. 입력 칸에 글을 쓰고 「저장」 을 눌러 보세요.")
                             .font(.callout).foregroundStyle(.secondary).padding(.top, 4)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     ForEach(hub.store.savedTasks) { task in
                         row(task)
@@ -90,10 +91,10 @@ struct SavedTasksView: View {
                         .controlSize(.small)
                     }
                 } else {
-                    HStack(spacing: 8) {
+                    FlowLayout(spacing: 6, lineSpacing: 6) {
                         Button("불러오기") { onLoad(task) }
-                            .disabled(agent.isRunning)
-                            .help(agent.isRunning ? "일하는 중에는 입력 칸을 바꿀 수 없어요" : "입력 칸에 이 글을 넣어요")
+                            .disabled(isBusy)
+                            .help(isBusy ? "답하는 중에는 입력 칸을 바꿀 수 없어요" : "입력 칸에 이 글을 넣어요")
                         Button("루틴으로") { onMakeRoutine(task) }
                         Button("고치기") { startEdit(task) }
                         Button("지우기") { confirmDeleteID = task.id }

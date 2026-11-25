@@ -12,7 +12,7 @@ extension SiteMode {
     }
 }
 
-/// 「사이트 허락」 — 사이트(호스트)마다 일 맡기기가 어디까지 하게 할지 고른다. 저장한 적 없는 사이트는 「묻고 하기」.
+/// 「사이트 허락」 — 사이트(호스트)마다 AI가 어디까지 하게 할지 고른다. 저장한 적 없는 사이트는 「묻고 하기」.
 struct SiteModesView: View {
     let store: SiteModeStore
     var onClose: () -> Void

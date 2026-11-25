@@ -173,7 +173,7 @@ final class RoutineSchedulerTests: XCTestCase {
         let rig = makeRig(now: nine)
         await rig.scheduler.checkNow()
         XCTAssertEqual(rig.runner.calls.count, 0)
-        XCTAssertEqual(store.history().first?.status, "건너뜀(사파리 제어 허락이 아직 없어요 — 맥 앞에서 일 맡기기를 한 번 써 주세요)")
+        XCTAssertEqual(store.history().first?.status, "건너뜀(\(RoutinePreflight.automationMissingReason))")
         XCTAssertFalse(automation.askArguments.isEmpty)
         XCTAssertTrue(automation.askArguments.allSatisfy { $0 == false })   // 허락 창을 띄우는 쪽으로는 한 번도 안 부름
     }
@@ -409,7 +409,7 @@ final class RoutineSchedulerTests: XCTestCase {
         safari.running = true
         automation.status = OSStatus(-1744)
         rec = await rig.scheduler.runNow(routineID: r.id)
-        XCTAssertEqual(rec?.status, "건너뜀(사파리 제어 허락이 아직 없어요 — 맥 앞에서 일 맡기기를 한 번 써 주세요)")
+        XCTAssertEqual(rec?.status, "건너뜀(\(RoutinePreflight.automationMissingReason))")
         XCTAssertEqual(rig.runner.calls.count, 0)
         XCTAssertTrue(automation.askArguments.allSatisfy { $0 == false })
         XCTAssertNil(store.routine(id: r.id)?.lastRun)
@@ -589,7 +589,7 @@ final class RoutineSchedulerTests: XCTestCase {
         XCTAssertEqual(p.check(), .skip(reason: "사파리가 켜져 있지 않아 건너뛰었어요"))
         s.running = true
         a.status = OSStatus(-1743)
-        XCTAssertEqual(p.check(), .skip(reason: "사파리 제어 허락이 아직 없어요 — 맥 앞에서 일 맡기기를 한 번 써 주세요"))
+        XCTAssertEqual(p.check(), .skip(reason: RoutinePreflight.automationMissingReason))
         XCTAssertTrue(a.askArguments.allSatisfy { $0 == false })
     }
 }

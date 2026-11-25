@@ -20,6 +20,17 @@ public enum Effort {
         default: return raw
         }
     }
+
+    /// 생각 단계 고르기 단추를 보일지(선택할 단계가 없으면 숨긴다).
+    public static func shouldShowPicker(choices: [String]) -> Bool {
+        !choices.isEmpty
+    }
+
+    /// 생각 단계 알약 단추의 제목(nil 이면 「생각: 기본」).
+    public static func pickerTitle(selected: String?) -> String {
+        guard let selected, !selected.isEmpty else { return "생각: 기본" }
+        return "생각: \(label(selected))"
+    }
 }
 
 /// CLI 가 도구를 부를 때 옆 창 · 패널 진행 한 줄에 보일 문구.

@@ -10,7 +10,7 @@ struct InputTextView: NSViewRepresentable {
     /// 바뀔 때마다 입력 칸에 커서를 둔다.
     var focusTick: Int
     var onSubmit: () -> Void
-    /// `.disabled(true)` 이면 글을 고칠 수 없게 한다(루틴이 도는 동안 일 맡기기 입력을 막는다).
+    /// `.disabled(true)` 이면 글을 고칠 수 없게 한다.
     @Environment(\.isEnabled) private var isEnabled
 
     static let minHeight: CGFloat = 30
