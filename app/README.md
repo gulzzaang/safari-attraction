@@ -21,6 +21,20 @@ osascript -e 'quit app id "com.gulzzaang.SafariAttractionApp"'  # 끄기
 
 `safariattraction://toggle`(옆 창 열기 · 닫기) · `safariattraction://ask?model=claude&q=…&web=1&page=1[&open=1]`(질문을 친 것처럼 보내고, 끝나면 `~/Library/Application Support/SafariAttractionApp/dev-last.json` 에 결과를 적는다) 는 **`DEV=1 app/scripts/build.sh` 로 만든 빌드에서만** 있다. 평소 빌드(`app/scripts/build.sh`)에는 이 주소 등록도, 받는 코드도 없다. DEV 빌드에서도 `defaults write com.gulzzaang.SafariAttractionApp DevHooks -int 1` 을 해 둔 때만 반응한다(앱 자신의 설정 도메인 하나만 읽는다 — 전역 설정 · 실행 인자는 읽지 않는다).
 
+자동 업데이트 시험도 `DEV=1` 빌드에서만 환경 값 `SAFARI_ATTRACTION_UPDATE_FEED` 로 릴리스 목록 주소를 바꿀 수 있다(이 경우 `http://127.0.0.1:...` 도 허용한다). 배포 빌드에서는 이 환경 값을 읽지 않으며 GitHub 공식 호스트(`https`)만 허용한다.
+
+## 앱 자동 업데이트 · 버전 · 릴리스
+
+- **버전 관리**: 앱 버전은 MCP 서버와 따로 관리하며 `app/VERSION`(예: `0.2.0`)이 기준이다. `app/scripts/build.sh` 가 `CFBundleShortVersionString` 에 `app/VERSION`, `CFBundleVersion` 에 `git rev-list --count HEAD` 를 넣는다.
+- **코드 서명**: `SA_SIGN_IDENTITY` 환경 값이 있으면 그 인증서를, 없으면 키체인의 「SafariAttraction Code Signing」 을, 그것도 없으면 ad-hoc(`-`)으로 appex 와 앱을 서명한다.
+- **자동 확인 · 설치**: 앱이 켜진 뒤 10초 뒤에 처음 확인하고 이후 6시간마다 GitHub 릴리스(`app-v*` 태그)를 살핀다. 새 버전이 있으면 메뉴 막대 아이콘에 점이 붙고 메뉴 맨 위에 「새 버전 … 이 있어요」 · 「지금 업데이트」 · 「변경 내용 보기」 가 뜬다. 아래 「업데이트 확인…」 으로 바로 확인할 수 있다. 설치 시 Ed25519 서명 · 번들 ID · 버전 · `codesign --verify --strict` · 인증서 일치(`certificate leaf`)를 확인한 뒤 기존 종료 순서(`applicationShouldTerminate`)를 거쳐 앱을 바꿔 넣고 사파리 확장을 다시 등록한다.
+- **릴리스 스크립트**:
+  ```sh
+  app/scripts/release.sh --dry-run            # 빌드 · zip · Ed25519 서명(.sig) · 공개 키 검증까지
+  GH_TOKEN=… app/scripts/release.sh           # 위 과정 뒤 GitHub 릴리스(app-v<ver>, --latest=false) 생성
+  ```
+  서명 스크립트(`app/scripts/sign-update.swift`)는 로그인 키체인(`safari-attraction-update-signing` / `release`)에서 Ed25519 비밀 키를 읽어 서명한다. 릴리스 노트는 `app/RELEASE_NOTES.md` 가 있으면 그것을, 없으면 이전 `app-v*` 태그 이후 커밋 제목 목록을 쓴다.
+
 ## 페이지 위 패널 (사파리 확장, 조각 2)
 
 사파리 툴바 단추나 **⌥⇧E**(Option+Shift+E)로 지금 페이지 위에 작은 패널이 뜬다(오른쪽 아래). 입력 칸에 묻고, 「이 페이지 함께」(기본 켬)면 그 페이지의 제목 · 주소 · 고른 글 · 본문 앞부분이 질문에 붙는다(비밀번호 칸 값은 읽지 않는다). 답은 앱이 고른 CLI · 모델로 받아 패널에 흘려 준다. 맨 위에 고른 CLI · 모델 이름이 보이고, Esc 나 ✕ 로 닫는다. 앱(메뉴 막대 나침반)이 꺼져 있으면 「사파리-어트랙션 앱을 켜 주세요(메뉴 막대 나침반)」 가 보인다.

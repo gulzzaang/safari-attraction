@@ -7,8 +7,40 @@
 # 안쪽 appex 를 먼저 서명하고 그다음 앱을 서명한다, --deep 은 쓰지 않는다). ~/Applications 로 복사한 뒤 `pluginkit -a` 로 등록한다(실패해도 빌드는 성공).
 set -euo pipefail
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$APP_DIR/.." && pwd)"
 BUILD="$APP_DIR/.build"
 APP="$BUILD/SafariAttractionApp.app"
+
+# 앱 버전(app/VERSION)과 빌드 번호(git 커밋 수)를 읽는다.
+VERSION_FILE="$APP_DIR/VERSION"
+if [[ ! -f "$VERSION_FILE" ]]; then
+  echo "빌드 실패: 버전 파일이 없어요 — $VERSION_FILE" >&2
+  exit 1
+fi
+APP_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
+if [[ ! "$APP_VERSION" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]]; then
+  echo "빌드 실패: app/VERSION 형식이 올바르지 않아요 — '$APP_VERSION'" >&2
+  exit 1
+fi
+APP_BUILD="$(git -C "$REPO_ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
+
+# 서명 identity: SA_SIGN_IDENTITY 우선 → 키체인의 「SafariAttraction Code Signing」 → 없으면 ad-hoc(-).
+SIGN_IDENTITY=""
+SIGN_DESC=""
+if [[ -n "${SA_SIGN_IDENTITY:-}" ]]; then
+  SIGN_IDENTITY="$SA_SIGN_IDENTITY"
+  SIGN_DESC="환경 값(SA_SIGN_IDENTITY): $SIGN_IDENTITY"
+else
+  SIGN_IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+  if [[ "$SIGN_IDENTITIES" == *'"SafariAttraction Code Signing"'* ]]; then
+    SIGN_IDENTITY="SafariAttraction Code Signing"
+    SIGN_DESC="키체인 인증서: SafariAttraction Code Signing"
+  else
+    SIGN_IDENTITY="-"
+    SIGN_DESC="ad-hoc(-)"
+  fi
+fi
+echo "코드 서명: $SIGN_DESC (버전 $APP_VERSION, 빌드 $APP_BUILD)"
 
 EXTRA=()
 URL_TYPES=""
@@ -40,7 +72,6 @@ cp "$BIN" "$APP/Contents/MacOS/SafariAttractionApp"
 
 # 서버 묶음(일 맡기기가 클로드에게 붙이는 MCP 서버)을 앱 안에 넣는다 — 문서 폴더의 dist 가 아니라 앱 안에서 띄워
 # 맥의 문서 폴더 허락 창을 피한다. 서명 전에 넣는다(서명이 이 파일들까지 봉인한다).
-REPO_ROOT="$(cd "$APP_DIR/.." && pwd)"
 BUNDLE_RES="$APP/Contents/Resources/safari-attraction"
 BUNDLE_FILES=(run.sh server.mjs jxa/host.js)
 for f in "${BUNDLE_FILES[@]}"; do
@@ -82,9 +113,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>${APP_VERSION}</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>${APP_BUILD}</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -173,9 +204,9 @@ cat > "$APPEX/Contents/Info.plist" <<PLIST
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>${APP_VERSION}</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>${APP_BUILD}</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSExtension</key>
@@ -190,12 +221,12 @@ cat > "$APPEX/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$APPEX/Contents/Info.plist"
 # 안쪽(appex)부터 서명 — 샌드박스 · 네트워크(내 컴퓨터 127.0.0.1) · 연결 파일 한 개 읽기만 허락.
-codesign --force -s - --entitlements "$EXT_SRC/ext.entitlements" --options runtime "$APPEX"
+codesign --force -s "$SIGN_IDENTITY" --entitlements "$EXT_SRC/ext.entitlements" --options runtime "$APPEX"
 codesign --verify --strict --verbose=2 "$APPEX"
 echo "확장 만듦: $APPEX"
 
 # 앱 서명(안쪽 appex 는 위에서 이미 서명했다 — --deep 안 씀).
-codesign --force -s - "$APP"
+codesign --force -s "$SIGN_IDENTITY" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
 # 끝 확인 — 서명한 뒤에도 서버 묶음 세 파일이 앱 안에 있고 run.sh 가 실행 가능한지.
