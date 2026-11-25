@@ -48,12 +48,14 @@ public enum TerminalLogin {
     /// agy 는 로그인 명령이 없어 `agy` 를 인자 없이 띄우면 TUI 가 창을 차지한다 — 띄우기 전에 끝내는 법을 알린다.
     public static let agyBeforeNote = "제미나이(agy) 로그인 — 곧 agy 화면이 열려요. 로그인을 마친 뒤 /quit 을 입력해 끝내고 이 창을 닫으세요."
     public static let agyClosingNote = "agy 를 끝냈다면 이 창을 닫으세요. 설정 창으로 돌아가면 로그인 상태를 새로 읽어요."
+    /// opencode 는 평소 로그인 DB(`~/.local/share/opencode/opencode.db`)를 함께 쓴다.
+    public static let opencodeBeforeNote = "로그인할 때 OpenCode Go 를 고르세요. 이 로그인은 터미널의 opencode 에도 그대로 남아요"
 
     /// 이 CLI 의 로그인 `.command` 파일을 지원 폴더에 쓴다(클로드 `claude auth login --claudeai` · codex `codex login --device-auth` ·
-    /// 제미나이 `agy`(인자 없이, TUI) · opencode `opencode auth login --standalone`). 환경은 그 CLI 의 앱 전용 환경 그대로(`agyMode` 는 agy 에만).
+    /// 제미나이 `agy`(인자 없이, 평소 HOME) · opencode `opencode auth login --standalone`(평소 로그인 DB 함께 씀)).
     /// `loginPath`(앱이 읽은 로그인 PATH)가 있으면 `.command` 가 그 PATH 를 export 하고, 찾은 절대 경로로 부른다(터미널 PATH 가 달라도 같은 CLI 가 돈다).
     /// 키 값 환경변수는 `unset` 한다.
-    public static func writeLoginFile(kind: ModelKind, support: URL, agyMode: AgyMode = .isolated, loginPath: String? = nil) throws -> URL {
+    public static func writeLoginFile(kind: ModelKind, support: URL, loginPath: String? = nil) throws -> URL {
         let cmd: CLICommands.Command
         let name: String
         var before: String?
@@ -64,10 +66,12 @@ public enum TerminalLogin {
         case .gemini:
             cmd = CLICommands.agyLogin; name = "login-agy.command"
             before = agyBeforeNote; closing = agyClosingNote
-        case .opencode: cmd = CLICommands.opencodeLogin; name = "login-opencode.command"
+        case .opencode:
+            cmd = CLICommands.opencodeLogin; name = "login-opencode.command"
+            before = opencodeBeforeNote
         }
         try CLIEnvironment.prepareDirectories(support: support)
-        var env = CLIEnvironment.environment(for: kind, support: support, agyMode: agyMode)
+        var env = CLIEnvironment.environment(for: kind, support: support)
         var executable = cmd.executable
         if let loginPath, !loginPath.isEmpty {
             env["PATH"] = loginPath

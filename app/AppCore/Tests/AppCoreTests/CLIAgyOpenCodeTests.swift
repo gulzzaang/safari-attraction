@@ -48,22 +48,18 @@ final class CLIEnvironmentFourTests: XCTestCase {
     func testClaudeAndCodexNeverGetHomeOrXDG() {
         let global = CLIEnvironment.overrides(support: support)
         XCTAssertEqual(Set(global.keys), ["CLAUDE_CONFIG_DIR", "CODEX_HOME"], "모든 실행기에 가는 사전은 두 키 그대로")
-        for mode in AgyMode.allCases {
-            for exe in ["claude", "codex", "/usr/local/bin/claude", "whatever"] {
-                XCTAssertEqual(CLIEnvironment.executableEnvironment(executable: exe, support: support, agyMode: mode), [:], "\(exe)/\(mode)")
-            }
+        for exe in ["claude", "codex", "/usr/local/bin/claude", "whatever"] {
+            XCTAssertEqual(CLIEnvironment.executableEnvironment(executable: exe, support: support), [:], exe)
         }
     }
 
-    func testAgyIsolatedGetsOnlyHomeAndSharedGetsNothing() {
-        for mode in AgyMode.allCases {
-            XCTAssertEqual(CLIEnvironment.executableEnvironment(executable: "agy", support: support, agyMode: mode), [:])
-            XCTAssertEqual(CLIEnvironment.executableEnvironment(executable: "/opt/homebrew/bin/agy", support: support, agyMode: mode), [:])
-        }
+    func testAgyNeverOverridesHome() {
+        XCTAssertEqual(CLIEnvironment.executableEnvironment(executable: "agy", support: support), [:])
+        XCTAssertEqual(CLIEnvironment.executableEnvironment(executable: "/opt/homebrew/bin/agy", support: support), [:])
     }
 
     func testOpenCodeEnvironmentIsXDGFourPlusDisableFlags() {
-        let env = CLIEnvironment.executableEnvironment(executable: "opencode", support: support, agyMode: .shared)
+        let env = CLIEnvironment.executableEnvironment(executable: "opencode", support: support)
         XCTAssertEqual(env, [
             "XDG_CONFIG_HOME": "/tmp/sa-support/opencode-xdg/config",
             "XDG_STATE_HOME": "/tmp/sa-support/opencode-xdg/state",
@@ -79,13 +75,12 @@ final class CLIEnvironmentFourTests: XCTestCase {
 
     func testEnvironmentForKindMatchesWhatLoginFilesGet() {
         XCTAssertEqual(CLIEnvironment.environment(for: .gemini, support: support), [:])
-        XCTAssertEqual(CLIEnvironment.environment(for: .gemini, support: support, agyMode: .shared), [:])
         XCTAssertEqual(CLIEnvironment.environment(for: .opencode, support: support).count, 7)
         XCTAssertNil(CLIEnvironment.environment(for: .opencode, support: support)["XDG_DATA_HOME"])
     }
 
     func testUserValuesLoseToAppValuesForAgyAndOpenCode() {
-        let overrides = CLIEnvironment.executableEnvironment(executable: "agy", support: support, agyMode: .isolated)
+        let overrides = CLIEnvironment.executableEnvironment(executable: "agy", support: support)
         let child = ProcessRunner.childEnvironment(base: ["HOME": "/Users/me"], path: "/bin", overrides: overrides)
         XCTAssertEqual(child["HOME"], "/Users/me", "agy 는 HOME 을 바꾸지 않는다")
         let oc = ProcessRunner.childEnvironment(base: ["XDG_CONFIG_HOME": "/Users/me/.config", "XDG_DATA_HOME": "/Users/me/.local/share"], path: "/bin",
@@ -194,8 +189,8 @@ final class CLIEnvironmentFourTests: XCTestCase {
         XCTAssertTrue(t.contains("로그인을 마친 뒤 /quit"))
     }
 
-    func testAgyLoginFileSharedModeHasNoExports() throws {
-        let t = try String(contentsOf: TerminalLogin.writeLoginFile(kind: .gemini, support: tempDir(), agyMode: .shared), encoding: .utf8)
+    func testAgyLoginFileHasNoExportsAndRunsAgy() throws {
+        let t = try String(contentsOf: TerminalLogin.writeLoginFile(kind: .gemini, support: tempDir()), encoding: .utf8)
         XCTAssertFalse(t.contains("export "))
         XCTAssertTrue(t.contains("\n'agy'\n"))
     }
@@ -207,6 +202,7 @@ final class CLIEnvironmentFourTests: XCTestCase {
         XCTAssertTrue(t.contains("export XDG_CONFIG_HOME='\(s.path)/opencode-xdg/config'"))
         XCTAssertTrue(t.contains("export OPENCODE_DISABLE_CLAUDE_CODE='1'"))
         XCTAssertTrue(t.contains("'opencode' 'auth' 'login' '--standalone'"))
+        XCTAssertTrue(t.contains(TerminalLogin.opencodeBeforeNote))
         XCTAssertFalse(t.contains("export HOME"))
     }
 
@@ -220,37 +216,15 @@ final class CLIEnvironmentFourTests: XCTestCase {
         }
     }
 
-    // MARK: 설정 저장 — agy 방식
-    func testSettingsDefaultsAndAgyModeRoundTrip() throws {
+    // MARK: 설정 저장 — 옛 키 무시
+    func testOldShapedSettingsFileWithOrWithoutAgyModeIsNotTreatedAsCorrupt() throws {
         let dir = tempDir()
-        XCTAssertEqual(AppSettingsStore(directory: dir).current.agyMode, .isolated)
-        try AppSettingsStore(directory: dir).update { $0.agyMode = .shared; $0.selectedCLI = "gemini" }
-        let again = AppSettingsStore(directory: dir).current
-        XCTAssertEqual(again.agyMode, .shared)
-        XCTAssertEqual(again.selectedCLI, "gemini")
-    }
-
-    func testOldShapedSettingsFileWithoutAgyModeIsNotTreatedAsCorrupt() throws {
-        let dir = tempDir()
-        try Data(#"{"selectedCLI":"chatgpt","models":{"chatgpt":"gpt-6-luna"}}"#.utf8).write(to: dir.appendingPathComponent("settings.json"))
+        try Data(#"{"selectedCLI":"chatgpt","models":{"chatgpt":"gpt-6-luna"},"agyMode":"weird"}"#.utf8).write(to: dir.appendingPathComponent("settings.json"))
         let store = AppSettingsStore(directory: dir)
-        XCTAssertEqual(store.current, AppSettings(selectedCLI: "chatgpt", models: ["chatgpt": "gpt-6-luna"], agyMode: .isolated))
-        try store.update { $0.agyMode = .shared }
+        XCTAssertEqual(store.current, AppSettings(selectedCLI: "chatgpt", models: ["chatgpt": "gpt-6-luna"]))
+        try store.update { $0.selectedCLI = "gemini" }
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("settings.json.bak").path), "옛 파일을 .bak 으로 밀어내지 않는다")
         XCTAssertEqual(AppSettingsStore(directory: dir).current.models["chatgpt"], "gpt-6-luna")
-    }
-
-    func testUnknownAgyModeValueFallsBackToIsolated() throws {
-        let dir = tempDir()
-        try Data(#"{"selectedCLI":"claude","models":{},"agyMode":"weird"}"#.utf8).write(to: dir.appendingPathComponent("settings.json"))
-        XCTAssertEqual(AppSettingsStore(directory: dir).current.agyMode, .isolated)
-    }
-
-    func testAgySharedWarningTextAndCopyLine() {
-        XCTAssertTrue(AgyMode.sharedWarning.contains("agy mcp disable safari-attraction"))
-        XCTAssertEqual(AgyMode.disableMCPCommand, "agy mcp disable safari-attraction")
-        XCTAssertEqual(AgyMode.isolated.label, "앱 전용 폴더(시험판)")
-        XCTAssertEqual(AgyMode.shared.label, "내 설정 함께 쓰기")
     }
 }
 

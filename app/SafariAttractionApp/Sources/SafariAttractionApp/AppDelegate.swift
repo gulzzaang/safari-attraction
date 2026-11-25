@@ -47,7 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let siteModes = SiteModeStore(directory: support)
         // opencode 의 `XDG_*` 는 그 CLI 를 띄울 때만 — 다른 CLI 의 자식에는 안 샌다.
         let executableEnv: @Sendable (String) -> [String: String] = { exe in
-            CLIEnvironment.executableEnvironment(executable: exe, support: support, agyMode: settings.current.agyMode)
+            CLIEnvironment.executableEnvironment(executable: exe, support: support)
         }
         if !supportFailed {
             let gate = InteractiveGate(
@@ -98,7 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let loginRunner: CommandRunning = blocked ?? ProcessRunner(environmentOverrides: cliEnv)
         let deviceLogin = CodexDeviceLogin(runner: loginRunner, loginPath: { ShellPath.loginPath() })
         self.deviceLogin = deviceLogin
-        settingsWindow = SettingsWindowController(status: status, login: deviceLogin, support: support, settings: settings, blockedMessage: blocked?.message)
+        settingsWindow = SettingsWindowController(status: status, login: deviceLogin, support: support, blockedMessage: blocked?.message)
         // 루틴 실행용 세션 — 서버 묶음은 앱 안(Resources/safari-attraction), 기억 · 사이트 허락 · 관문 소켓은 앱 지원 폴더.
         let agent = AgentSession(
             resources: resources,

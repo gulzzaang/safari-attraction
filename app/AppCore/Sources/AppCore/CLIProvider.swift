@@ -1,25 +1,5 @@
 import Foundation
 
-/// 제미나이(agy)를 어떻게 띄울지 — 앱 전용 폴더(시험판) 또는 사용자 설정을 함께 쓰기.
-/// agy 는 전용 설정 폴더 환경값이 없어서 `HOME` 을 바꾸는 방식뿐인데, 그러면 맥 키체인을 못 찾아 로그인이 될지 아직 모른다.
-public enum AgyMode: String, Codable, CaseIterable, Sendable {
-    /// `HOME=<지원>/agy-home` (시험판).
-    case isolated
-    /// 사용자 HOME 그대로 — 앱이 사용자 설정을 바꾸지 않는다.
-    case shared
-
-    public var label: String {
-        switch self {
-        case .isolated: return "앱 전용 폴더(시험판)"
-        case .shared: return "내 설정 함께 쓰기"
-        }
-    }
-
-    /// 「내 설정 함께 쓰기」 일 때 보이는 경고와, 그 끄는 줄.
-    public static let sharedWarning = "내 제미나이 설정의 MCP 가 문서 폴더 안이면 허락 창이 뜰 수 있어요 — 터미널에서 `agy mcp disable safari-attraction` 으로 끌 수 있어요"
-    public static let disableMCPCommand = "agy mcp disable safari-attraction"
-}
-
 /// 구독 CLI 넷(클로드 · 제미나이(agy) · codex · opencode)을 앱 전용 환경으로 부르기 위한 값들 — 환경 · 명령줄 · 폴더.
 public enum CLIEnvironment {
     /// 앱이 띄우는 모든 CLI 자식에 덮어쓰는 환경 — 클로드 `CLAUDE_CONFIG_DIR` · codex `CODEX_HOME`.
@@ -43,11 +23,6 @@ public enum CLIEnvironment {
     /// agy 를 `--gemini_dir` 로 띄울 때의 설정 폴더.
     public static func agyGeminiDirectory(support: URL) -> URL {
         support.appendingPathComponent("agy-gemini", isDirectory: true)
-    }
-
-    /// (구버전 호환용 — Task 5 에서 정리).
-    public static func agyHomeDirectory(support: URL) -> URL {
-        support.appendingPathComponent("agy-home", isDirectory: true)
     }
 
     /// opencode 의 `XDG_*` 폴더가 모이는 곳과 `config` · `state` · `cache`.
@@ -74,16 +49,9 @@ public enum CLIEnvironment {
         return env
     }
 
-    /// agy 는 HOME 을 바꾸지 않고 늘 `--gemini_dir <지원>/agy-gemini` 를 쓴다.
-    public static func agyEnvironment(support: URL, mode: AgyMode = .shared) -> [String: String] {
-        _ = (support, mode)
-        return [:]
-    }
-
     /// 실행 파일 이름(경로 없이)에 맞춰 자식에 더할 환경 — `ProcessRunner` 가 띄우는 순간에 부른다.
     /// 클로드 · codex · agy 는 빈 값(agy 는 `--gemini_dir`, 클로드 · codex 는 `overrides`) — `HOME` · `XDG_*` 가 새지 않는다.
-    public static func executableEnvironment(executable: String, support: URL, agyMode: AgyMode) -> [String: String] {
-        _ = agyMode
+    public static func executableEnvironment(executable: String, support: URL) -> [String: String] {
         switch (executable as NSString).lastPathComponent {
         case "opencode": return opencodeEnvironment(support: support)
         default: return [:]
@@ -105,11 +73,11 @@ public enum CLIEnvironment {
     }
 
     /// 이 CLI 의 자식에 들어갈 환경 한 줄들(`.command` 파일 · 시험용).
-    public static func environment(for kind: ModelKind, support: URL, agyMode: AgyMode = .isolated) -> [String: String] {
+    public static func environment(for kind: ModelKind, support: URL) -> [String: String] {
         switch kind {
         case .claude: return ["CLAUDE_CONFIG_DIR": claudeConfigDirectory(support: support).path]
         case .chatgpt: return ["CODEX_HOME": codexHomeDirectory(support: support).path]
-        case .gemini: return agyEnvironment(support: support, mode: agyMode)
+        case .gemini: return [:]
         case .opencode: return opencodeEnvironment(support: support)
         }
     }

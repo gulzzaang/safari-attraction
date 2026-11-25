@@ -50,6 +50,28 @@ final class TerminalLoginTests: XCTestCase {
         XCTAssertTrue(x.hasPrefix("#!/bin/zsh -l\n"))
         XCTAssertTrue(x.contains("끝나면 이 창을 닫으세요."))
     }
+
+    func testAgyLoginFileDoesNotOverrideHome() throws {
+        let support = tempDir()
+        let url = try TerminalLogin.writeLoginFile(kind: .gemini, support: support)
+        XCTAssertEqual(url.lastPathComponent, "login-agy.command")
+        let content = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertFalse(content.contains("export HOME="))
+        XCTAssertFalse(content.contains("agy-home"))
+        XCTAssertTrue(content.contains("\n'agy'\n"))
+        XCTAssertTrue(content.contains("/quit"))
+    }
+
+    func testOpencodeLoginFileHasNoXdgDataHome() throws {
+        let support = tempDir()
+        let url = try TerminalLogin.writeLoginFile(kind: .opencode, support: support)
+        XCTAssertEqual(url.lastPathComponent, "login-opencode.command")
+        let content = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertFalse(content.contains("XDG_DATA_HOME"))
+        XCTAssertTrue(content.contains("export XDG_CONFIG_HOME='\(support.path)/opencode-xdg/config'"))
+        XCTAssertTrue(content.contains("'opencode' 'auth' 'login' '--standalone'"))
+        XCTAssertTrue(content.contains("로그인할 때 OpenCode Go 를 고르세요. 이 로그인은 터미널의 opencode 에도 그대로 남아요"))
+    }
 }
 
 final class DeviceAuthParserTests: XCTestCase {

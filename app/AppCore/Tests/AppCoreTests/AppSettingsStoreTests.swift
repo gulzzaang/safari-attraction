@@ -62,5 +62,7 @@ final class AppSettingsStoreTests: XCTestCase {
         try store.update { $0.efforts["claude"] = "high" }
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("settings.json.bak").path))
         XCTAssertEqual(AppSettingsStore(directory: dir).current.efforts, ["claude": "high"])
+        let savedText = try String(contentsOf: dir.appendingPathComponent("settings.json"), encoding: .utf8)
+        XCTAssertFalse(savedText.contains("agyMode"), "옛 설정 키 agyMode 는 다시 저장하지 않는다")
     }
 }

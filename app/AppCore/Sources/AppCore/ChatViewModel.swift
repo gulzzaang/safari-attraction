@@ -310,12 +310,12 @@ public final class ChatViewModel {
         persist { $0.models[kind.rawValue] = id }
     }
 
-    /// 제미나이 자동 상태 읽기(Task 5 에서 `AgyMode` 정리 전까지 호환).
-    public var agyAutoRead: Bool { (settings?.current.agyMode ?? .shared) == .shared }
+    /// 제미나이 상태 읽기는 늘 자동으로 한다(평소 키체인 로그인 + `--gemini_dir`).
+    public var agyAutoRead: Bool { true }
 
     /// 옆 창을 열 때 · CLI 칩을 바꿀 때 — 그 CLI 의 상태 · 목록 · 남은 양을 읽는다(5분 안이면 읽지 않음, 메인 밖).
     public func refreshStatus(for kind: ModelKind) async {
-        await status?.refreshForPanel(selected: kind, agyAutoRead: agyAutoRead)
+        await status?.refreshForPanel(selected: kind)
     }
 
     /// 로그인 상태를 모르면 `.unknown`(막지 않는다).

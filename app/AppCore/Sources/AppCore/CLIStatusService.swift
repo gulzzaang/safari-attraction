@@ -144,10 +144,8 @@ public final class CLIStatusService {
     }
 
     /// 옆 창을 열 때 — **고른 CLI 만** 읽는다(5분 안이면 읽지 않음). 쓰지 않는 CLI 를 띄우지 않으려고(agy · opencode 는 상태를 읽는 것만으로도 프로세스를 띄운다).
-    /// 설정 창은 `refreshAll` 로 넷 모두 읽는다. `agyAutoRead` 가 false(앱 전용 HOME 방식)이면 제미나이는 한 번도 안 읽었을 때 자동으로 읽지 않는다
-    /// (`agy models` 가 키체인을 못 찾아 맥 창을 띄울 수 있어서 — 「로그인」 · 「새로 고침」 을 사람이 누를 때만).
-    public func refreshForPanel(selected: ModelKind, agyAutoRead: Bool = true) async {
-        if selected == .gemini, !agyAutoRead, states[.gemini]?.lastRefresh == nil { return }
+    /// 설정 창은 `refreshAll` 로 넷 모두 읽는다. 제미나이도 평소 로그인과 `--gemini_dir` 을 쓰므로 늘 자동으로 읽는다.
+    public func refreshForPanel(selected: ModelKind) async {
         await refresh(selected, force: false)
     }
 
@@ -170,11 +168,10 @@ public final class CLIStatusService {
         states[kind] = s
     }
 
-    /// 넷 모두 읽는다(설정 창). `agyAutoRead` 가 false 이고 제미나이를 한 번도 안 읽었으면 제미나이는 건너뛴다(위 `refreshForPanel` 참고).
-    public func refreshAll(force: Bool, agyAutoRead: Bool = true) async {
+    /// 넷 모두 읽는다(설정 창).
+    public func refreshAll(force: Bool) async {
         await withTaskGroup(of: Void.self) { group in
             for k in ModelKind.subscriptionCLIs {
-                if k == .gemini, !agyAutoRead, !force, states[.gemini]?.lastRefresh == nil { continue }
                 group.addTask { await self.refresh(k, force: force) }
             }
         }

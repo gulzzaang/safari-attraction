@@ -129,4 +129,36 @@ final class CLIStatusServiceTests: XCTestCase {
         await svc.refresh(.claude, force: false)
         XCTAssertGreaterThan(r.commands.count, second, "5분이 지나면 읽는다")
     }
+
+    func testStatusAlwaysReadsAgy() async {
+        let support = URL(fileURLWithPath: "/tmp/sa-status-agy-\(UUID().uuidString)")
+        let gdir = CLIEnvironment.agyGeminiDirectory(support: support)
+        let modelsKey = ([CLICommands.agyModels(geminiDir: gdir).executable] + CLICommands.agyModels(geminiDir: gdir).arguments).joined(separator: " ")
+        let usageKey = ([CLICommands.agyUsage(geminiDir: gdir).executable] + CLICommands.agyUsage(geminiDir: gdir).arguments).joined(separator: " ")
+
+        let r1 = ScriptedCLIRunner()
+        r1.reply(modelsKey, stdout: "gemini-4-neon-high\tNeon High\n")
+        r1.reply(usageKey, stdout: agyUsageSample)
+        let path1 = fakeBin(["agy"])
+        let svc1 = CLIStatusService(loginPath: { path1 }, runnerFactory: { r1 },
+                                    workDirectory: { URL(fileURLWithPath: NSTemporaryDirectory()) },
+                                    supportDirectory: { support }, timeout: 5)
+        await svc1.refreshForPanel(selected: .gemini)
+        XCTAssertTrue(svc1.state(.gemini).isLoggedIn, "옆 창 열 때 agy 를 처음부터 읽는다")
+        XCTAssertEqual(r1.commands, [modelsKey, usageKey])
+
+        let r2 = ScriptedCLIRunner()
+        r2.reply(modelsKey, stdout: "gemini-4-neon-high\tNeon High\n")
+        r2.reply(usageKey, stdout: agyUsageSample)
+        let path2 = fakeBin(["agy"])
+        let svc2 = CLIStatusService(loginPath: { path2 }, runnerFactory: { r2 },
+                                    workDirectory: { URL(fileURLWithPath: NSTemporaryDirectory()) },
+                                    supportDirectory: { support }, timeout: 5)
+        await svc2.refreshAll(force: false)
+        XCTAssertTrue(svc2.state(.gemini).isLoggedIn, "설정 창 열 때 agy 를 처음부터 읽는다")
+        XCTAssertEqual(r2.commands, [modelsKey, usageKey])
+
+        let vm = ChatViewModel(runner: FakeRunner(), bridge: FakeBridge(), loginPath: { path1 }, status: svc1)
+        XCTAssertTrue(vm.agyAutoRead)
+    }
 }

@@ -8,21 +8,18 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var models: [String: String]
     /// CLI(`ModelKind.rawValue`) → 고른 생각 단계(기본은 키 없음).
     public var efforts: [String: String]
-    /// 제미나이(agy)를 띄우는 방식 — 앱 전용 폴더(시험판, 기본) · 내 설정 함께 쓰기.
-    public var agyMode: AgyMode
 
     public init(selectedCLI: String = ModelKind.claude.rawValue, models: [String: String] = [:],
-                efforts: [String: String] = [:], agyMode: AgyMode = .isolated) {
-        self.selectedCLI = selectedCLI; self.models = models; self.efforts = efforts; self.agyMode = agyMode
+                efforts: [String: String] = [:]) {
+        self.selectedCLI = selectedCLI; self.models = models; self.efforts = efforts
     }
 
-    /// 옛 파일(`agyMode` · `webSearch` · `attachPage` 키가 있거나 `efforts` 가 없는)도 깨진 파일로 보지 않고 읽는다. 모르는 값은 기본으로.
+    /// 옛 파일(`agyMode` · `webSearch` · `attachPage` 키가 있거나 `efforts` 가 없는)도 깨진 파일로 보지 않고 읽는다. 모르는 키는 무시한다.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         selectedCLI = try c.decodeIfPresent(String.self, forKey: .selectedCLI) ?? ModelKind.claude.rawValue
         models = try c.decodeIfPresent([String: String].self, forKey: .models) ?? [:]
         efforts = try c.decodeIfPresent([String: String].self, forKey: .efforts) ?? [:]
-        agyMode = (try? c.decodeIfPresent(String.self, forKey: .agyMode)).flatMap { $0 }.flatMap(AgyMode.init(rawValue:)) ?? .isolated
     }
 }
 

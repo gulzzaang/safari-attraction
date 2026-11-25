@@ -202,7 +202,7 @@ final class LoginStatusJudgmentTests: XCTestCase {
         r.reply("claude auth status", outcome: .finished(code: 2), stderr: "boom sk-SECRETVALUE")
         r.reply("codex login status", outcome: .finished(code: 137))
         let svc = CLIStatusService(loginPath: { dir.path }, runnerFactory: { r }, workDirectory: { URL(fileURLWithPath: "/tmp") }, timeout: 5)
-        await svc.refreshAll(force: true, agyAutoRead: false)
+        await svc.refreshAll(force: true)
         XCTAssertEqual(svc.state(.claude).login, .unknown)
         XCTAssertEqual(svc.state(.claude).loginNote, "알 수 없음 — 상태 확인이 종료 코드 2 로 끝났어요")
         XCTAssertFalse(svc.state(.claude).loginNote?.contains("SECRETVALUE") ?? false)
@@ -366,33 +366,8 @@ final class StatusFlowFixesTests: XCTestCase {
         XCTAssertEqual(g.statusCalls, calls, "끝내는 중에는 새로 읽지 않는다")
     }
 
-    // HOME 방식의 제미나이는 자동으로 읽지 않는다
-    func testIsolatedAgyIsNotAutoReadUntilAPersonRefreshes() async {
-        let r = ScriptedCLIRunner()
-        let sup = URL(fileURLWithPath: "/tmp/sa-support")
-        let gdir = CLIEnvironment.agyGeminiDirectory(support: sup)
-        r.reply(cmdKey(CLICommands.agyModels(geminiDir: gdir)), stdout: "gemini-3.8-flash-medium\tM\n")
-        r.reply(cmdKey(CLICommands.agyUsage(geminiDir: gdir)), stdout: agyUsageSample)
-        r.reply("claude auth status", stdout: #"{"loggedIn":true}"#)
-        r.reply("claude -p /usage --output-format json", stdout: #"{"result":"Current session: 8% used"}"#)
-        let bin = fakeBin(["claude", "codex", "agy", "opencode"])
-        let clock = FakeClock()
-        let svc = CLIStatusService(loginPath: { bin }, runnerFactory: { r }, workDirectory: { URL(fileURLWithPath: "/tmp") }, supportDirectory: { sup }, now: { clock.date }, timeout: 5)
-        await svc.refreshForPanel(selected: .gemini, agyAutoRead: false)
-        XCTAssertEqual(r.commands, [], "옆 창을 열어도 agy 를 안 띄운다")
-        await svc.refreshAll(force: false, agyAutoRead: false)
-        XCTAssertFalse(r.commands.contains { $0.hasPrefix("agy") }, "설정 창을 열어도 agy 는 건너뛴다(나머지는 읽는다)")
-        XCTAssertTrue(r.commands.contains { $0.hasPrefix("claude") })
-        XCTAssertNil(svc.state(.gemini).lastRefresh)
-        await svc.refresh(.gemini, force: true)          // 사람이 새로 고침을 누름
-        XCTAssertTrue(svc.state(.gemini).isLoggedIn)
-        let n = r.commands.count
-        clock.advance(600)
-        await svc.refreshForPanel(selected: .gemini, agyAutoRead: false)
-        XCTAssertGreaterThan(r.commands.count, n, "한 번 읽은 뒤에는 5분 규칙대로 다시 읽는다")
-    }
-
-    func testAgyAutoReadFollowsTheChosenMode() async throws {
+    // 제미나이도 평소 로그인 + `--gemini_dir` 을 쓰므로 늘 자동으로 읽는다
+    func testAgyIsAlwaysAutoRead() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vm5-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
@@ -404,10 +379,6 @@ final class StatusFlowFixesTests: XCTestCase {
         let bin = fakeBin(["agy"])
         let svc = CLIStatusService(loginPath: { bin }, runnerFactory: { r }, workDirectory: { URL(fileURLWithPath: "/tmp") }, supportDirectory: { dir }, timeout: 5)
         let vm = ChatViewModel(runner: FakeRunner(), bridge: FakeBridge(), loginPath: { "/x" }, settings: store, status: svc)
-        XCTAssertFalse(vm.agyAutoRead, "기본(앱 전용 HOME)은 자동으로 읽지 않는다")
-        await vm.refreshStatus(for: .gemini)
-        XCTAssertEqual(r.commands, [])
-        try store.update { $0.agyMode = .shared }
         XCTAssertTrue(vm.agyAutoRead)
         await vm.refreshStatus(for: .gemini)
         XCTAssertEqual(r.commands, [cmdKey(CLICommands.agyModels(geminiDir: gdir)), cmdKey(CLICommands.agyUsage(geminiDir: gdir))])

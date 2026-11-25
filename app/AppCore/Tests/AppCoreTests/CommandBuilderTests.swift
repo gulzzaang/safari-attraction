@@ -212,7 +212,7 @@ final class CommandBuilderTests: XCTestCase {
             for (k, v) in built.environment {
                 XCTAssertFalse(k.contains(fakeToken) || v.contains(fakeToken), "\(kind) env \(k) leaked token")
             }
-            for (k, v) in CLIEnvironment.executableEnvironment(executable: built.executable, support: dir, agyMode: .shared) {
+            for (k, v) in CLIEnvironment.executableEnvironment(executable: built.executable, support: dir) {
                 XCTAssertFalse(k.contains(fakeToken) || v.contains(fakeToken), "\(kind) execEnv \(k) leaked token")
             }
         }
