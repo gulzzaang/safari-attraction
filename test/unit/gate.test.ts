@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -282,5 +282,52 @@ describe('createGateFromEnv(관문 손님)', () => {
     await p;
     expect(done!.allow).toBe(false);
     expect(done!.reason).toMatch(/[가-힣]/);
+  });
+
+  test('reads socket and token from SAFARI_ATTRACTION_GATE_FILE', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sa-gate-file-'));
+    dirs.push(dir);
+    const token = 'cd'.repeat(32);
+    const s = await serve((r) => JSON.stringify({ id: r.id, allow: true }));
+    const linkFile = join(dir, 'gate-link.json');
+    writeFileSync(linkFile, JSON.stringify({ socket: s.path, token }), 'utf8');
+    const gate = createGateFromEnv({ SAFARI_ATTRACTION_GATE_FILE: linkFile })!;
+    expect(gate).not.toBeNull();
+    expect(await gate.check(req)).toEqual({ allow: true });
+    expect(s.seen).toHaveLength(1);
+    expect(s.seen[0]).toMatchObject({ v: 1, token });
+  });
+
+  test('SAFARI_ATTRACTION_GATE env wins over file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sa-gate-file-'));
+    dirs.push(dir);
+    const sEnv = await serve((r) => JSON.stringify({ id: r.id, allow: true }));
+    const sFile = await serve((r) => JSON.stringify({ id: r.id, allow: false, reason: '파일 쪽' }));
+    const linkFile = join(dir, 'gate-link.json');
+    writeFileSync(linkFile, JSON.stringify({ socket: sFile.path, token: 'file-token' }), 'utf8');
+    const gate = createGateFromEnv({
+      SAFARI_ATTRACTION_GATE: sEnv.path,
+      SAFARI_ATTRACTION_GATE_TOKEN: 'env-token',
+      SAFARI_ATTRACTION_GATE_FILE: linkFile,
+    })!;
+    expect(await gate.check(req)).toEqual({ allow: true });
+    expect(sEnv.seen).toHaveLength(1);
+    expect(sEnv.seen[0]!.token).toBe('env-token');
+    expect(sFile.seen).toHaveLength(0);
+  });
+
+  test('missing or broken gate file gives null', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sa-gate-file-'));
+    dirs.push(dir);
+    expect(createGateFromEnv({ SAFARI_ATTRACTION_GATE_FILE: join(dir, 'missing.json') })).toBeNull();
+    const broken = join(dir, 'broken.json');
+    writeFileSync(broken, '{not json', 'utf8');
+    expect(createGateFromEnv({ SAFARI_ATTRACTION_GATE_FILE: broken })).toBeNull();
+    const emptyFields = join(dir, 'empty.json');
+    writeFileSync(emptyFields, JSON.stringify({ socket: '', token: 'abc' }), 'utf8');
+    expect(createGateFromEnv({ SAFARI_ATTRACTION_GATE_FILE: emptyFields })).toBeNull();
+    const missingToken = join(dir, 'no-token.json');
+    writeFileSync(missingToken, JSON.stringify({ socket: '/tmp/s.sock' }), 'utf8');
+    expect(createGateFromEnv({ SAFARI_ATTRACTION_GATE_FILE: missingToken })).toBeNull();
   });
 });

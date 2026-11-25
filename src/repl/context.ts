@@ -3,7 +3,8 @@ import vm from "node:vm";
 import { inspect } from "node:util";
 import { GUIDES, listGuides, type SiteGuide } from "../guides/index.js";
 import { fetchIsIrreversible } from "../gate/classify.js";
-import { assertAllowed, clipTarget, hostOf, isNonWebDestination, type ActionGate } from "../gate/gate.js";
+import { hasWrapperWord } from "../gate/code-check.js";
+import { assertAllowed, clip, clipTarget, hostOf, isNonWebDestination, type ActionGate } from "../gate/gate.js";
 import { guideAnswer } from "../guides/notes.js";
 import type { Touch } from "../memory/activity.js";
 import { SafariError, type SafariDriver, type SafariErrorCode, type TabInfo } from "../driver/types.js";
@@ -567,10 +568,29 @@ export function createReplSession(driver: SafariDriver, opts: { guides?: SiteGui
   };
 
   async function exec(code: string, timeoutMs: number): Promise<ReplResult> {
-    return execWith((slot) => {
-      const script = new vm.Script(hoistTopLevel(code), { filename: "repl.js" });
-      return slots.run(slot, () => script.runInContext(ctx, { timeout: timeoutMs }) as Promise<unknown>);
-    }, timeoutMs);
+    return execWith((slot) =>
+      slots.run(slot, async () => {
+        if (opts.gate && hasWrapperWord(code)) {
+          const resume = aiAccess.gateWait?.();
+          let answer;
+          try {
+            answer = await opts.gate.check({
+              host: "",
+              url: "",
+              action: "code",
+              target: "코드 실행",
+              value: clip(code, 2000),
+              irreversible: true,
+            });
+          } finally {
+            resume?.();
+          }
+          assertAllowed(answer);
+        }
+        const script = new vm.Script(hoistTopLevel(code), { filename: "repl.js" });
+        return await (script.runInContext(ctx, { timeout: timeoutMs }) as Promise<unknown>);
+      }),
+    timeoutMs);
   }
 
   /** 호출 하나의 틀: 출력 칸 · 닿은 곳 모으기 · 시간 초과 · 결과 만들기. start 는 칸을 받아 일을 시작하고 그 일의 Promise 를 돌려준다. */

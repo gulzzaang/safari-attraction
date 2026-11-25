@@ -1057,3 +1057,61 @@ describe("guide() 전역", () => {
     }
   });
 });
+
+describe("repl 코드 검사(관문 action: code)", () => {
+  test('code with child_process asks gate with action "code" before running', async () => {
+    const asked: GateRequest[] = [];
+    const gate: ActionGate = {
+      check: async (r) => {
+        asked.push(r);
+        return { allow: false, reason: "거절됨" };
+      },
+    };
+    const gs = createReplSession(d, { gate });
+    try {
+      const code = 'ranSideEffect = true; console.log("child_process")';
+      const r = await gs.run(code);
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toEqual({
+        host: "",
+        url: "",
+        action: "code",
+        target: "코드 실행",
+        value: code.slice(0, 2000),
+        irreversible: true,
+      });
+      expect(r.errorCode).toBe("ACTION_DENIED");
+      expect(r.error).toMatch(/[가-힣]/);
+      expect(r.output).toBe("");
+      const check = await gs.run("console.log(typeof ranSideEffect)");
+      expect(check.output).toBe("undefined");
+    } finally {
+      await gs.dispose();
+    }
+  });
+
+  test("no gate: wrapper words run as before", async () => {
+    const r = await s.run('const x = "child_process"; console.log(x)');
+    expect(r.error).toBeUndefined();
+    expect(r.output).toBe("child_process");
+  });
+
+  test("plain code does not ask gate", async () => {
+    const asked: GateRequest[] = [];
+    const gate: ActionGate = {
+      check: async (r) => {
+        asked.push(r);
+        return { allow: true };
+      },
+    };
+    const gs = createReplSession(d, { gate });
+    try {
+      const r = await gs.run('const x = 1 + 2; console.log("ok", x)');
+      expect(r.error).toBeUndefined();
+      expect(r.output).toBe("ok 3");
+      expect(asked).toHaveLength(0);
+    } finally {
+      await gs.dispose();
+    }
+  });
+});

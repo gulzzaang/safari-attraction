@@ -7,11 +7,12 @@
  */
 
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import net from "node:net";
 import { SafariError } from "../driver/types.js";
 import { isIrreversibleText } from "./classify.js";
 
-export type GateAction = "click" | "fill" | "check" | "uncheck" | "select" | "press" | "type" | "evaluate" | "fetch" | "goto" | "nav" | "open";
+export type GateAction = "click" | "fill" | "check" | "uncheck" | "select" | "press" | "type" | "evaluate" | "fetch" | "goto" | "nav" | "open" | "code";
 
 /** 관문에 묻는 내용(토큰 · id 는 손님이 붙인다). */
 export type GateRequest = {
@@ -128,15 +129,31 @@ function ask(path: string, token: string, req: GateRequest, limitMs: number): Pr
 }
 
 /**
- * 환경값으로 관문 손님을 만든다. SAFARI_ATTRACTION_GATE(소켓 경로)가 없으면 null.
- * 토큰(SAFARI_ATTRACTION_GATE_TOKEN)은 요청마다 붙인다. 시험에서는 두 번째 인자로 기다림 한도를 바꾼다.
+ * 환경값으로 관문 손님을 만든다.
+ * SAFARI_ATTRACTION_GATE(소켓 경로)가 있으면 그대로 쓰고(토큰은 SAFARI_ATTRACTION_GATE_TOKEN),
+ * 없고 SAFARI_ATTRACTION_GATE_FILE 이 있으면 그 JSON `{"socket","token"}` 을 읽는다.
+ * 둘 다 없거나 파일이 비었거나 깨졌으면 null. 시험에서는 두 번째 인자로 기다림 한도를 바꾼다.
  */
 export function createGateFromEnv(env: NodeJS.ProcessEnv, opts: { limitMs?: number } = {}): ActionGate | null {
-  const path = env.SAFARI_ATTRACTION_GATE;
-  if (!path) return null;
-  const token = env.SAFARI_ATTRACTION_GATE_TOKEN ?? "";
   const limitMs = opts.limitMs ?? GATE_WAIT_LIMIT_MS;
-  return { check: (req) => ask(path, token, req, limitMs) };
+  const path = env.SAFARI_ATTRACTION_GATE;
+  if (path) {
+    const token = env.SAFARI_ATTRACTION_GATE_TOKEN ?? "";
+    return { check: (req) => ask(path, token, req, limitMs) };
+  }
+  const file = env.SAFARI_ATTRACTION_GATE_FILE;
+  if (!file) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { socket?: unknown; token?: unknown } | null;
+    if (!parsed || typeof parsed !== "object") return null;
+    if (typeof parsed.socket !== "string" || !parsed.socket) return null;
+    if (typeof parsed.token !== "string" || !parsed.token) return null;
+    const sockPath = parsed.socket;
+    const tok = parsed.token;
+    return { check: (req) => ask(sockPath, tok, req, limitMs) };
+  } catch {
+    return null;
+  }
 }
 
 /** 거절 답을 오류로 바꿔 던진다(허락이면 아무 일 없다). */
