@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var panelHost: PanelHost?
     private var panelService: PanelAskService?
     private var interactiveGate: InteractiveGate?
+    private var updateService: UpdateService?
+    private var updateMenu: UpdateMenuController?
     /// 사이트 알림 길(`/alert-hosts` · `/alert`) — 서버가 허브보다 먼저 만들어져서, 허브를 만든 뒤 이 다리에 잇는다.
     private let alertRelay = PanelAlertRelay()
 
@@ -135,10 +137,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotKeys = keys
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: Self.idleSymbol, accessibilityDescription: "사파리-어트랙션")
+        item.button?.image = UpdateStatusIcon.make(symbolName: Self.idleSymbol, hasUpdateDot: false, accessibilityDescription: "사파리-어트랙션")
         item.button?.toolTip = "사파리-어트랙션"
+
+        // 자동 업데이트 서비스 — 앱 시작 10초 뒤 처음 확인하고, 이후 6시간마다 확인한다.
+        let updateSvc = Self.makeUpdateService()
+        let updateMenu = UpdateMenuController(service: updateSvc) {
+            NSApplication.shared.terminate(nil)
+        }
+        updateSvc.onStateChange = { [weak self] _ in
+            self?.updateMenu?.refresh()
+            self?.refreshStatusBarIcon()
+        }
+        self.updateService = updateSvc
+        self.updateMenu = updateMenu
+
         let menu = NSMenu()
+        menu.autoenablesItems = false
         menu.delegate = self
+        updateMenu.attachTopItems(to: menu)
         let toggle = NSMenuItem(title: "옆 창 열기", action: #selector(togglePanel), keyEquivalent: "")
         toggle.target = self
         menu.addItem(toggle)
@@ -147,9 +164,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
         menu.addItem(.separator())
+        updateMenu.attachBottomItems(to: menu)
         let quit = NSMenuItem(title: "종료", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
+        updateMenu.refresh()
         item.menu = menu
         statusItem = item
         // 사파리는 여기서 읽지 않는다 — 옆 창을 처음 연 뒤에야 읽기 시작한다(맥의 자동화 허락 창이 그때 뜬다).
@@ -160,6 +179,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // 앱을 켤 때 — 켜진 루틴이 있으면 시계를 시작하고 곧바로 한 번 살핀다.
         hub.launch()
+        // 버전이 바뀌었으면 자기 사파리 확장을 백그라운드에서 한 번 다시 등록한다(실패해도 조용히).
+        if !supportFailed {
+            Self.registerExtensionIfVersionChanged(settings: settings)
+        }
+        updateSvc.startSchedule()
     }
 
     private static let idleSymbol = "safari"
@@ -185,12 +209,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setWaitingIcon(_ waiting: Bool) {
         isWaiting = waiting
-        let symbol = waiting ? Self.waitingSymbol : Self.idleSymbol
-        let label = waiting ? "사파리-어트랙션 — 승인을 기다리는 카드가 있어요" : "사파리-어트랙션"
-        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label) {
+        refreshStatusBarIcon()
+    }
+
+    private func refreshStatusBarIcon() {
+        let hasUpdate = updateMenu?.hasAvailableUpdate ?? false
+        let symbol = isWaiting ? Self.waitingSymbol : Self.idleSymbol
+        let label: String
+        if isWaiting {
+            label = "사파리-어트랙션 — 승인을 기다리는 카드가 있어요"
+        } else if case .available(let release) = updateService?.state {
+            label = "사파리-어트랙션 — \(UpdateMessages.newVersionAvailable(release.version))"
+        } else {
+            label = "사파리-어트랙션"
+        }
+        if let image = UpdateStatusIcon.make(symbolName: symbol,
+                                             hasUpdateDot: !isWaiting && hasUpdate,
+                                             accessibilityDescription: label) {
             statusItem?.button?.image = image
         }
         statusItem?.button?.toolTip = label
+    }
+
+    private static func makeUpdateService() -> UpdateService {
+        let versionRaw = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        let currentVersion = AppVersion(versionRaw) ?? AppVersion(major: 0, minor: 0, patch: 0)
+        var feedURL = AppUpdate.defaultFeedURL
+        var allowLocalhostHTTP = false
+
+        #if SA_DEV_HOOKS
+        if let raw = ProcessInfo.processInfo.environment["SAFARI_ATTRACTION_UPDATE_FEED"],
+           !raw.isEmpty,
+           let custom = URL(string: raw) {
+            let scheme = custom.scheme?.lowercased()
+            let host = custom.host?.lowercased()
+            if scheme == "http" && host == "127.0.0.1" {
+                feedURL = custom
+                allowLocalhostHTTP = true
+            } else if scheme == "https" && (host == "api.github.com" || UpdateVerifier.allowedDownloadURL(custom)) {
+                feedURL = custom
+            }
+        }
+        #endif
+
+        return UpdateService(currentVersion: currentVersion,
+                             currentAppURL: Bundle.main.bundleURL,
+                             feedURL: feedURL,
+                             allowLocalhostHTTP: allowLocalhostHTTP)
+    }
+
+    /// 지금 앱 버전이 `settings.json` 의 `lastLaunchedVersion` 과 다르면 `pluginkit -a` 로 확장을 한 번 다시 등록한다.
+    private static func registerExtensionIfVersionChanged(settings: AppSettingsStore) {
+        guard let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              !version.isEmpty else {
+            return
+        }
+        guard settings.current.lastLaunchedVersion != version else { return }
+        try? settings.update { $0.lastLaunchedVersion = version }
+
+        let appex = Bundle.main.bundleURL.appendingPathComponent(AppUpdate.extensionRelativePath, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: appex.path) else { return }
+        let appexPath = appex.path
+        Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
+            process.arguments = ["-a", appexPath]
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+            process.waitUntilExit()
+        }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -198,6 +287,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         title += hotKeys?.statusSuffix ?? ""
         if isWaiting { title += " — 승인 기다리는 카드가 있어요" }
         toggleItem?.title = title
+        updateMenu?.refresh()
     }
 
     @objc private func togglePanel() { controller?.toggle() }
@@ -208,6 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 답하는 중(옆 창 · 루틴 · 페이지 패널 질문)이면 CLI 를 먼저 멈춘다 — 멈춤은 SIGTERM, 2초 뒤 SIGKILL 이라 정리될 때까지 잠깐(최대 3초) 기다린다.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        updateService?.stopSchedule()
         hub?.shutdown()   // 끝내는 중에 새 루틴이 시작되지 않게 시계부터 끈다
         interactiveGate?.shutdown()   // 기다리는 관문 요청을 거절하고 gate-link.json 을 지운다
         panelHost?.shutdown()   // 페이지 패널 질문의 CLI 도 멈추고 연결 파일을 지운다
@@ -225,6 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        updateService?.stopSchedule()
         hub?.shutdown()
         interactiveGate?.shutdown()
         panelHost?.shutdown()   // 두 끝내기 길 모두에서(여러 번 불려도 된다)
@@ -234,6 +326,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         status?.shutdown()           // 상태 · 목록 · 남은 양을 읽는 중인 CLI 도 멈춘다
         controller?.shutdown()
         hotKeys?.shutdown()
+        // 답하는 질문 · 루틴 정리가 끝난 뒤 준비된 업데이트가 있으면 바꿔 넣기 스크립트를 띄운다.
+        _ = try? updateService?.launchPendingReplacement()
     }
 
     // MARK: 개발 · 시험용 열쇠 — `DEV=1 app/scripts/build.sh` 로 만든 빌드에서만 들어 있다(평소 빌드엔 주소 등록도 코드도 없음).

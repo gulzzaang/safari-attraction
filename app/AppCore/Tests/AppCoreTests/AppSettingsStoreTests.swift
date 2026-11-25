@@ -64,5 +64,18 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertEqual(AppSettingsStore(directory: dir).current.efforts, ["claude": "high"])
         let savedText = try String(contentsOf: dir.appendingPathComponent("settings.json"), encoding: .utf8)
         XCTAssertFalse(savedText.contains("agyMode"), "옛 설정 키 agyMode 는 다시 저장하지 않는다")
+        XCTAssertNil(store.current.lastLaunchedVersion)
+    }
+
+    func testLastLaunchedVersionRoundTrip() throws {
+        let dir = tempDir()
+        let store = AppSettingsStore(directory: dir)
+        XCTAssertNil(store.current.lastLaunchedVersion)
+
+        try store.update { $0.lastLaunchedVersion = "0.2.0" }
+        XCTAssertEqual(AppSettingsStore(directory: dir).current.lastLaunchedVersion, "0.2.0")
+
+        try store.update { $0.lastLaunchedVersion = "0.3.0" }
+        XCTAssertEqual(AppSettingsStore(directory: dir).current.lastLaunchedVersion, "0.3.0")
     }
 }
