@@ -31,10 +31,11 @@ if [[ -n "${SA_SIGN_IDENTITY:-}" ]]; then
   SIGN_IDENTITY="$SA_SIGN_IDENTITY"
   SIGN_DESC="환경 값(SA_SIGN_IDENTITY): $SIGN_IDENTITY"
 else
-  SIGN_IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
-  if [[ "$SIGN_IDENTITIES" == *'"SafariAttraction Code Signing"'* ]]; then
-    SIGN_IDENTITY="SafariAttraction Code Signing"
-    SIGN_DESC="키체인 인증서: SafariAttraction Code Signing"
+  # 자체 인증서는 신뢰 설정이 없어 `-v`(유효한 것만) 목록에 안 나온다 — `-v` 없이 찾고, 이름이 겹쳐도 헷갈리지 않게 SHA-1 해시로 서명한다.
+  SIGN_HASH="$(security find-identity -p codesigning 2>/dev/null | awk '/"SafariAttraction Code Signing"/ { print $2; exit }' || true)"
+  if [[ "$SIGN_HASH" =~ ^[0-9A-F]{40}$ ]]; then
+    SIGN_IDENTITY="$SIGN_HASH"
+    SIGN_DESC="키체인 인증서: SafariAttraction Code Signing ($SIGN_HASH)"
   else
     SIGN_IDENTITY="-"
     SIGN_DESC="ad-hoc(-)"
