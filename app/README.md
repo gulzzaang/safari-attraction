@@ -9,7 +9,7 @@
 ## 빌드 · 시험 · 실행 (Xcode 없이)
 
 ```sh
-app/scripts/build.sh   # swift build -c release → app/.build/SafariAttractionApp.app 조립 + ad-hoc 서명
+app/scripts/build.sh   # swift build -c release → app/.build/SafariAttractionApp.app 조립 + 코드 서명(키체인 인증서 우선, 없으면 ad-hoc)
 app/scripts/test.sh    # 확장 JS 시험(node --test) + AppCore 시험(swift test)
 open -g app/.build/SafariAttractionApp.app                     # 앞으로 안 나오게 띄우기
 osascript -e 'quit app id "com.gulzzaang.SafariAttractionApp"'  # 끄기
@@ -39,8 +39,8 @@ osascript -e 'quit app id "com.gulzzaang.SafariAttractionApp"'  # 끄기
 
 사파리 툴바 단추나 **⌥⇧E**(Option+Shift+E)로 지금 페이지 위에 작은 패널이 뜬다(오른쪽 아래). 입력 칸에 묻고, 「이 페이지 함께」(기본 켬)면 그 페이지의 제목 · 주소 · 고른 글 · 본문 앞부분이 질문에 붙는다(비밀번호 칸 값은 읽지 않는다). 답은 앱이 고른 CLI · 모델로 받아 패널에 흘려 준다. 맨 위에 고른 CLI · 모델 이름이 보이고, Esc 나 ✕ 로 닫는다. 앱(메뉴 막대 나침반)이 꺼져 있으면 「사파리-어트랙션 앱을 켜 주세요(메뉴 막대 나침반)」 가 보인다.
 
-- **구조**: `Contents/PlugIns/SafariAttractionExtension.appex`(번들 ID `com.gulzzaang.SafariAttractionApp.Extension`, 이름 「사파리-어트랙션」)를 `app/scripts/build.sh` 가 Xcode 없이 `swiftc` 로 빌드해 앱 안에 넣고(안쪽 appex 먼저 서명, ad-hoc) `~/Applications` 로 복사한 뒤 `pluginkit -a` 로 등록한다(등록이 실패해도 빌드는 성공 + 경고). 확장의 background 가 네이티브 핸들러에게 연결 정보(`~/Library/Application Support/SafariAttractionApp/panel-link.json` 의 포트 · 토큰)를 받아 `http://127.0.0.1:<포트>` 의 앱 로컬 서버에 묻는다. **토큰은 background 메모리에만 있다**(content script · 페이지 · 저장소 · 로그에 안 간다). 패널은 content script 가 닫힌 Shadow DOM 으로 그린다.
-- **사파리에서 켜는 법**(이 확장은 서명 안 된 ad-hoc 확장이다):
+- **구조**: `Contents/PlugIns/SafariAttractionExtension.appex`(번들 ID `com.gulzzaang.SafariAttractionApp.Extension`, 이름 「사파리-어트랙션」)를 `app/scripts/build.sh` 가 Xcode 없이 `swiftc` 로 빌드해 앱 안에 넣고(안쪽 appex 먼저 서명) `~/Applications` 로 복사한 뒤 `pluginkit -a` 로 등록한다(등록이 실패해도 빌드는 성공 + 경고). 확장의 background 가 네이티브 핸들러에게 연결 정보(`~/Library/Application Support/SafariAttractionApp/panel-link.json` 의 포트 · 토큰)를 받아 `http://127.0.0.1:<포트>` 의 앱 로컬 서버에 묻는다. **토큰은 background 메모리에만 있다**(content script · 페이지 · 저장소 · 로그에 안 간다). 패널은 content script 가 닫힌 Shadow DOM 으로 그린다.
+- **사파리에서 켜는 법**(유료 개발자 인증서가 아니라 사파리에서는 서명 안 된 확장으로 본다):
   1. 사파리 ▸ 설정 ▸ **고급** ▸ 「웹 개발자용 기능 보기」 를 켠다.
   2. 사파리 ▸ 설정 ▸ **개발자용** ▸ 「서명 안 된 확장 허용」 을 켠다(관리자 암호를 물을 수 있다). **사파리를 끄면 다시 켜야 한다.**
   3. 사파리 ▸ 설정 ▸ **확장** ▸ 「사파리-어트랙션」 을 켠다.
@@ -194,7 +194,7 @@ osascript -e 'quit app id "com.gulzzaang.SafariAttractionApp"'  # 끄기
 
 ## 맥 허락 창 (맥 앞에서)
 
-앱은 ad-hoc 서명이라 맥이 허락을 이 앱 이름으로 묻는다. ad-hoc 서명은 빌드할 때마다 앱 지문(cdhash)이 바뀌어, **다시 빌드하면 맥이 새 앱으로 보고 허락을 다시 물을 수 있다**(같은 빌드에서는 다시 안 묻는다 — 실제로는 아직 확인 못 함). 빌드가 바뀌어도 허락이 남게 하려면 무료 Apple ID 의 개발 인증서로 서명해야 한다(조각 2 에서 Xcode 를 쓸 때). **맥 앞에 있을 때 처음 써 보세요** — 아무도 안 누른 허락 창이 떠 있으면 그 질문은 창에서 멈춘다.
+키체인의 고정 인증서(「SafariAttraction Code Signing」)로 서명된 빌드는 다시 빌드하거나 업데이트해도 맥의 자동화 허락이 남는다. 키체인에 인증서가 없어 ad-hoc(`-`)으로 서명된 경우에만 빌드할 때마다 앱 지문(cdhash)이 바뀌어, **다시 빌드하면 맥이 새 앱으로 보고 허락을 다시 물을 수 있다**(같은 빌드에서는 다시 안 묻는다). **맥 앞에 있을 때 처음 써 보세요** — 아무도 안 누른 허락 창이 떠 있으면 그 질문은 창에서 멈춘다.
 
 - **자동화(사파리 제어)**: 「이 페이지 함께」 · 옆 창 따라가기에 필요하다. 거절해도 대화는 된다(옆 창이 사파리를 못 따라가고, 페이지는 안 붙는다).
 - **문서 폴더 접근**: 「묻기」 를 처음 보냈을 때 맥이 「SafariAttractionApp … 문서 폴더」 허락 창을 띄운 일이 있었다. 원인은 **사용자의 클로드 설정이 문서 폴더 경로를 가리키는 것** — claude 가 시작하면서 `~/.claude.json` 의 프로젝트 경로 · `~/.claude/plugins/known_marketplaces.json` 의 문서 폴더 안 로컬 장터를 읽으러 가고, 앱 이름으로 허락이 물렸다(`--safe-mode` 로도 안 막혔다). 터미널에서 문서 폴더 접근을 막고(sandbox-exec) 같은 조건으로 돌려 확인했다: 로그인 셸(`zsh -lic`)은 문서 폴더에 안 닿고, `claude -p … --safe-mode` 는 닿고, **`CLAUDE_CONFIG_DIR` 를 빈 폴더로 두면 안 닿는다.** 그래서 앱은 claude 를 앱 전용 설정 폴더로 띄운다(위 「앱 전용 클로드 설정」 — 한 번 로그인해야 한다). 이 맥에서 앱 화면으로 다시 확인한 것은 아직 아니다.

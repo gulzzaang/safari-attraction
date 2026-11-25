@@ -116,10 +116,15 @@ public final class UpdateInstaller: Sendable {
     public func replaceScript(oldApp: URL, newApp: URL, pid: Int32) -> String {
         let qOld = Self.shellQuote(oldApp.path)
         let qNew = Self.shellQuote(newApp.path)
+        let stageDir = newApp.standardizedFileURL.deletingLastPathComponent()
+        let oldParent = oldApp.standardizedFileURL.deletingLastPathComponent()
+        let hasManagedStageDir = stageDir.lastPathComponent.hasPrefix("sa-update-") && stageDir.path != oldParent.path
+        let stageVarLine = hasManagedStageDir ? "\nSTAGE_DIR=\(Self.shellQuote(stageDir.path))" : ""
+        let stageCleanupLine = hasManagedStageDir ? "\nrm -rf \"$STAGE_DIR\" 2>/dev/null || true" : ""
         return """
         #!/bin/sh
         OLD_APP=\(qOld)
-        NEW_APP=\(qNew)
+        NEW_APP=\(qNew)\(stageVarLine)
         BACKUP_APP="${OLD_APP}.backup-$$"
         APPEX="${OLD_APP}/\(AppUpdate.extensionRelativePath)"
         PID=\(pid)
@@ -153,7 +158,7 @@ public final class UpdateInstaller: Sendable {
           /usr/bin/pluginkit -a "$APPEX" || rollback
         fi
         env -i HOME="$HOME" USER="$USER" PATH=/usr/bin:/bin open "$OLD_APP" || rollback
-        rm -rf "$BACKUP_APP" 2>/dev/null || true
+        rm -rf "$BACKUP_APP" 2>/dev/null || true\(stageCleanupLine)
         """
     }
 

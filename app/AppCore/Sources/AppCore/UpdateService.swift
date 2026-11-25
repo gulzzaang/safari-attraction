@@ -27,8 +27,8 @@ public enum UpdateState: Equatable, Sendable {
     case installing
 }
 
-/// 리다이렉트 도착지 호스트와 최대 크기(200MB)를 확인하며 데이터를 받는 URLSession 대리자.
-private final class UpdateDownloadDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+/// 리다이렉트 도착지 호스트와 최대 크기를 확인하며 데이터를 받는 URLSession 대리자.
+internal final class UpdateDownloadDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let allowLocalhostHTTP: Bool
     private let allowGitHubAPI: Bool
     private let maxBytes: Int
@@ -79,6 +79,9 @@ private final class UpdateDownloadDelegate: NSObject, URLSessionDataDelegate, @u
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         let exceeded = lock.withLock { () -> Bool in
+            if rejectedError != nil {
+                return true
+            }
             if buffer.count + data.count > maxBytes {
                 rejectedError = URLError(.dataLengthExceedsMaximum)
                 return true
@@ -125,6 +128,8 @@ private final class UpdateDownloadDelegate: NSObject, URLSessionDataDelegate, @u
 public final class UpdateService {
     public typealias Fetch = @Sendable (URL) async throws -> (Data, URLResponse)
     public typealias ScriptLauncher = @Sendable (String) throws -> Void
+    internal typealias SizedFetch = @Sendable (URL, Int) async throws -> (Data, URLResponse)
+    internal static let maxSignatureBytes = 4_096
 
     public private(set) var state: UpdateState = .idle {
         didSet {
@@ -148,23 +153,51 @@ public final class UpdateService {
 
     @ObservationIgnored private let publicKeyBase64: String
     @ObservationIgnored private let installer: UpdateInstaller
-    @ObservationIgnored private let fetch: Fetch
+    @ObservationIgnored private let fetchWithLimit: SizedFetch
     @ObservationIgnored private let launchScript: ScriptLauncher
     @ObservationIgnored private let initialDelay: TimeInterval
     @ObservationIgnored private let checkInterval: TimeInterval
     @ObservationIgnored private var scheduleTask: Task<Void, Never>?
     @ObservationIgnored private var isChecking = false
 
-    public init(currentVersion: AppVersion,
-                currentAppURL: URL,
-                feedURL: URL = AppUpdate.defaultFeedURL,
-                allowLocalhostHTTP: Bool = false,
-                publicKeyBase64: String = UpdateVerifier.publicKeyBase64,
-                installer: UpdateInstaller = UpdateInstaller(),
-                initialDelay: TimeInterval = AppUpdate.initialCheckDelay,
-                checkInterval: TimeInterval = AppUpdate.checkInterval,
-                fetch: Fetch? = nil,
-                launchScript: ScriptLauncher? = nil) {
+    public convenience init(currentVersion: AppVersion,
+                            currentAppURL: URL,
+                            feedURL: URL = AppUpdate.defaultFeedURL,
+                            allowLocalhostHTTP: Bool = false,
+                            publicKeyBase64: String = UpdateVerifier.publicKeyBase64,
+                            installer: UpdateInstaller = UpdateInstaller(),
+                            initialDelay: TimeInterval = AppUpdate.initialCheckDelay,
+                            checkInterval: TimeInterval = AppUpdate.checkInterval,
+                            fetch: Fetch? = nil,
+                            launchScript: ScriptLauncher? = nil) {
+        let sizedFetch: SizedFetch
+        if let fetch {
+            sizedFetch = { url, _ in try await fetch(url) }
+        } else {
+            sizedFetch = Self.makeDefaultFetch(feedURL: feedURL, allowLocalhostHTTP: allowLocalhostHTTP)
+        }
+        self.init(currentVersion: currentVersion,
+                  currentAppURL: currentAppURL,
+                  feedURL: feedURL,
+                  allowLocalhostHTTP: allowLocalhostHTTP,
+                  publicKeyBase64: publicKeyBase64,
+                  installer: installer,
+                  initialDelay: initialDelay,
+                  checkInterval: checkInterval,
+                  sizedFetch: sizedFetch,
+                  launchScript: launchScript)
+    }
+
+    internal init(currentVersion: AppVersion,
+                  currentAppURL: URL,
+                  feedURL: URL = AppUpdate.defaultFeedURL,
+                  allowLocalhostHTTP: Bool = false,
+                  publicKeyBase64: String = UpdateVerifier.publicKeyBase64,
+                  installer: UpdateInstaller = UpdateInstaller(),
+                  initialDelay: TimeInterval = AppUpdate.initialCheckDelay,
+                  checkInterval: TimeInterval = AppUpdate.checkInterval,
+                  sizedFetch: @escaping SizedFetch,
+                  launchScript: ScriptLauncher? = nil) {
         self.currentVersion = currentVersion
         self.currentAppURL = currentAppURL
         self.feedURL = feedURL
@@ -173,7 +206,7 @@ public final class UpdateService {
         self.installer = installer
         self.initialDelay = initialDelay
         self.checkInterval = checkInterval
-        self.fetch = fetch ?? Self.makeDefaultFetch(feedURL: feedURL, allowLocalhostHTTP: allowLocalhostHTTP)
+        self.fetchWithLimit = sizedFetch
         self.launchScript = launchScript ?? { script in try UpdateInstaller.spawnReplaceScript(script) }
     }
 
@@ -189,7 +222,10 @@ public final class UpdateService {
         }
 
         do {
-            let (data, response) = try await fetch(feedURL)
+            guard Self.isAllowedFeedURL(feedURL, allowLocalhostHTTP: allowLocalhostHTTP) else {
+                throw URLError(.badURL)
+            }
+            let (data, response) = try await fetchWithLimit(feedURL, AppUpdate.maxZipBytes)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 throw URLError(.badServerResponse)
             }
@@ -255,7 +291,7 @@ public final class UpdateService {
         let sigData: Data
         let zipData: Data
         do {
-            sigData = try await downloadVerified(url: release.sigURL, maxBytes: 4_096)
+            sigData = try await downloadVerified(url: release.sigURL, maxBytes: Self.maxSignatureBytes)
             zipData = try await downloadVerified(url: release.zipURL, maxBytes: AppUpdate.maxZipBytes)
         } catch {
             state = .failed(UpdateMessages.invalidFile)
@@ -311,7 +347,7 @@ public final class UpdateService {
         guard UpdateVerifier.allowedDownloadURL(url, allowLocalhostHTTP: allowLocalhostHTTP) else {
             throw URLError(.badURL)
         }
-        let (data, response) = try await fetch(url)
+        let (data, response) = try await fetchWithLimit(url, maxBytes)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
         }
@@ -340,15 +376,19 @@ public final class UpdateService {
         return false
     }
 
-    private static func makeDefaultFetch(feedURL: URL, allowLocalhostHTTP: Bool) -> Fetch {
-        return { url in
-            let config = URLSessionConfiguration.ephemeral
+    internal static func makeDefaultFetch(
+        feedURL: URL,
+        allowLocalhostHTTP: Bool,
+        sessionConfiguration: @Sendable @escaping () -> URLSessionConfiguration = { .ephemeral }
+    ) -> SizedFetch {
+        return { url, maxBytes in
+            let config = sessionConfiguration()
             config.timeoutIntervalForRequest = 30
             config.timeoutIntervalForResource = 180
             let isFeed = (url == feedURL)
             let delegate = UpdateDownloadDelegate(allowLocalhostHTTP: allowLocalhostHTTP,
                                                   allowGitHubAPI: isFeed,
-                                                  maxBytes: AppUpdate.maxZipBytes)
+                                                  maxBytes: maxBytes)
             let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
             defer { session.finishTasksAndInvalidate() }
 

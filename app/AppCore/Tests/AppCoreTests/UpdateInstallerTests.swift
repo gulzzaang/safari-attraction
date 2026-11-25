@@ -214,5 +214,25 @@ final class UpdateInstallerTests: XCTestCase {
         XCTAssertTrue(script.contains("rollback"))
         XCTAssertTrue(script.contains(#"mv "$BACKUP_APP" "$OLD_APP""#))
         XCTAssertTrue(script.contains(#"rm -rf "$BACKUP_APP""#))
+        // `sa-update-*` 임시 폴더가 아닌 임의의 상위 폴더는 지우지 않는다.
+        XCTAssertFalse(script.contains("STAGE_DIR="))
+    }
+
+    func testReplaceScriptCleansUpManagedStageDirOnSuccess() {
+        let installer = UpdateInstaller()
+        let oldApp = URL(fileURLWithPath: "/Users/test user/Applications/SafariAttractionApp.app")
+        let stageDir = "/tmp/my's dir/sa-update-1234-ABCD"
+        let newApp = URL(fileURLWithPath: "\(stageDir)/SafariAttractionApp.app")
+        let script = installer.replaceScript(oldApp: oldApp, newApp: newApp, pid: 4242)
+
+        XCTAssertTrue(script.contains("STAGE_DIR='/tmp/my'\\''s dir/sa-update-1234-ABCD'"))
+        XCTAssertTrue(script.contains(#"rm -rf "$STAGE_DIR" 2>/dev/null || true"#))
+        // 임시 폴더 정리는 새 앱 실행(open) 성공 뒤 마지막에 와야 한다.
+        if let openIdx = script.range(of: #"open "$OLD_APP" || rollback"#)?.upperBound,
+           let cleanupIdx = script.range(of: #"rm -rf "$STAGE_DIR""#)?.lowerBound {
+            XCTAssertGreaterThan(cleanupIdx, openIdx)
+        } else {
+            XCTFail("open 이후 STAGE_DIR 정리 줄이 있어야 한다")
+        }
     }
 }

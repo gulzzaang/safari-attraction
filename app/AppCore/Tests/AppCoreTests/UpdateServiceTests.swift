@@ -409,4 +409,216 @@ final class UpdateServiceTests: XCTestCase {
         try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(counter.value, afterStop, "stopSchedule 뒤에는 더 확인하지 않아야 한다")
     }
+
+    func testCheckNowRejectsDisallowedFeedURLBeforeFetching() async throws {
+        final class Flag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _called = false
+            var called: Bool { lock.withLock { _called } }
+            func mark() { lock.withLock { _called = true } }
+        }
+
+        let current = try XCTUnwrap(AppVersion("0.2.0"))
+        let flag1 = Flag()
+        let evilSvc = UpdateService(
+            currentVersion: current,
+            currentAppURL: URL(fileURLWithPath: "/tmp/Current.app"),
+            feedURL: URL(string: "https://evil.example.com/releases")!,
+            fetch: { url in
+                flag1.mark()
+                return (Data("[]".utf8), Self.httpResponse(url: url))
+            }
+        )
+        await evilSvc.checkNow(userInitiated: false)
+        XCTAssertFalse(flag1.called, "허용되지 않은 feedURL 은 요청 전에 막아야 한다")
+        XCTAssertEqual(evilSvc.state, .idle)
+
+        await evilSvc.checkNow(userInitiated: true)
+        XCTAssertFalse(flag1.called, "허용되지 않은 feedURL 은 사용자 확인에서도 요청을 보내지 않아야 한다")
+        XCTAssertEqual(evilSvc.state, .failed(UpdateMessages.checkFailed))
+
+        // 개발 모드 플래그가 꺼져 있으면 127.0.0.1 http feedURL 도 요청 전에 막는다.
+        let flag2 = Flag()
+        let localBlocked = UpdateService(
+            currentVersion: current,
+            currentAppURL: URL(fileURLWithPath: "/tmp/Current.app"),
+            feedURL: URL(string: "http://127.0.0.1:8080/releases")!,
+            allowLocalhostHTTP: false,
+            fetch: { url in
+                flag2.mark()
+                return (Data("[]".utf8), Self.httpResponse(url: url))
+            }
+        )
+        await localBlocked.checkNow(userInitiated: true)
+        XCTAssertFalse(flag2.called)
+        XCTAssertEqual(localBlocked.state, .failed(UpdateMessages.checkFailed))
+
+        // 개발 모드(allowLocalhostHTTP == true)에서는 127.0.0.1 http feedURL 을 허용한다.
+        let flag3 = Flag()
+        let localAllowed = UpdateService(
+            currentVersion: current,
+            currentAppURL: URL(fileURLWithPath: "/tmp/Current.app"),
+            feedURL: URL(string: "http://127.0.0.1:8080/releases")!,
+            allowLocalhostHTTP: true,
+            fetch: { url in
+                flag3.mark()
+                return (Data("[]".utf8), Self.httpResponse(url: url))
+            }
+        )
+        await localAllowed.checkNow(userInitiated: true)
+        XCTAssertTrue(flag3.called)
+        XCTAssertEqual(localAllowed.state, .upToDate(current))
+    }
+
+    func testDownloadDelegateEnforcesRedirectAllowlistAndByteLimits() async throws {
+        enum StubAction: Sendable {
+            case redirect(to: URL)
+            case response(status: Int, headers: [String: String]?, chunks: [Data])
+        }
+
+        final class DelegateStubProtocol: URLProtocol, @unchecked Sendable {
+            static let lock = NSLock()
+            nonisolated(unsafe) static var handler: (@Sendable (URL) -> StubAction)?
+            nonisolated(unsafe) static var requestedURLs: [URL] = []
+
+            static func reset() {
+                lock.withLock {
+                    handler = nil
+                    requestedURLs = []
+                }
+            }
+
+            static func snapshotURLs() -> [URL] {
+                lock.withLock { requestedURLs }
+            }
+
+            override class func canInit(with request: URLRequest) -> Bool { true }
+            override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+            override func startLoading() {
+                guard let url = request.url else {
+                    client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+                    return
+                }
+                let action: StubAction? = Self.lock.withLock {
+                    Self.requestedURLs.append(url)
+                    return Self.handler?(url)
+                }
+                guard let action else {
+                    client?.urlProtocol(self, didFailWithError: URLError(.fileDoesNotExist))
+                    return
+                }
+                switch action {
+                case .redirect(let target):
+                    let resp = HTTPURLResponse(url: url, statusCode: 302, httpVersion: "HTTP/1.1",
+                                               headerFields: ["Location": target.absoluteString])!
+                    client?.urlProtocol(self, wasRedirectedTo: URLRequest(url: target), redirectResponse: resp)
+                case .response(let status, let headers, let chunks):
+                    let resp = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
+                    client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+                    for chunk in chunks {
+                        client?.urlProtocol(self, didLoad: chunk)
+                    }
+                    client?.urlProtocolDidFinishLoading(self)
+                }
+            }
+
+            override func stopLoading() {}
+        }
+
+        addTeardownBlock { DelegateStubProtocol.reset() }
+
+        let stubConfig: @Sendable () -> URLSessionConfiguration = {
+            let cfg = URLSessionConfiguration.ephemeral
+            cfg.protocolClasses = [DelegateStubProtocol.self]
+            return cfg
+        }
+
+        // 1. 허용되지 않은 호스트로의 리다이렉트는 대리자의 willPerformHTTPRedirection 에서 거절되고 도착지로 요청이 나가지 않는다.
+        DelegateStubProtocol.reset()
+        let startZip = URL(string: "https://github.com/gulzzaang/safari-attraction/releases/download/app-v0.3.0/SafariAttractionApp-0.3.0.zip")!
+        let evilTarget = URL(string: "https://evil.example.com/payload.zip")!
+        DelegateStubProtocol.lock.withLock {
+            DelegateStubProtocol.handler = { url in
+                if url == startZip { return .redirect(to: evilTarget) }
+                return .response(status: 200, headers: nil, chunks: [Data("evil".utf8)])
+            }
+        }
+        let defaultFetch = UpdateService.makeDefaultFetch(feedURL: AppUpdate.defaultFeedURL,
+                                                          allowLocalhostHTTP: false,
+                                                          sessionConfiguration: stubConfig)
+        do {
+            _ = try await defaultFetch(startZip, AppUpdate.maxZipBytes)
+            XCTFail("허용되지 않은 리다이렉트 도착지는 거절해야 한다")
+        } catch let err as URLError {
+            XCTAssertEqual(err.code, .badURL)
+        }
+        XCTAssertEqual(DelegateStubProtocol.snapshotURLs(), [startZip], "거절된 리다이렉트 도착지로는 실제 요청을 보내지 않아야 한다")
+
+        // 2. 허용 호스트(objects.githubusercontent.com)로의 리다이렉트는 통과한다.
+        DelegateStubProtocol.reset()
+        let allowedTarget = URL(string: "https://objects.githubusercontent.com/github-production-release-asset/asset.zip")!
+        DelegateStubProtocol.lock.withLock {
+            DelegateStubProtocol.handler = { url in
+                if url == startZip { return .redirect(to: allowedTarget) }
+                return .response(status: 200, headers: ["Content-Length": "4"], chunks: [Data("ok!!".utf8)])
+            }
+        }
+        let (okData, okResp) = try await defaultFetch(startZip, AppUpdate.maxZipBytes)
+        XCTAssertEqual(okData, Data("ok!!".utf8))
+        XCTAssertEqual(okResp.url, allowedTarget)
+        XCTAssertEqual(DelegateStubProtocol.snapshotURLs(), [startZip, allowedTarget])
+
+        // 3. 200MB 초과 Content-Length 는 대리자의 didReceive(response:) 에서 거절된다.
+        DelegateStubProtocol.reset()
+        DelegateStubProtocol.lock.withLock {
+            DelegateStubProtocol.handler = { _ in
+                .response(status: 200,
+                          headers: ["Content-Length": String(AppUpdate.maxZipBytes + 1)],
+                          chunks: [Data("small".utf8)])
+            }
+        }
+        do {
+            _ = try await defaultFetch(startZip, AppUpdate.maxZipBytes)
+            XCTFail("200MB 를 넘는 응답은 거절해야 한다")
+        } catch let err as URLError {
+            XCTAssertEqual(err.code, .dataLengthExceedsMaximum)
+        }
+
+        // 4. Content-Length 없이 스트리밍되는 응답도 maxBytes(4KB 서명 상한)를 넘으면 내려받는 도중 대리자에서 중단된다.
+        DelegateStubProtocol.reset()
+        let dir = try tempDir()
+        let currentApp = dir.appendingPathComponent("SafariAttractionApp.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: currentApp, withIntermediateDirectories: true)
+        let feedJSON = makeReleaseJSON(version: "0.3.0")
+        let sigURL = URL(string: "https://github.com/gulzzaang/safari-attraction/releases/download/app-v0.3.0/SafariAttractionApp-0.3.0.zip.sig")!
+        DelegateStubProtocol.lock.withLock {
+            DelegateStubProtocol.handler = { url in
+                if url == AppUpdate.defaultFeedURL {
+                    return .response(status: 200, headers: nil, chunks: [feedJSON])
+                }
+                if url == sigURL {
+                    // Content-Length 없이 2KB × 3 = 6KB(> 4KB) 를 나눠 보낸다.
+                    let chunk = Data(repeating: 0x41, count: 2_048)
+                    return .response(status: 200, headers: nil, chunks: [chunk, chunk, chunk])
+                }
+                return .response(status: 200, headers: nil, chunks: [Data("zip".utf8)])
+            }
+        }
+        let runner = FakeRunner()
+        let svc = UpdateService(
+            currentVersion: try XCTUnwrap(AppVersion("0.2.0")),
+            currentAppURL: currentApp,
+            installer: UpdateInstaller(runnerFactory: { runner }, stagingRoot: dir),
+            sizedFetch: UpdateService.makeDefaultFetch(feedURL: AppUpdate.defaultFeedURL,
+                                                       allowLocalhostHTTP: false,
+                                                       sessionConfiguration: stubConfig)
+        )
+        await svc.checkNow(userInitiated: false)
+        let installResult = await svc.install()
+        XCTAssertEqual(failureMessage(installResult), UpdateMessages.invalidFile)
+        XCTAssertFalse(runner.wasCalled)
+        XCTAssertFalse(DelegateStubProtocol.snapshotURLs().contains(startZip),
+                       "서명 파일이 4KB 상한을 넘으면 zip 내려받기로 넘어가지 않아야 한다")
+    }
 }
