@@ -31,7 +31,7 @@ test("manifest 가 가리키는 파일이 모두 있고 build.sh 가 복사한�
 test("content script 는 lib 이 먼저, content.js 마지막, 모든 http/https 최상위 프레임", () => {
   const cs = manifest.content_scripts.find((c) => c.js.includes("content.js"));
   assert.equal(cs.js[cs.js.length - 1], "content.js");
-  assert.deepEqual(cs.js, ["lib/page.js", "lib/text.js", "lib/stream.js", "lib/alerts.js", "content.js"]);
+  assert.deepEqual(cs.js, ["lib/page.js", "lib/text.js", "lib/stream.js", "lib/cards.js", "lib/alerts.js", "content.js"]);
   assert.equal(cs.world, undefined); // 패널은 격리 세계
   assert.deepEqual(cs.matches, ["http://*/*", "https://*/*"]);
   assert.equal(cs.run_at, "document_idle");

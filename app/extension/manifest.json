@@ -23,7 +23,7 @@
     },
     {
       "matches": ["http://*/*", "https://*/*"],
-      "js": ["lib/page.js", "lib/text.js", "lib/stream.js", "lib/alerts.js", "content.js"],
+      "js": ["lib/page.js", "lib/text.js", "lib/stream.js", "lib/cards.js", "lib/alerts.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

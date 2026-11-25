@@ -243,11 +243,11 @@ test("연결 정보는 background 메모리에 두고 두 번째 묻기에는 �
 });
 
 test("/info: loggedIn null · 토큰 · 모르는 키는 패널로 안 간다", async () => {
-  const t = setup({ fetchImpl: async () => jsonResponse(200, { cli: "claude", cliName: "클로드", model: "Sonnet", loggedIn: null, token: TOKEN }) });
+  const t = setup({ fetchImpl: async () => jsonResponse(200, { cli: "claude", cliName: "클로드", model: "Sonnet", effortLabel: "높음", loggedIn: null, token: TOKEN }) });
   await t.bridge.info(t.emit);
   assert.equal(t.calls[0].url, "http://127.0.0.1:51000/info");
   assert.equal(t.calls[0].init.method, "GET");
-  assert.deepEqual(t.emitted, [{ t: "info", cli: "claude", cliName: "클로드", model: "Sonnet", loggedIn: null }]);
+  assert.deepEqual(t.emitted, [{ t: "info", cli: "claude", cliName: "클로드", model: "Sonnet", effortLabel: "높음", loggedIn: null }]);
   assertNoSecrets(t.emitted);
 });
 
@@ -303,4 +303,23 @@ test("bridge.request: 토큰 머리를 붙여 앱 서버에 묻고 Response 를 
   assert.equal(t.calls[0].init.headers["X-SA-Token"], TOKEN);
   const off = setup({ links: [{ error: "없음" }], fetchImpl: async () => { throw new Error("부르면 안 됨"); } });
   await assert.rejects(off.bridge.request("/alert-hosts", { method: "GET" }), (e) => e.code === "app_off");
+});
+
+test("bridge.approve: 토큰을 붙여 POST /approve 를 보내고 sanitizeApprove 로 거른다", async () => {
+  const t = setup({ fetchImpl: async () => jsonResponse(200, {}) });
+  const ok = await t.bridge.approve({ cardId: "card-1", answer: "allow" });
+  assert.equal(ok.ok, true);
+  assert.equal(t.calls[0].url, "http://127.0.0.1:51000/approve");
+  assert.equal(t.calls[0].init.method, "POST");
+  assert.equal(t.calls[0].init.headers["X-SA-Token"], TOKEN);
+  assert.deepEqual(JSON.parse(t.calls[0].init.body), { cardId: "card-1", answer: "allow" });
+
+  const nf = setup({ fetchImpl: async () => jsonResponse(404, { error: "찾을 수 없는 카드예요" }) });
+  const bad = await nf.bridge.approve({ cardId: "gone", answer: "deny" });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.status, 404);
+
+  assert.deepEqual(L.sanitizeApprove({ t: "approve", cardId: "c1", answer: "always", extra: 1 }), { cardId: "c1", answer: "always" });
+  assert.equal(L.sanitizeApprove({ cardId: "", answer: "allow" }), null);
+  assert.equal(L.sanitizeApprove({ cardId: "c1", answer: "weird" }), null);
 });

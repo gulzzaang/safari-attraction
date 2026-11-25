@@ -74,17 +74,63 @@ test("error 에 글이 없으면 일반 안내", () => {
   assert.equal(L.toPanelMessage({ t: "error" }).message, "앱이 오류로 답했어요");
 });
 
-test("/info 는 loggedIn 이 null 일 수 있고 모르는 키는 버린다", () => {
-  assert.deepEqual(L.toInfoMessage({ cli: "claude", cliName: "클로드", model: null, loggedIn: null, token: TOKEN }), {
-    t: "info", cli: "claude", cliName: "클로드", model: null, loggedIn: null,
+test("/info 는 loggedIn · effortLabel 이 null 일 수 있고 모르는 키는 버린다", () => {
+  assert.deepEqual(L.toInfoMessage({ cli: "claude", cliName: "클로드", model: null, effortLabel: null, loggedIn: null, token: TOKEN }), {
+    t: "info", cli: "claude", cliName: "클로드", model: null, effortLabel: null, loggedIn: null,
   });
-  assert.deepEqual(L.toInfoMessage({ cli: "x", cliName: "엑스", model: "M", loggedIn: false }).loggedIn, false);
-  assert.deepEqual(L.toInfoMessage(null), { t: "info", cli: null, cliName: null, model: null, loggedIn: null });
+  assert.deepEqual(L.toInfoMessage({ cli: "x", cliName: "엑스", model: "M", effortLabel: "높음", loggedIn: false }), {
+    t: "info", cli: "x", cliName: "엑스", model: "M", effortLabel: "높음", loggedIn: false,
+  });
+  assert.deepEqual(L.toInfoMessage(null), { t: "info", cli: null, cliName: null, model: null, effortLabel: null, loggedIn: null });
+});
+
+test("status/card/card-closed pass whitelist and scrub token", () => {
+  const st = L.toPanelMessage({ t: "status", text: `검색 중 ${TOKEN}`, extra: 1 }, TOKEN);
+  assert.deepEqual(st, { t: "status", text: "검색 중 …" });
+
+  const card = L.toPanelMessage({
+    t: "card",
+    card: {
+      id: "c1", kind: "action", title: `허락 ${TOKEN}`, detail: `내용 ${TOKEN}`,
+      host: `shop.test/${TOKEN}`, canAlwaysAllow: true, secret: TOKEN,
+    },
+    extra: 1,
+  }, TOKEN);
+  assert.deepEqual(card, {
+    t: "card",
+    card: { id: "c1", kind: "action", title: "허락 …", detail: "내용 …", host: "shop.test/…", canAlwaysAllow: true },
+  });
+  assert.ok(!JSON.stringify(card).includes(TOKEN));
+
+  // danger · code 카드는 서버가 canAlwaysAllow: true 를 보내도 false 로 내린다.
+  const danger = L.toPanelMessage({
+    t: "card",
+    card: { id: "c2", kind: "danger", title: "위험", detail: "결제", host: "pay.test", canAlwaysAllow: true },
+  }, TOKEN);
+  assert.equal(danger.card.canAlwaysAllow, false);
+
+  const closed = L.toPanelMessage({ t: "card-closed", id: "c1", result: "allowed", extra: TOKEN }, TOKEN);
+  assert.deepEqual(closed, { t: "card-closed", id: "c1", result: "allowed" });
+  assert.ok(!JSON.stringify(closed).includes(TOKEN));
+});
+
+test("unknown kinds dropped", () => {
+  assert.equal(L.toPanelMessage({ t: "unknown", text: "x" }), null);
+  assert.equal(L.toPanelMessage({ t: "status", text: "" }), null);
+  assert.equal(L.toPanelMessage({ t: "card", card: { id: "c1", kind: "weird", title: "t", detail: "", host: "" } }), null);
+  assert.equal(L.toPanelMessage({ t: "card", card: { id: "", kind: "action", title: "t", detail: "", host: "" } }), null);
+  assert.equal(L.toPanelMessage({ t: "card-closed", id: "c1", result: "bogus" }), null);
 });
 
 test("질문 번호: 지금 번호가 아닌 답 줄은 버린다(멈춘 뒤 · 새 질문 뒤 옛 줄)", () => {
   const A = L.acceptForAsk;
   assert.equal(A({ t: "delta", id: 2, text: "x" }, 2), true);
+  assert.equal(A({ t: "status", id: 2, text: "검색 중" }, 2), true);
+  assert.equal(A({ t: "card", id: 2, card: { id: "c1" } }, 2), true);
+  assert.equal(A({ t: "card-closed", id: 2, result: "allowed" }, 2), true);
+  assert.equal(A({ t: "status", id: 1, text: "옛" }, 2), false);
+  assert.equal(A({ t: "card", id: 1, card: { id: "c1" } }, 2), false);
+  assert.equal(A({ t: "card-closed", id: 1, result: "allowed" }, 2), false);
   assert.equal(A({ t: "delta", id: 1, text: "옛" }, 2), false);
   assert.equal(A({ t: "done", id: 1 }, 2), false);
   assert.equal(A({ t: "error", id: 3, message: "x" }, 2), false);

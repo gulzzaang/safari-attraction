@@ -57,6 +57,10 @@
     return s;
   }
 
+  const VALID_CARD_KINDS = new Set(["action", "danger", "code"]);
+  const VALID_CARD_RESULTS = new Set(["allowed", "denied", "withdrawn"]);
+  const MAX_CARD_DETAIL = 4000;
+
   /** 서버 줄 → 패널 메시지(허용 목록). 모르는 줄이면 null. `secret` 은 토큰 — 어느 글에도 남기지 않는다. */
   function toPanelMessage(obj, secret) {
     if (!obj || typeof obj !== "object") return null;
@@ -64,6 +68,29 @@
       case "delta":
         if (typeof obj.text !== "string" || obj.text === "") return null;
         return { t: "delta", text: scrub(obj.text.slice(0, MAX_TEXT), secret) };
+      case "status":
+        if (typeof obj.text !== "string" || !obj.text.trim()) return null;
+        return { t: "status", text: scrub(obj.text.slice(0, MAX_MESSAGE), secret) };
+      case "card": {
+        const c = obj.card;
+        if (!c || typeof c !== "object" || typeof c.id !== "string" || !c.id.trim()) return null;
+        if (typeof c.kind !== "string" || !VALID_CARD_KINDS.has(c.kind)) return null;
+        return {
+          t: "card",
+          card: {
+            id: scrub(c.id.slice(0, 100), secret),
+            kind: c.kind,
+            title: scrub(typeof c.title === "string" ? c.title.slice(0, MAX_MESSAGE) : "", secret),
+            detail: scrub(typeof c.detail === "string" ? c.detail.slice(0, MAX_CARD_DETAIL) : "", secret),
+            host: scrub(typeof c.host === "string" ? c.host.slice(0, 255) : "", secret),
+            canAlwaysAllow: c.kind === "action" && c.canAlwaysAllow === true,
+          },
+        };
+      }
+      case "card-closed":
+        if (typeof obj.id !== "string" || !obj.id.trim()) return null;
+        if (typeof obj.result !== "string" || !VALID_CARD_RESULTS.has(obj.result)) return null;
+        return { t: "card-closed", id: scrub(obj.id.slice(0, 100), secret), result: obj.result };
       case "done":
         return { t: "done" };
       case "error": {
@@ -84,17 +111,20 @@
       cli: str(o.cli),
       cliName: str(o.cliName),
       model: str(o.model),
+      effortLabel: str(o.effortLabel),
       loggedIn: typeof o.loggedIn === "boolean" ? o.loggedIn : null,
     };
   }
 
+  const ASK_SCOPED = new Set(["delta", "status", "card", "card-closed", "done", "error"]);
+
   /**
-   * 패널 쪽 거르개 — 답 줄(delta · done · error)은 지금 묻기 번호와 같을 때만 받는다(멈춘 뒤 · 새 질문 뒤에 늦게 온 옛 줄 버림).
+   * 패널 쪽 거르개 — 답 줄(delta · status · card · card-closed · done · error)은 지금 묻기 번호와 같을 때만 받는다(멈춘 뒤 · 새 질문 뒤에 늦게 온 옛 줄 버림).
    * 그 밖의 메시지(info 등)는 번호와 상관없이 받는다. `currentId` 가 null 이면(묻는 중이 아님) 답 줄은 모두 버린다.
    */
   function acceptForAsk(msg, currentId) {
     if (!msg || typeof msg !== "object") return false;
-    if (msg.t === "delta" || msg.t === "done" || msg.t === "error") {
+    if (ASK_SCOPED.has(msg.t)) {
       return currentId !== null && currentId !== undefined && msg.id === currentId;
     }
     return true;

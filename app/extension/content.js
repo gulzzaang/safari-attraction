@@ -1,14 +1,12 @@
 // 사파리-어트랙션 확장 content script — 페이지 위에 작은 패널(닫힌 Shadow DOM)을 그린다.
-// - 토큰 · 포트를 모른다: 묻기는 background 로 port 메시지를 보내고, 답(delta · done · error · info)만 받는다.
-// - 답은 textContent 로만 넣는다(HTML 로 해석하지 않음). 링크는 http · https 만 새 탭(noopener)으로.
+// - 토큰 · 포트를 모른다: 묻기 · 허락 카드 응답은 background 로 port 메시지를 보내고, 답(delta · status · card · card-closed · done · error · info)만 받는다.
+// - 답과 카드 글은 textContent 로만 넣는다(HTML 로 해석하지 않음). 링크는 http · https 만 새 탭(noopener)으로.
 (function () {
   "use strict";
   const ext = globalThis.browser || globalThis.chrome;
   const lib = globalThis.SAPanelLib;
   if (!ext || !lib || globalThis.__saPanelLoaded) return;
   globalThis.__saPanelLoaded = true;
-
-  const PREF_KEY = "includePage";
 
   let host = null;        // 페이지에 붙는 바깥 요소
   let ui = null;          // 패널 안 요소 모음
@@ -21,7 +19,7 @@
   let currentAskId = null; // 지금 답을 기다리는 묻기 번호(없으면 null)
   let answerText = "";
   let renderQueued = false;
-  let includePagePref = true;
+  let cardElements = new Map(); // cardId -> { el, footer }
 
   // ── 작은 도우미 ────────────────────────────────────────────────────────────
   function h(tag, className, text) {
@@ -47,18 +45,6 @@
       cssText = "";
     }
     return cssText;
-  }
-
-  async function loadPref() {
-    try {
-      const got = await ext.storage.local.get(PREF_KEY);
-      if (got && typeof got[PREF_KEY] === "boolean") includePagePref = got[PREF_KEY];
-    } catch (_) { /* 저장소를 못 읽어도 기본(켬) */ }
-  }
-
-  function savePref(value) {
-    includePagePref = value;
-    try { ext.storage.local.set({ [PREF_KEY]: value }); } catch (_) { /* 무시 */ }
   }
 
   // ── 패널 그리기 ────────────────────────────────────────────────────────────
@@ -104,33 +90,20 @@
 
     const input = h("textarea", "input");
     input.rows = 3;
-    input.placeholder = "이 페이지에 대해 물어보세요 (Enter 보내기 · Shift+Enter 줄바꿈 · Esc 닫기)";
+    input.placeholder = "무엇이든 물어보거나 시키세요";
     input.setAttribute("aria-label", "질문");
     isolateKeys(input);
 
-    const opts = h("div", "opts");
-    const pageLabel = h("label", "opt");
-    const pageBox = h("input");
-    pageBox.type = "checkbox";
-    pageBox.checked = includePagePref;
-    const pageText = h("span", "", "이 페이지 함께");
+    const bar = h("div", "bar");
     const selNote = h("span", "note", "");
-    pageLabel.append(pageBox, pageText, selNote);
-    const webLabel = h("label", "opt");
-    const webBox = h("input");
-    webBox.type = "checkbox";
-    webBox.checked = false;
-    webLabel.append(webBox, h("span", "", "웹 검색"));
     const send = h("button", "send", "보내기");
     send.type = "button";
-    opts.append(pageLabel, webLabel, send);
+    bar.append(selNote, send);
 
-    const warn = h("div", "warn", "");
-
-    panel.append(head, answer, status, input, opts, warn);
+    panel.append(head, answer, status, input, bar);
     root.appendChild(panel);
 
-    ui = { root, panel, meta, answer, status, input, pageBox, webBox, send, selNote, warn };
+    ui = { root, panel, meta, answer, status, input, send, selNote };
 
     // 이벤트 — 패널 안의 키 · Esc
     isolateKeys(panel);
@@ -147,8 +120,6 @@
       }
     });
     send.addEventListener("click", () => (answering ? cancel() : submit()));
-    pageBox.addEventListener("change", () => { savePref(pageBox.checked); updateWarn(); });
-    webBox.addEventListener("change", updateWarn);
     // 마우스 · 포인터 · 휠도 페이지로 새지 않게(바깥 클릭에 닫히는 페이지 팝업 등)
     for (const type of ["mousedown", "mouseup", "click", "dblclick", "contextmenu", "wheel", "touchstart", "pointerdown"]) {
       host.addEventListener(type, (e) => e.stopPropagation());
@@ -157,20 +128,12 @@
 
     document.documentElement.appendChild(host);
     updateSelNote();
-    updateWarn();
   }
 
   function updateSelNote() {
     if (!ui) return;
     const n = Array.from(openedSelection).length;
-    ui.selNote.textContent = n > 0 ? "(고른 글 " + n + "자 포함)" : "";
-  }
-
-  function updateWarn() {
-    if (!ui) return;
-    ui.warn.textContent = ui.pageBox.checked && ui.webBox.checked
-      ? "페이지 글이 검색을 움직일 수 있어요 — 믿을 수 없는 페이지에서는 둘을 함께 켜지 마세요."
-      : "";
+    ui.selNote.textContent = n > 0 ? "고른 글 " + n + "자 포함" : "";
   }
 
   function setStatus(text, isError) {
@@ -183,7 +146,55 @@
     answering = value;
     if (!ui) return;
     ui.send.textContent = value ? "멈춤" : "보내기";
+    ui.send.classList.toggle("stop", value);
     ui.input.disabled = false;
+  }
+
+  // 허락 카드 그리기 — 모든 글은 textContent 로만 넣는다(HTML 해석 없음).
+  function addCard(card) {
+    if (!ui || typeof lib.cardView !== "function") return;
+    const view = lib.cardView(card);
+    if (!view) return;
+    const box = h("div", "card card-" + view.kind);
+    box.appendChild(h("div", "card-title", view.title));
+    if (view.host) box.appendChild(h("div", "card-host", view.host));
+    if (view.detail) {
+      box.appendChild(h(view.isCode ? "pre" : "div", view.isCode ? "card-code-pre" : "card-detail", view.detail));
+    }
+    const footer = h("div", "card-actions");
+    const btns = [];
+    for (const b of view.buttons) {
+      const btn = h("button", "card-btn" + (b.primary ? " primary" : ""), b.label);
+      btn.type = "button";
+      btn.addEventListener("click", () => {
+        for (const each of btns) each.disabled = true;
+        if (port) {
+          try { port.postMessage({ t: "approve", cardId: view.id, answer: b.answer }); } catch (_) { /* 무시 */ }
+        }
+      });
+      btns.push(btn);
+      footer.appendChild(btn);
+    }
+    box.appendChild(footer);
+    cardElements.set(view.id, { el: box, footer });
+    const answerBubble = ui.answer.querySelector(".a");
+    if (answerBubble) ui.answer.insertBefore(box, answerBubble);
+    else ui.answer.appendChild(box);
+    ui.answer.scrollTop = ui.answer.scrollHeight;
+  }
+
+  function closeCard(id, result) {
+    const entry = cardElements.get(id);
+    if (!entry) return;
+    cardElements.delete(id);
+    entry.el.classList.add("closed");
+    while (entry.footer.firstChild) entry.footer.removeChild(entry.footer.firstChild);
+    const label = typeof lib.cardResultLabel === "function" ? lib.cardResultLabel(result) : "끝났어요";
+    entry.footer.appendChild(h("span", "card-result", label));
+  }
+
+  function withdrawOpenCards() {
+    for (const id of Array.from(cardElements.keys())) closeCard(id, "withdrawn");
   }
 
   // 답 다시 그리기 — 글 조각은 textContent, 링크만 <a>(새 탭 · noopener).
@@ -195,6 +206,7 @@
     const body = box.querySelector(".a");
     if (!body) return;
     while (body.firstChild) body.removeChild(body.firstChild);
+    body.classList.toggle("empty", !answerText);
     for (const seg of lib.splitLinks(answerText)) {
       if (seg.href) {
         const a = document.createElement("a");
@@ -224,6 +236,7 @@
     port.onDisconnect.addListener(() => {
       port = null;
       currentAskId = null;
+      withdrawOpenCards();
       if (answering) { setAnswering(false); setStatus(lib.errorText("disconnected"), true); }
     });
     port.postMessage({ t: "info" });
@@ -234,7 +247,7 @@
     if (!lib.acceptForAsk(msg, currentAskId)) return; // 멈춘 뒤 · 새 질문 뒤에 늦게 온 옛 줄
     switch (msg.t) {
       case "info": {
-        const parts = [msg.cliName, msg.model].filter((s) => typeof s === "string" && s);
+        const parts = [msg.cliName, msg.model, msg.effortLabel].filter((s) => typeof s === "string" && s);
         ui.meta.textContent = parts.join(" · ");
         if (msg.loggedIn === false) setStatus("이 CLI 는 로그인이 안 되어 있어요 — 앱 설정에서 로그인해 주세요.", true);
         break;
@@ -243,17 +256,32 @@
         ui.meta.textContent = "";
         setStatus(typeof msg.message === "string" ? msg.message : lib.errorText("app_off"), true);
         break;
+      case "status":
+        if (typeof msg.text === "string") setStatus(msg.text, false);
+        break;
+      case "card":
+        addCard(msg.card);
+        break;
+      case "card-closed":
+        closeCard(msg.id, msg.result);
+        break;
       case "delta":
-        if (typeof msg.text === "string") { answerText += msg.text; queueRender(); }
+        if (typeof msg.text === "string") {
+          setStatus("");
+          answerText += msg.text;
+          queueRender();
+        }
         break;
       case "done":
         currentAskId = null;
+        withdrawOpenCards();
         setAnswering(false);
         setStatus("");
         renderAnswer();
         break;
       case "error":
         currentAskId = null;
+        withdrawOpenCards();
         setAnswering(false);
         setStatus(typeof msg.message === "string" ? msg.message : lib.errorText("disconnected"), true);
         renderAnswer();
@@ -266,10 +294,11 @@
     const question = ui.input.value.trim();
     if (!question) return;
     if (!port) { try { connect(); } catch (_) { setStatus(lib.errorText("native_unavailable"), true); return; } }
-    const page = ui.pageBox.checked ? lib.collectPage(document, window, openedSelection) : undefined;
+    const page = lib.collectPage(document, window, openedSelection);
+    cardElements.clear();
     ui.answer.textContent = "";
     ui.answer.appendChild(h("div", "q", question));
-    ui.answer.appendChild(h("div", "a", ""));
+    ui.answer.appendChild(h("div", "a empty", ""));
     answerText = "";
     const id = ++askCounter;
     currentAskId = id;
@@ -277,7 +306,7 @@
     setStatus("답을 기다리는 중…");
     setAnswering(true);
     try {
-      port.postMessage({ t: "ask", id, question, page, webSearch: ui.webBox.checked });
+      port.postMessage({ t: "ask", id, question, page });
     } catch (_) {
       setAnswering(false);
       setStatus(lib.errorText("disconnected"), true);
@@ -286,6 +315,7 @@
 
   function cancel() {
     currentAskId = null;
+    withdrawOpenCards();
     if (port) { try { port.postMessage({ t: "cancel" }); } catch (_) { /* 무시 */ } }
     setAnswering(false);
     setStatus("멈췄어요.");
@@ -300,7 +330,6 @@
       // 패널로 초점이 옮겨 가면 고른 글이 풀릴 수 있어서 먼저 적어 둔다(비밀번호 칸이면 빈 글).
       openedSelection = lib.readSelection(document, window);
       previousFocus = document.activeElement;
-      await loadPref();
       await build();
       connect();
       ui.input.focus();
@@ -312,7 +341,7 @@
   function closePanel() {
     if (port) { try { port.disconnect(); } catch (_) { /* 무시 */ } port = null; }
     if (host && host.parentNode) host.parentNode.removeChild(host);
-    host = null; ui = null;
+    host = null; ui = null; cardElements.clear();
     answering = false; currentAskId = null; answerText = ""; openedSelection = "";
     const back = previousFocus;
     previousFocus = null;

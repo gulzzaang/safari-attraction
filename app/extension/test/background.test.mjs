@@ -36,6 +36,7 @@ function boot({ hosts = ["example.com"], appOff = false } = {}) {
     fetches.push({ url, init });
     if (url.endsWith("/alert-hosts")) return json(200, { hosts });
     if (url.endsWith("/alert")) return json(202, { accepted: 1 });
+    if (url.endsWith("/approve")) return json(200, {});
     throw new TypeError("Load failed");
   };
   const g = { browser: ext, SAPanelLib: globalThis.SAPanelLib };
@@ -96,4 +97,26 @@ test("background: 비-http(s) 주소에서 온 알림은 msg.host 로 폴백하�
   }
   await tick();
   assert.deepEqual(b.fetches, []);
+});
+
+test("background: 패널 port 의 approve 메시지를 토큰을 붙여 POST /approve 로 보낸다", async () => {
+  const b = boot();
+  const portListeners = { message: [], disconnect: [] };
+  const posted = [];
+  const fakePort = {
+    name: "sa-panel",
+    sender: { id: "me" },
+    onMessage: { addListener: (f) => portListeners.message.push(f) },
+    onDisconnect: { addListener: (f) => portListeners.disconnect.push(f) },
+    postMessage: (m) => posted.push(m),
+  };
+  for (const fn of b.listeners.connect) fn(fakePort);
+  for (const fn of portListeners.message) fn({ t: "approve", cardId: "card-99", answer: "allow" });
+  await tick();
+  assert.equal(b.fetches.length, 1);
+  assert.equal(b.fetches[0].url, "http://127.0.0.1:51000/approve");
+  assert.equal(b.fetches[0].init.method, "POST");
+  assert.equal(b.fetches[0].init.headers["X-SA-Token"], TOKEN);
+  assert.deepEqual(JSON.parse(b.fetches[0].init.body), { cardId: "card-99", answer: "allow" });
+  assert.deepEqual(b.logs, []);
 });

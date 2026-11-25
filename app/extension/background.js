@@ -54,6 +54,10 @@
         // 질문 번호를 모든 줄에 붙여 돌려준다 — 패널은 지금 번호가 아닌 줄을 버린다.
         const tagged = (m) => send({ ...m, id: request.id });
         bridge.ask(request.body, tagged, mine.signal).finally(() => { if (controller === mine) controller = null; });
+      } else if (msg.t === "approve") {
+        const req = typeof lib.sanitizeApprove === "function" ? lib.sanitizeApprove(msg) : null;
+        if (!req) return;
+        bridge.approve(req).catch(() => { /* 조용히 버림 */ });
       } else if (msg.t === "cancel") {
         if (controller) { controller.abort(); controller = null; }
       }

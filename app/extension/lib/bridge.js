@@ -176,8 +176,35 @@
       }
     }
 
+    /** POST /approve — 허락 카드 답을 앱 서버로 보낸다. */
+    async function approve(req, signal) {
+      try {
+        const res = await request("/approve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cardId: req.cardId, answer: req.answer }),
+        }, signal);
+        if (res.ok) return { ok: true };
+        const msg = await serverMessage(res);
+        return { ok: false, status: res.status, message: lib.scrub(msg || text.httpError(res.status, "").message, cached && cached.token) };
+      } catch (e) {
+        if (e instanceof BridgeError && e.code === "aborted") return { ok: false, status: 0, message: "" };
+        return { ok: false, status: 0, message: e instanceof BridgeError ? e.message : text.errorText("app_unreachable") };
+      }
+    }
+
     // request 는 알림 보내기(alerts.js)가 쓴다 — 토큰은 여기서 붙고 돌려주는 것은 Response 뿐.
-    return { info, ask, getLink, request: (path, init, signal) => request(path, init || {}, signal) };
+    return { info, ask, approve, getLink, request: (path, init, signal) => request(path, init || {}, signal) };
+  }
+
+  const VALID_ANSWERS = new Set(["allow", "deny", "always"]);
+
+  /** 패널의 허락 카드 응답 다듬기(모르는 키는 버린다). 잘못됐으면 null. */
+  function sanitizeApprove(msg) {
+    if (!msg || typeof msg !== "object") return null;
+    const cardId = typeof msg.cardId === "string" ? msg.cardId.trim().slice(0, 100) : "";
+    if (!cardId || typeof msg.answer !== "string" || !VALID_ANSWERS.has(msg.answer)) return null;
+    return { cardId, answer: msg.answer };
   }
 
   /** 패널 묻기 번호 — 정수만(없으면 0). */
@@ -199,6 +226,7 @@
 
   lib.askIdOf = askIdOf;
   lib.sanitizeAsk = sanitizeAsk;
+  lib.sanitizeApprove = sanitizeApprove;
   lib.BridgeError = BridgeError;
   lib.validLink = validLink;
   lib.createBridge = createBridge;

@@ -196,7 +196,7 @@ public final class PanelServer: @unchecked Sendable {
     /// 연결 하나의 상태 — 모든 메서드는 서버 `queue` 에서만 불린다.
     fileprivate final class Connection: @unchecked Sendable {
         enum Phase { case head, body, responding, draining, closed }
-        enum BodyRoute { case ask, alert }
+        enum BodyRoute { case ask, alert, approve }
 
         let server: PanelServer   // 연결이 닫힐 때 서버 목록에서 빠지므로 순환은 끊긴다
         let nw: NWConnection
@@ -313,7 +313,15 @@ public final class PanelServer: @unchecked Sendable {
                 expectedBody = length
                 phase = .body
                 tryFinishBody()
-            case (_, "/info"), (_, "/ask"), (_, "/alert-hosts"), (_, "/alert"):
+            case ("POST", "/approve"):
+                if h.headers["transfer-encoding"] != nil { respond(411, "Content-Length 로 보내 주세요"); return }
+                guard let length = Int(h.headers["content-length"] ?? ""), length >= 0 else { respond(411, "Content-Length 로 보내 주세요"); return }
+                if length > PanelServer.maxBodyBytes { respond(413, "요청이 너무 길어요"); return }
+                bodyRoute = .approve
+                expectedBody = length
+                phase = .body
+                tryFinishBody()
+            case (_, "/info"), (_, "/ask"), (_, "/alert-hosts"), (_, "/alert"), (_, "/approve"):
                 respond(405, "허락되지 않은 방식이에요")
             default:
                 respond(404, "없는 주소예요")
@@ -331,6 +339,9 @@ public final class PanelServer: @unchecked Sendable {
             case .alert:
                 guard let alert = SiteAlert.parse(Data(body)) else { respond(400, "알림을 읽지 못했어요"); return }
                 answerAlert(alert)
+            case .approve:
+                guard let req = PanelApproveRequest.parse(Data(body)) else { respond(400, "카드 응답을 읽지 못했어요"); return }
+                answerApprove(req)
             }
         }
 
@@ -378,6 +389,25 @@ public final class PanelServer: @unchecked Sendable {
                 queue.async {
                     guard let c = box.value, c.phase != .closed else { return }
                     c.respondJSON(202, PanelJSON.encode(["accepted": accepted]))
+                }
+            }
+        }
+
+        func answerApprove(_ req: PanelApproveRequest) {
+            phase = .responding
+            timer?.cancel()
+            let backend = server.backend
+            let box = WeakBox(self)
+            let queue = server.queue
+            askTask = Task {
+                let ok = await backend.approve(cardID: req.cardId, answer: req.answer)
+                queue.async {
+                    guard let c = box.value, c.phase != .closed else { return }
+                    if ok {
+                        c.respondJSON(200, Data("{}".utf8))
+                    } else {
+                        c.respond(404, "찾을 수 없는 카드예요")
+                    }
                 }
             }
         }

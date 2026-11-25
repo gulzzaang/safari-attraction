@@ -3,22 +3,30 @@
 * { box-sizing: border-box; }
 
 .panel {
-  --bg: #ffffff; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --soft: #f5f5f7;
+  --bg: #ffffff; --fg: #1d1d1f; --muted: #6e6e73; --line: #d8d8de; --soft: #f5f5f7;
+  --user-bg: rgba(10, 96, 214, 0.12); --user-line: rgba(10, 96, 214, 0.24);
   --accent: #0a60d6; --accent-fg: #ffffff; --error: #c4281c;
-  display: flex; flex-direction: column; gap: 8px;
-  max-height: min(70vh, 560px);
+  --orange: #d96b00; --orange-bg: rgba(217, 107, 0, 0.10); --orange-line: rgba(217, 107, 0, 0.55);
+  --red: #d93025; --red-bg: rgba(217, 48, 37, 0.10); --red-line: rgba(217, 48, 37, 0.55);
+  --code-bg: rgba(0, 0, 0, 0.06);
+  display: flex; flex-direction: column; gap: 10px;
+  max-height: min(74vh, 580px);
   padding: 12px;
   background: var(--bg); color: var(--fg);
   border: 1px solid var(--line); border-radius: 12px;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.20);
   font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Helvetica Neue", sans-serif;
   text-align: left; letter-spacing: normal; text-transform: none;
 }
 @media (prefers-color-scheme: dark) {
   .panel {
-    --bg: #2a2a2d; --fg: #f2f2f4; --muted: #a1a1a8; --line: #48484d; --soft: #38383c;
+    --bg: #26262a; --fg: #f2f2f4; --muted: #a1a1a8; --line: #44444a; --soft: #333338;
+    --user-bg: rgba(76, 155, 255, 0.20); --user-line: rgba(76, 155, 255, 0.35);
     --accent: #4c9bff; --accent-fg: #0b1b33; --error: #ff7a70;
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+    --orange: #ff9f0a; --orange-bg: rgba(255, 159, 10, 0.14); --orange-line: rgba(255, 159, 10, 0.60);
+    --red: #ff5a52; --red-bg: rgba(255, 90, 82, 0.14); --red-line: rgba(255, 90, 82, 0.60);
+    --code-bg: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.60);
   }
 }
 
@@ -27,43 +35,92 @@
 .meta { flex: 1; min-width: 0; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .icon {
   all: unset; cursor: pointer; width: 24px; height: 24px; line-height: 24px; text-align: center;
-  border-radius: 6px; color: var(--muted);
+  border-radius: 999px; color: var(--muted);
 }
 .icon:hover { background: var(--soft); color: var(--fg); }
 
 .answer {
-  min-height: 56px; max-height: 38vh; overflow: auto;
-  padding: 8px 10px; background: var(--soft); border-radius: 8px;
+  display: flex; flex-direction: column; gap: 8px;
+  min-height: 56px; max-height: 42vh; overflow: auto;
+  padding: 4px 2px;
   white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
   outline: none;
 }
-.answer:empty::before { content: "여기에 답이 흘러나와요."; color: var(--muted); }
-.answer .q { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.answer:empty::before { content: "여기에 답이 흘러나와요."; color: var(--muted); padding: 6px 8px; }
+
+.answer .q {
+  align-self: flex-end; max-width: 88%;
+  padding: 8px 12px; border-radius: 12px;
+  background: var(--user-bg); border: 1px solid var(--user-line);
+  color: var(--fg); font-size: 13px;
+}
+.answer .a {
+  align-self: stretch;
+  padding: 10px 12px; border-radius: 12px;
+  background: var(--bg); border: 1px solid var(--line);
+  color: var(--fg);
+}
+.answer .a.empty { display: none; }
 .answer a { color: var(--accent); text-decoration: underline; }
 
-.status { min-height: 0; color: var(--muted); font-size: 12px; }
+/* 허락 카드 — 주황(action) · 빨강(danger · code) */
+.card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px; border-radius: 12px;
+  border: 1px solid var(--orange-line); background: var(--orange-bg);
+}
+.card.card-danger, .card.card-code {
+  border-color: var(--red-line); background: var(--red-bg);
+  border-left: 4px solid var(--red);
+}
+.card.closed { opacity: 0.78; }
+.card-title { font-size: 12px; font-weight: 600; color: var(--orange); }
+.card.card-danger .card-title, .card.card-code .card-title { color: var(--red); }
+.card-host { font-size: 12px; color: var(--muted); }
+.card-detail { font-size: 13px; color: var(--fg); white-space: pre-wrap; }
+.card-code-pre {
+  margin: 0; padding: 8px; border-radius: 8px; max-height: 150px; overflow: auto;
+  background: var(--code-bg); color: var(--fg);
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre;
+}
+.card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.card-btn {
+  all: unset; cursor: pointer; padding: 4px 12px; border-radius: 999px;
+  font-size: 12px; font-weight: 500;
+  color: var(--fg); border: 1px solid var(--line); background: transparent;
+}
+.card-btn:hover:not(:disabled) { background: var(--soft); }
+.card-btn.primary {
+  background: var(--orange); border-color: var(--orange); color: #ffffff; font-weight: 600;
+}
+.card.card-danger .card-btn.primary, .card.card-code .card-btn.primary {
+  background: var(--red); border-color: var(--red);
+}
+.card-btn.primary:hover:not(:disabled) { filter: brightness(1.08); }
+.card-btn:disabled { opacity: 0.5; cursor: default; }
+.card-result { font-size: 12px; font-weight: 600; color: var(--muted); }
+
+.status { min-height: 0; color: var(--muted); font-size: 12px; padding: 0 2px; }
 .status:empty { display: none; }
 .status.error { color: var(--error); }
 
 .input {
   all: unset; box-sizing: border-box; display: block; width: 100%;
   min-height: 62px; max-height: 140px; overflow: auto; resize: none;
-  padding: 8px 10px; background: var(--bg); color: var(--fg);
-  border: 1px solid var(--line); border-radius: 8px; white-space: pre-wrap; word-break: break-word;
+  padding: 9px 12px; background: var(--soft); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 12px; white-space: pre-wrap; word-break: break-word;
   font: inherit; cursor: text; -webkit-user-select: text; user-select: text;
 }
-.input:focus { border-color: var(--accent); }
+.input:focus { border-color: var(--accent); background: var(--bg); }
 .input::placeholder { color: var(--muted); }
 
-.opts { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
-.opt { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
-.opt input { margin: 0; accent-color: var(--accent); }
+.bar { display: flex; align-items: center; gap: 8px; }
 .note { color: var(--muted); font-size: 12px; }
 .send {
-  all: unset; cursor: pointer; margin-left: auto; padding: 5px 14px; border-radius: 8px;
+  all: unset; cursor: pointer; margin-left: auto; padding: 5px 16px; border-radius: 999px;
   background: var(--accent); color: var(--accent-fg); font-weight: 600;
 }
+.send.stop { background: var(--red); color: #ffffff; }
 .send:hover { filter: brightness(1.08); }
-.warn { color: var(--muted); font-size: 11px; }
-.warn:empty { display: none; }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

@@ -87,7 +87,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 workDirectory: { try AppPaths.workDirectory() },
                 supportDirectory: { support },
                 geminiLoggedOut: { await vm.loginState(for: .gemini) == .loggedOut },
-                onRateLimits: { snap in Task { @MainActor in status.applyLiveUsage(.claude, snap) } })
+                onRateLimits: { snap in Task { @MainActor in status.applyLiveUsage(.claude, snap) } },
+                interactiveGate: interactiveGate,
+                siteModes: siteModes,
+                safariResources: resources)
             let host = PanelHost(directory: support, backend: panelService, alerts: alertRelay)
             self.panelService = panelService
             panelHost = host

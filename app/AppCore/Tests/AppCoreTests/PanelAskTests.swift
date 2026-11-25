@@ -466,4 +466,183 @@ final class PanelAskTests: XCTestCase {
         XCTAssertEqual(c.modelID, "opus")
         XCTAssertEqual(c.modelName, "Opus")
     }
+
+    // MARK: 사파리 도구 자리 · 허락 카드 (Task 6)
+
+    private func makeFakeResources() throws -> URL {
+        let res = tempDir.appendingPathComponent("res", isDirectory: true)
+        let sa = res.appendingPathComponent("safari-attraction", isDirectory: true)
+        try FileManager.default.createDirectory(at: sa, withIntermediateDirectories: true)
+        let runSh = sa.appendingPathComponent("run.sh")
+        try "#!/bin/sh\n".write(to: runSh, atomically: true, encoding: .utf8)
+        return res
+    }
+
+    @MainActor
+    func testPanelAskEmitsCardAndWaits() async throws {
+        let res = try makeFakeResources()
+        let fakeGate = FakeGate()
+        let gate = InteractiveGate(support: tempDir, makeServer: { fakeGate })
+        try gate.start()
+        defer { gate.shutdown() }
+        let siteModes = SiteModeStore(directory: tempDir)
+
+        let gateDone = Gate()
+        let decisionBox = DecisionBox()
+        let factory = RunnerFactoryLog { call, emit in
+            // 사파리 도구(MCP)가 붙어서 실행됐는지 확인
+            XCTAssertTrue(call.arguments.contains("--mcp-config"))
+            let req = GateRequest(id: "g1", host: "shop.example", url: "https://shop.example/cart",
+                                  action: "click", target: "담기", value: "", irreversible: false)
+            let decision = await fakeGate.request(req).value
+            decisionBox.set(decision)
+            emit(claudeAssistantLine("눌렀어요."))
+            await gateDone.open()
+            return .finished(code: 0)
+        }
+        let dir = tempDir!
+        let svc = PanelAskService(
+            selection: { _ in PanelSelection(kind: .claude, modelID: "sonnet", modelName: "Sonnet", login: .loggedIn(CLIAccountInfo()), effort: "high") },
+            runnerFactory: { factory.make() },
+            loginPath: { "/usr/bin:/bin" },
+            workDirectory: { dir },
+            supportDirectory: { dir },
+            timeout: 180,
+            geminiLoggedOut: { false },
+            interactiveGate: gate,
+            siteModes: siteModes,
+            safariResources: res,
+            nodeCheck: { _ in true }
+        )
+        let lines = LineBox()
+        let askTask = Task {
+            await svc.ask(PanelQuestion(question: "담아 줘")) { lines.add($0) }
+        }
+        // 카드 줄이 나올 때까지 대기
+        let gotCard = await PanelTest.waitUntil {
+            lines.all.contains { if case .card = $0 { return true }; return false }
+        }
+        XCTAssertTrue(gotCard)
+        guard case .card(let card)? = lines.all.first(where: { if case .card = $0 { return true }; return false }) else {
+            return XCTFail("카드가 나와야 해요")
+        }
+        XCTAssertEqual(card.kind, "action")
+        XCTAssertEqual(card.host, "shop.example")
+        XCTAssertTrue(card.canAlwaysAllow)
+        XCTAssertNil(decisionBox.value, "사람이 답하기 전에는 관문이 풀리지 않는다")
+
+        let approved = await svc.approve(cardID: card.id, answer: .allow)
+        XCTAssertTrue(approved)
+        await gateDone.wait()
+        await askTask.value
+
+        XCTAssertEqual(decisionBox.value, .allow)
+        XCTAssertTrue(lines.all.contains(.cardClosed(id: card.id, result: "allowed")))
+        XCTAssertNil(gate.holder, "질문이 끝나면 자리가 풀린다")
+    }
+
+    @MainActor
+    func testPanelDisconnectWithdrawsCard() async throws {
+        let res = try makeFakeResources()
+        let fakeGate = FakeGate()
+        let gate = InteractiveGate(support: tempDir, makeServer: { fakeGate })
+        try gate.start()
+        defer { gate.shutdown() }
+        let siteModes = SiteModeStore(directory: tempDir)
+
+        let decisionBox = DecisionBox()
+        let factory = RunnerFactoryLog { _, _ in
+            let req = GateRequest(id: "g2", host: "bank.example", url: "https://bank.example/pay",
+                                  action: "click", target: "결제", value: "", irreversible: true)
+            let decision = await fakeGate.request(req).value
+            decisionBox.set(decision)
+            return .stopped
+        }
+        let dir = tempDir!
+        let svc = PanelAskService(
+            selection: { _ in PanelSelection(kind: .claude, modelID: "sonnet", modelName: "Sonnet") },
+            runnerFactory: { factory.make() },
+            loginPath: { "/usr/bin:/bin" },
+            workDirectory: { dir },
+            supportDirectory: { dir },
+            timeout: 180,
+            geminiLoggedOut: { false },
+            interactiveGate: gate,
+            siteModes: siteModes,
+            safariResources: res,
+            nodeCheck: { _ in true }
+        )
+        let lines = LineBox()
+        let askTask = Task {
+            await svc.ask(PanelQuestion(question: "결제해 줘")) { lines.add($0) }
+        }
+        let gotCard = await PanelTest.waitUntil {
+            lines.all.contains { if case .card = $0 { return true }; return false }
+        }
+        XCTAssertTrue(gotCard)
+
+        // 패널 연결 끊김(취소)
+        askTask.cancel()
+        await askTask.value
+
+        let resolved = await PanelTest.waitUntil { decisionBox.value != nil }
+        XCTAssertTrue(resolved)
+        if case .allow? = decisionBox.value { XCTFail("연결이 끊기면 거절이어야 해요") }
+        XCTAssertNil(gate.holder, "연결이 끊기면 자리가 풀린다")
+    }
+
+    @MainActor
+    func testPanelAskWhileSidePanelHoldsLeaseSendsStatus() async throws {
+        let res = try makeFakeResources()
+        let fakeGate = FakeGate()
+        let gate = InteractiveGate(support: tempDir, makeServer: { fakeGate })
+        try gate.start()
+        defer { gate.shutdown() }
+        let siteModes = SiteModeStore(directory: tempDir)
+
+        // 옆 창이 사파리 도구 자리를 먼저 쥐고 있다
+        let sideRequests = DecisionBox()
+        let sideLease = gate.acquire { _ in
+            sideRequests.set(.allow)
+            return .allow
+        }
+        XCTAssertNotNil(sideLease)
+        defer { sideLease?.release() }
+
+        let factory = RunnerFactoryLog { call, emit in
+            XCTAssertFalse(call.arguments.contains("--mcp-config"), "자리를 못 얻었으므로 MCP 없이 돈다")
+            emit(claudeAssistantLine("답만 해요"))
+            return .finished(code: 0)
+        }
+        let dir = tempDir!
+        let svc = PanelAskService(
+            selection: { _ in PanelSelection(kind: .claude, modelID: "sonnet", modelName: "Sonnet") },
+            runnerFactory: { factory.make() },
+            loginPath: { "/usr/bin:/bin" },
+            workDirectory: { dir },
+            supportDirectory: { dir },
+            timeout: 180,
+            geminiLoggedOut: { false },
+            interactiveGate: gate,
+            siteModes: siteModes,
+            safariResources: res,
+            nodeCheck: { _ in true }
+        )
+        let lines = LineBox()
+        await svc.ask(PanelQuestion(question: "설명해 줘")) { lines.add($0) }
+
+        XCTAssertTrue(lines.all.contains(.status("다른 질문이 사파리를 쓰는 중이라 이번 답은 사파리를 움직이지 않아요")))
+        XCTAssertFalse(lines.all.contains { if case .card = $0 { return true }; return false })
+        // 관문 요청은 여전히 옆 창으로만 간다
+        let d = await fakeGate.request(GateRequest(id: "g3", host: "a.com", url: "https://a.com", action: "click", target: "t", value: "", irreversible: false)).value
+        XCTAssertEqual(d, .allow)
+        XCTAssertEqual(sideRequests.value, .allow)
+    }
+}
+
+private final class DecisionBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: GateDecision?
+    var value: GateDecision? { lock.withLock { _value } }
+    func set(_ d: GateDecision) { lock.withLock { _value = d } }
 }

@@ -153,8 +153,11 @@ final class StubBackend: PanelBackend, @unchecked Sendable {
     var infoValue = PanelInfo(cli: "claude", cliName: "클로드", model: "Sonnet", loggedIn: true)
     let gate = Gate()
     var holdAsks = false
+    var validCardIDs: Set<String> = []
+    private var _approvals: [(cardID: String, answer: PanelApproveAnswer)] = []
     var asks: [PanelQuestion] { lock.withLock { _asks } }
     var started: Int { lock.withLock { _started } }
+    var approvals: [(cardID: String, answer: PanelApproveAnswer)] { lock.withLock { _approvals } }
 
     func info() async -> PanelInfo { infoValue }
     func ask(_ question: PanelQuestion, emit: @escaping @Sendable (PanelLine) -> Void) async {
@@ -162,6 +165,14 @@ final class StubBackend: PanelBackend, @unchecked Sendable {
         emit(.delta("안녕"))
         if holdAsks { await gate.wait() }
         emit(.done(nil))
+    }
+    func approve(cardID: String, answer: PanelApproveAnswer) async -> Bool {
+        lock.withLock {
+            guard validCardIDs.contains(cardID) else { return false }
+            validCardIDs.remove(cardID)
+            _approvals.append((cardID, answer))
+            return true
+        }
     }
 }
 
@@ -378,16 +389,18 @@ final class PanelServerTests: XCTestCase {
         XCTAssertEqual(r?.status, 200)
         XCTAssertEqual(r?.headers["content-type"], "application/json; charset=utf-8")
         let obj = try JSONSerialization.jsonObject(with: r!.body) as! [String: Any]
-        XCTAssertEqual(Set(obj.keys), ["cli", "cliName", "model", "loggedIn"])
+        XCTAssertEqual(Set(obj.keys), ["cli", "cliName", "model", "effortLabel", "loggedIn"])
         XCTAssertEqual(obj["cli"] as? String, "claude")
         XCTAssertEqual(obj["cliName"] as? String, "클로드")
         XCTAssertEqual(obj["model"] as? String, "Sonnet")
+        XCTAssertTrue(obj["effortLabel"] is NSNull)
         XCTAssertEqual(obj["loggedIn"] as? Bool, true)
 
-        backend.infoValue = PanelInfo(cli: "chatgpt", cliName: "ChatGPT", model: nil, loggedIn: nil)
+        backend.infoValue = PanelInfo(cli: "chatgpt", cliName: "ChatGPT", model: nil, effortLabel: "높음", loggedIn: nil)
         let r2 = await PanelTest.roundTrip(port: port, PanelTest.request("GET", "/info", port: port))
         let obj2 = try JSONSerialization.jsonObject(with: r2!.body) as! [String: Any]
         XCTAssertTrue(obj2["model"] is NSNull)
+        XCTAssertEqual(obj2["effortLabel"] as? String, "높음")
         XCTAssertTrue(obj2["loggedIn"] is NSNull)
     }
 
@@ -557,5 +570,56 @@ final class PanelServerTests: XCTestCase {
         }
         XCTAssertTrue(ok)
         second.closeNow()
+    }
+
+    // MARK: 허락 카드 응답 (/approve)
+
+    func testApproveRequiresToken() async throws {
+        let backend = StubBackend()
+        backend.validCardIDs = ["card-1"]
+        let (_, port) = try await start(backend)
+        let body = Data(#"{"cardId":"card-1","answer":"allow"}"#.utf8)
+        for token in [nil, "", String(repeating: "cd", count: 32)] {
+            let r = await PanelTest.roundTrip(port: port, PanelTest.request("POST", "/approve", port: port, token: token, body: body))
+            XCTAssertEqual(r?.status, 403, "token=\(token ?? "nil")")
+        }
+        XCTAssertTrue(backend.approvals.isEmpty)
+    }
+
+    func testApproveRejectsBadOrigin() async throws {
+        let backend = StubBackend()
+        backend.validCardIDs = ["card-1"]
+        let (_, port) = try await start(backend)
+        let body = Data(#"{"cardId":"card-1","answer":"allow"}"#.utf8)
+        let r = await PanelTest.roundTrip(port: port, PanelTest.request("POST", "/approve", port: port, origin: "https://evil.example", body: body))
+        XCTAssertEqual(r?.status, 403)
+        XCTAssertNil(r?.headers["access-control-allow-origin"])
+        XCTAssertTrue(backend.approvals.isEmpty)
+    }
+
+    func testApproveUnknownCard404() async throws {
+        let backend = StubBackend()
+        let (_, port) = try await start(backend)
+        let body = Data(#"{"cardId":"unknown-id","answer":"deny"}"#.utf8)
+        let r = await PanelTest.roundTrip(port: port, PanelTest.request("POST", "/approve", port: port, origin: PanelTest.extensionOrigin, body: body))
+        XCTAssertEqual(r?.status, 404)
+        XCTAssertEqual(r?.headers["access-control-allow-origin"], PanelTest.extensionOrigin)
+    }
+
+    func testApproveResolvesCard() async throws {
+        let backend = StubBackend()
+        backend.validCardIDs = ["card-42"]
+        let (_, port) = try await start(backend)
+        let body = Data(#"{"cardId":"card-42","answer":"always"}"#.utf8)
+        let r = await PanelTest.roundTrip(port: port, PanelTest.request("POST", "/approve", port: port, origin: PanelTest.extensionOrigin, body: body))
+        XCTAssertEqual(r?.status, 200)
+        XCTAssertEqual(r?.text, "{}")
+        XCTAssertEqual(r?.headers["access-control-allow-origin"], PanelTest.extensionOrigin)
+        XCTAssertEqual(backend.approvals.count, 1)
+        XCTAssertEqual(backend.approvals.first?.cardID, "card-42")
+        XCTAssertEqual(backend.approvals.first?.answer, .always)
+        // 같은 카드를 다시 누르면 이미 닫혀 404
+        let again = await PanelTest.roundTrip(port: port, PanelTest.request("POST", "/approve", port: port, body: body))
+        XCTAssertEqual(again?.status, 404)
     }
 }
