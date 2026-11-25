@@ -37,6 +37,7 @@ public enum AskFlow {
     public static func run(request: AskRequest, runner: CommandRunning,
                            loginPath: @escaping @Sendable () -> String,
                            workDirectory: @escaping @Sendable () throws -> URL,
+                           supportDirectory: (@Sendable () throws -> URL)? = nil,
                            timeout: TimeInterval,
                            geminiLoggedOut: @escaping @Sendable () async -> Bool,
                            emit: @escaping @Sendable (Step) -> Void) async -> RunOutcome {
@@ -50,8 +51,12 @@ public enum AskFlow {
         }
 
         // 막힐 수 있는 일(로그인 셸 PATH 는 앱이 켜진 뒤 첫 질문에서 처음 읽고 캐시 — 최대 8초)은 메인 밖에서.
-        let prepared: Result<(path: String, dir: URL), Error> = await Task.detached(priority: .userInitiated) {
-            do { return .success((loginPath(), try workDirectory())) } catch { return .failure(error) }
+        let prepared: Result<(path: String, dir: URL, support: URL), Error> = await Task.detached(priority: .userInitiated) {
+            do {
+                let dir = try workDirectory()
+                let sup = try supportDirectory?() ?? dir.deletingLastPathComponent()
+                return .success((loginPath(), dir, sup))
+            } catch { return .failure(error) }
         }.value
 
         if Task.isCancelled { return .stopped }
@@ -60,7 +65,7 @@ public enum AskFlow {
             emit(.failure("작업 폴더를 만들지 못했어요 — \(e.localizedDescription)"))
             return .failed("작업 폴더를 만들지 못했어요(\(e.localizedDescription))")
         case .success(let p):
-            if request.model == .chatgpt, !(await codexReady(runner: runner, p, emit: emit)) {
+            if request.model == .chatgpt, !(await codexReady(runner: runner, (path: p.path, dir: p.dir), emit: emit)) {
                 return Task.isCancelled ? .stopped : .failed("codex 로그인을 확인하지 못했어요")
             }
             if request.model == .gemini, await geminiLoggedOut() {
@@ -72,7 +77,7 @@ public enum AskFlow {
             let effort = request.effort?.isEmpty == false ? request.effort : nil
             let canRetryVariant = request.model == .opencode && effort != nil
             let firstErrors = ErrorBuffer()
-            let first = await execute(request: request, runner: runner, path: p.path, workDir: p.dir, timeout: timeout) { e in
+            let first = await execute(request: request, runner: runner, path: p.path, workDir: p.dir, support: p.support, timeout: timeout) { e in
                 if canRetryVariant, case .error(let msg) = e {
                     firstErrors.append(msg)
                 } else {
@@ -86,7 +91,7 @@ public enum AskFlow {
                     emit(.notice("이 모델은 「\(Effort.label(effort))」 을 못 받아서 기본으로 물었어요"))
                     var retry = request
                     retry.effort = nil
-                    return await execute(request: retry, runner: runner, path: p.path, workDir: p.dir, timeout: timeout) { e in
+                    return await execute(request: retry, runner: runner, path: p.path, workDir: p.dir, support: p.support, timeout: timeout) { e in
                         emit(.event(e))
                     }
                 }
@@ -96,9 +101,9 @@ public enum AskFlow {
         }
     }
 
-    private static func execute(request: AskRequest, runner: CommandRunning, path: String, workDir: URL,
+    private static func execute(request: AskRequest, runner: CommandRunning, path: String, workDir: URL, support: URL,
                                 timeout: TimeInterval, emit: @escaping @Sendable (StreamEvent) -> Void) async -> RunOutcome {
-        let built = CommandBuilder.build(request, workDir: workDir)
+        let built = CommandBuilder.build(request, workDir: workDir, support: support)
         let box = ReaderBox(model: request.model)
         let outcome = await runner.run(executable: built.executable, arguments: built.arguments, workDir: workDir,
                                        path: path, timeout: timeout, environment: built.environment) { event in

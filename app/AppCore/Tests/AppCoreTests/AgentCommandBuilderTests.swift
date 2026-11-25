@@ -121,4 +121,12 @@ final class AgentCommandBuilderTests: XCTestCase {
         let s = (mcpJSON(a)["mcpServers"] as! [String: Any])["safari-attraction"] as! [String: Any]
         XCTAssertNil((s["env"] as! [String: String])["SAFARI_ATTRACTION_UNATTENDED"])
     }
+    func testUnattendedAppliesModelAndEffortWhenProvided() {
+        let a = AgentCommandBuilder.buildUnattended(resources: res, gate: gate, memoryHome: home, model: "opus", effort: "high").arguments
+        XCTAssertEqual(a[a.firstIndex(of: "--model")! + 1], "opus")
+        XCTAssertEqual(a[a.firstIndex(of: "--effort")! + 1], "high")
+        let noEffort = AgentCommandBuilder.buildUnattended(resources: res, gate: gate, memoryHome: home, model: nil, effort: nil).arguments
+        XCTAssertEqual(noEffort[noEffort.firstIndex(of: "--model")! + 1], "sonnet")
+        XCTAssertFalse(noEffort.contains("--effort"))
+    }
 }

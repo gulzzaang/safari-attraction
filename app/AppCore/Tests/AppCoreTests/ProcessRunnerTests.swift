@@ -106,6 +106,16 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(t0), 4)
         assertGone(r.lastPID)
     }
+    func testExtendDeadlineDelaysTimeout() async {
+        let r = ProcessRunner()
+        Task.detached {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            r.extendDeadline(by: 2.0)
+        }
+        let o = await run(r, "/bin/sleep", ["1.2"], timeout: 0.7)
+        XCTAssertEqual(o, .finished(code: 0), "마감을 늘리면 시간 초과 없이 끝난다")
+        assertGone(r.lastPID)
+    }
     func testStopKillsChild() async {
         let r = ProcessRunner(); let t0 = Date()
         Task.detached { try? await Task.sleep(nanoseconds: 500_000_000); r.stop() }

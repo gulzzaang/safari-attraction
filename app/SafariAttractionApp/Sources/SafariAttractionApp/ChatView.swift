@@ -224,8 +224,6 @@ struct ChatView: View {
     private var askComposer: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Toggle("웹 검색", isOn: $vm.webSearch)
-                Toggle("이 페이지 함께", isOn: $vm.attachPage)
                 Toggle("고정", isOn: Binding(get: { vm.pinned }, set: { vm.setPinned($0) }))
                     .help("켜면 사파리가 앞이 아니어도 옆 창이 숨지 않아요")
             }

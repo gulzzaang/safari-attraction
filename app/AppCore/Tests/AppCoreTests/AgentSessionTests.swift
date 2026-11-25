@@ -1309,4 +1309,23 @@ final class AgentSessionTests: XCTestCase {
         let o = await t.value
         XCTAssertEqual(o.status, RoutineRecord.statusFailed)
     }
+
+    func testRoutineUsesClaudeModelAndEffortFromClosures() async throws {
+        let box = runners!, sl = sleeper!
+        session = AgentSession(
+            resources: URL(fileURLWithPath: "/tmp/test-resources"), memoryHome: memoryHome, siteModes: siteModes,
+            gateFactory: { [unowned self] in let g = FakeGate(); self.gates.append(g); return g },
+            runnerFactory: { box.make() },
+            claudeModel: { "opus" },
+            claudeEffort: { "xhigh" },
+            loginPath: { "/test/bin" },
+            workDirectory: { URL(fileURLWithPath: "/tmp/work-test") },
+            sleep: { try await sl.sleep($0) })
+        let (r, _, t) = try await startRoutine()
+        let a = r.call!.arguments
+        XCTAssertEqual(a[a.firstIndex(of: "--model")! + 1], "opus")
+        XCTAssertEqual(a[a.firstIndex(of: "--effort")! + 1], "xhigh")
+        r.emit(result(text: "끝"))
+        _ = await t.value
+    }
 }

@@ -41,4 +41,26 @@ final class AppSettingsStoreTests: XCTestCase {
         let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
         XCTAssertEqual(names, ["settings.json"])
     }
+
+    func testOldKeysIgnoredAndEffortsDefaultEmpty() throws {
+        let dir = tempDir()
+        let raw = """
+        {
+          "selectedCLI": "gemini",
+          "models": { "gemini": "gemini-4-neon-xhigh" },
+          "agyMode": "isolated",
+          "webSearch": true,
+          "attachPage": true
+        }
+        """
+        try Data(raw.utf8).write(to: dir.appendingPathComponent("settings.json"))
+        let store = AppSettingsStore(directory: dir)
+        XCTAssertEqual(store.current.selectedCLI, "gemini")
+        XCTAssertEqual(store.current.models["gemini"], "gemini-4-neon-xhigh")
+        XCTAssertEqual(store.current.efforts, [:])
+        // 깨진 파일로 보지 않으므로 저장해도 백업이 생기지 않는다.
+        try store.update { $0.efforts["claude"] = "high" }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("settings.json.bak").path))
+        XCTAssertEqual(AppSettingsStore(directory: dir).current.efforts, ["claude": "high"])
+    }
 }

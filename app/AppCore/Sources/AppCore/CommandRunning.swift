@@ -7,6 +7,8 @@ public protocol CommandRunning: Sendable {
              environment: [String: String], onEvent: @escaping @Sendable (RunEvent) -> Void) async -> RunOutcome
     /// 돌고 있는 것을 멈춘다(돌고 있지 않으면 아무 일도 없다).
     func stop()
+    /// 실행 중 시간 상한을 뒤로 민다(허락 카드를 기다린 시간만큼 제한에서 뺄 때).
+    func extendDeadline(by seconds: TimeInterval)
 }
 
 public extension CommandRunning {
@@ -15,6 +17,7 @@ public extension CommandRunning {
         await run(executable: executable, arguments: arguments, workDir: workDir, path: path, timeout: timeout,
                   environment: [:], onEvent: onEvent)
     }
+    func extendDeadline(by seconds: TimeInterval) {}
 }
 
 extension ProcessRunner: CommandRunning {}

@@ -31,15 +31,20 @@ public enum AgentCommandBuilder {
         return ("claude", args)
     }
 
-    /// 사람 없이 도는 루틴용 명령줄 — 일 맡기기와 같되 내장 도구 없음(`--tools ""` — MCP 만) · 계획 모드 아님(`--permission-mode manual`) ·
+    /// 사람 없이 도는 루틴용 명령줄 — 내장 도구 없음(`--tools ""` — MCP 만) · 계획 모드 아님(`--permission-mode manual`) ·
     /// 이어 하기 없음, MCP 서버에 `SAFARI_ATTRACTION_UNATTENDED=1`(모든 이동 · fetch 를 관문에 묻고 사파리를 켜거나 새 창을 열지 않음).
-    public static func buildUnattended(resources: URL, gate: GateInfo, memoryHome: URL) -> (executable: String, arguments: [String]) {
-        let args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-                    "--model", CommandBuilder.claudeModel,
+    /// `model` · `effort` 는 옆 창에서 고른 클로드 모델과 생각 단계를 따른다(없으면 기본).
+    public static func buildUnattended(resources: URL, gate: GateInfo, memoryHome: URL,
+                                       model: String? = nil, effort: String? = nil) -> (executable: String, arguments: [String]) {
+        var args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+                    "--model", CommandBuilder.claudeModelArgument(model),
                     "--setting-sources", "", "--strict-mcp-config",
                     "--mcp-config", mcpConfigJSON(resources: resources, gate: gate, memoryHome: memoryHome, unattended: true),
                     "--tools", "",
                     "--permission-prompt-tool", "stdio", "--permission-mode", "manual"]
+        if let effort, !effort.isEmpty, CLIModels.isSafeID(effort) {
+            args += ["--effort", effort]
+        }
         return ("claude", args)
     }
 

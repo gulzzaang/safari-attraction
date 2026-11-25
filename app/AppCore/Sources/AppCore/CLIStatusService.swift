@@ -74,6 +74,7 @@ final class GuardedRunner: CLIRunner, @unchecked Sendable {
     func write(_ line: String) throws { try inner.write(line) }
     func closeInput() { inner.closeInput() }
     func stop() { inner.stop() }
+    func extendDeadline(by seconds: TimeInterval) { inner.extendDeadline(by: seconds) }
 }
 
 /// CLI 하나의 지금 모습(설정 창 · 옆 창이 읽는다).
@@ -89,6 +90,8 @@ public struct CLIState: Equatable, Sendable {
     /// 고를 수 있는 모델(codex 는 로그인 뒤 불러온 목록 · 클로드는 고정 목록).
     public var models: [ModelChoice] = []
     public var modelsNote: String?
+    /// codex 모델 슬러그 → 지원하는 생각 단계 목록(`models_cache.json`).
+    public var codexEfforts: [String: [String]] = [:]
     public var isRefreshing = false
     public var lastRefresh: Date?
     public init() {}
@@ -205,6 +208,7 @@ public final class CLIStatusService {
         s.usage = result.usage
         s.usageNote = result.usageNote
         if kind != .claude { s.models = result.models; s.modelsNote = result.modelsNote }
+        if kind == .chatgpt { s.codexEfforts = result.codexEfforts }
         s.lastRefresh = now()
         s.isRefreshing = false
         states[kind] = s
@@ -220,6 +224,7 @@ public final class CLIStatusService {
         var usageNote: String?
         var models: [ModelChoice] = []
         var modelsNote: String?
+        var codexEfforts: [String: [String]] = [:]
     }
 
     /// 실제 읽기(메인 밖). 각 단계가 실패해도 다음 단계로 — 모두 「알 수 없음」 으로 끝난다.
@@ -240,10 +245,10 @@ public final class CLIStatusService {
             r.loginNote = "작업 폴더를 만들지 못했어요"; r.usageNote = "알 수 없음"
             return r
         }
+        let support = (try? supportDirectory()) ?? dir.deletingLastPathComponent()
         switch kind {
-        case .claude, .chatgpt: await readClaudeOrCodex(kind, into: &r, path: path, dir: dir, runnerFactory: runnerFactory, timeout: timeout)
+        case .claude, .chatgpt: await readClaudeOrCodex(kind, into: &r, path: path, dir: dir, support: support, runnerFactory: runnerFactory, timeout: timeout)
         case .gemini:
-            let support = (try? supportDirectory()) ?? dir.deletingLastPathComponent()
             await readAgy(into: &r, path: path, dir: dir, geminiDir: CLIEnvironment.agyGeminiDirectory(support: support), runnerFactory: runnerFactory, timeout: timeout)
         case .opencode: await readOpenCode(into: &r, path: path, dir: dir, runnerFactory: runnerFactory, timeout: timeout)
         }
@@ -261,7 +266,7 @@ public final class CLIStatusService {
         }
     }
 
-    nonisolated static func readClaudeOrCodex(_ kind: ModelKind, into r: inout ReadResult, path: String, dir: URL,
+    nonisolated static func readClaudeOrCodex(_ kind: ModelKind, into r: inout ReadResult, path: String, dir: URL, support: URL,
                                               runnerFactory: @Sendable () -> any CLIRunner, timeout: TimeInterval) async {
         // 1) 로그인 상태
         let statusCmd = kind == .claude ? CLICommands.claudeAuthStatus : CLICommands.codexLoginStatus
@@ -287,6 +292,10 @@ public final class CLIStatusService {
             let m = await CLICapture.run(runner: runnerFactory(), command: CLICommands.codexModels, workDir: dir, path: path, timeout: timeout)
             if case .finished(0) = m.outcome { r.models = CLIModels.parseCodexModels(m.stdout) }
             if r.models.isEmpty { r.modelsNote = Self.modelsNote(.chatgpt) }
+            let cacheURL = CLIEnvironment.codexHomeDirectory(support: support).appendingPathComponent("models_cache.json")
+            if let data = try? Data(contentsOf: cacheURL) {
+                r.codexEfforts = CLIModels.parseCodexEfforts(data)
+            }
         }
 
         // 3) 남은 양

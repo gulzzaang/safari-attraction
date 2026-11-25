@@ -77,8 +77,10 @@ public final class AgentSession {
     @ObservationIgnored private var lastNotifiedPending = false
 
     @ObservationIgnored private let runnerFactory: @Sendable () -> InteractiveRunning
-    /// 설정에서 고른 클로드 모델 id(없으면 기본) — 일 맡기기 명령줄의 `--model`. 루틴은 쓰지 않는다.
+    /// 설정에서 고른 클로드 모델 id(없으면 기본) — 명령줄의 `--model`.
     @ObservationIgnored private let claudeModel: @MainActor () -> String?
+    /// 설정에서 고른 클로드 생각 단계(없으면 기본) — 루틴 명령줄의 `--effort`.
+    @ObservationIgnored private let claudeEffort: @MainActor () -> String?
     @ObservationIgnored private let gateFactory: @MainActor () throws -> GateServing
     @ObservationIgnored private let siteModes: SiteModeStore
     @ObservationIgnored private let resources: URL
@@ -105,11 +107,13 @@ public final class AgentSession {
                 gateFactory: @escaping @MainActor () throws -> GateServing,
                 runnerFactory: @escaping @Sendable () -> InteractiveRunning = { ProcessRunner() },
                 claudeModel: @escaping @MainActor () -> String? = { nil },
+                claudeEffort: @escaping @MainActor () -> String? = { nil },
                 loginPath: @escaping @Sendable () -> String,
                 workDirectory: @escaping @Sendable () throws -> URL = { try AppPaths.workDirectory() },
                 sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }) {
         self.resources = resources; self.memoryHome = memoryHome; self.siteModes = siteModes
-        self.gateFactory = gateFactory; self.runnerFactory = runnerFactory; self.claudeModel = claudeModel
+        self.gateFactory = gateFactory; self.runnerFactory = runnerFactory
+        self.claudeModel = claudeModel; self.claudeEffort = claudeEffort
         self.loginPath = loginPath; self.workDirectory = workDirectory; self.sleep = sleep
     }
 
@@ -335,7 +339,8 @@ public final class AgentSession {
         let (exe, args) = run.unattended == nil
             ? AgentCommandBuilder.build(resources: resources, gate: gate.info, memoryHome: memoryHome, resumeSessionID: sessionID,
                                       model: claudeModel())
-            : AgentCommandBuilder.buildUnattended(resources: resources, gate: gate.info, memoryHome: memoryHome)
+            : AgentCommandBuilder.buildUnattended(resources: resources, gate: gate.info, memoryHome: memoryHome,
+                                                  model: claudeModel(), effort: claudeEffort())
         let limit = run.unattended == nil ? Self.jobTimeout : RoutinePolicy.timeout
         run.jobTimer = Task { [self] in
             do { try await sleep(limit) } catch { return }
@@ -594,8 +599,7 @@ public final class AgentSession {
             if !decision.allow { u.denied += 1 }
             return decision
         }
-        let mode = siteModes.mode(for: req.host)
-        switch ActionPolicy.decide(phase: phase, mode: mode, action: req.action, irreversible: req.irreversible) {
+        switch GateDecider.outcome(req, siteModes: siteModes, phase: phase) {
         case .allow:
             noteAllowed(req, run: run)
             return .allow

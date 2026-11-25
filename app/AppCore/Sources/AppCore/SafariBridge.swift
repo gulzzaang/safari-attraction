@@ -34,7 +34,7 @@ public enum SafariBridgeError: Error, Sendable, Equatable {
     public var hint: String {
         switch self {
         case .automationDenied:
-            return "사파리를 읽을 권한이 없어요. 시스템 설정 → 개인정보 보호 및 보안 → 자동화에서 사파리-어트랙션의 Safari 를 켜 주세요. 그동안 「이 페이지 함께」는 꺼 둘게요."
+            return "사파리를 읽을 권한이 없어요. 시스템 설정 → 개인정보 보호 및 보안 → 자동화에서 사파리-어트랙션의 Safari 를 켜 주세요."
         case .javaScriptDisabled:
             return "고른 글을 읽으려면 사파리 개발자 메뉴에서 「Apple 이벤트에서 JavaScript 허용」을 켜 주세요. 제목 · 주소는 그대로 붙어요."
         case .notRunning:

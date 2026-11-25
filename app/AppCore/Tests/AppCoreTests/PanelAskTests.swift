@@ -137,7 +137,7 @@ final class PanelAskTests: XCTestCase {
     func testRunFailuresBecomeAKoreanErrorLineAndNoDone() async throws {
         let cases: [(RunOutcome, String)] = [
             (.notFound("claude"), ModelKind.claude.notFoundMessage),
-            (.timedOut, "초가 지나 멈췄어요"),
+            (.timedOut, "5분 안에 끝나지 않아 멈췄어요"),
             (.failed("앱 전용 설정 폴더를 만들지 못했어요"), "앱 전용 설정 폴더를 만들지 못했어요"),
             (.finished(code: 3), "종료 코드 3"),
         ]

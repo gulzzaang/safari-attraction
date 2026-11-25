@@ -140,6 +140,7 @@ public final class PanelAskService: PanelBackend, @unchecked Sendable {
     private let runnerFactory: @Sendable () -> CommandRunning
     private let loginPath: @Sendable () -> String
     private let workDirectory: @Sendable () throws -> URL
+    private let supportDirectory: (@Sendable () throws -> URL)?
     private let timeout: TimeInterval
     private let geminiLoggedOut: @Sendable () async -> Bool
     private let onRateLimits: (@Sendable (UsageSnapshot) -> Void)?
@@ -156,12 +157,13 @@ public final class PanelAskService: PanelBackend, @unchecked Sendable {
                 runnerFactory: @escaping @Sendable () -> CommandRunning,
                 loginPath: @escaping @Sendable () -> String,
                 workDirectory: @escaping @Sendable () throws -> URL,
+                supportDirectory: (@Sendable () throws -> URL)? = nil,
                 timeout: TimeInterval = ProcessRunner.defaultTimeout,
                 geminiLoggedOut: @escaping @Sendable () async -> Bool,
                 onRateLimits: (@Sendable (UsageSnapshot) -> Void)? = nil) {
         self.selection = selection; self.runnerFactory = runnerFactory; self.loginPath = loginPath
-        self.workDirectory = workDirectory; self.timeout = timeout; self.geminiLoggedOut = geminiLoggedOut
-        self.onRateLimits = onRateLimits
+        self.workDirectory = workDirectory; self.supportDirectory = supportDirectory; self.timeout = timeout
+        self.geminiLoggedOut = geminiLoggedOut; self.onRateLimits = onRateLimits
     }
 
     public func info() async -> PanelInfo {
@@ -197,7 +199,7 @@ public final class PanelAskService: PanelBackend, @unchecked Sendable {
         let onRateLimits = self.onRateLimits
         let outcome = await withTaskCancellationHandler {
             await AskFlow.run(request: request, runner: runner, loginPath: loginPath, workDirectory: workDirectory,
-                              timeout: timeout, geminiLoggedOut: geminiLoggedOut) { step in
+                              supportDirectory: supportDirectory, timeout: timeout, geminiLoggedOut: geminiLoggedOut) { step in
                 switch step {
                 case .notice(let n):
                     emit(.delta("(\(n))\n\n"))   // 줄 종류를 새로 만들지 않고 답 맨 앞 글로

@@ -35,6 +35,7 @@ final class FakeRunner: CommandRunning, @unchecked Sendable {
     private let lock = NSLock()
     private var _calls: [Call] = []
     private var _stopCount = 0
+    private var _extendedBy: [TimeInterval] = []
     private var _script: Script = { _, _ in .finished(code: 0) }
     let stopEvents: AsyncStream<Void>
     private let stopCont: AsyncStream<Void>.Continuation
@@ -43,6 +44,7 @@ final class FakeRunner: CommandRunning, @unchecked Sendable {
 
     var calls: [Call] { lock.withLock { _calls } }
     var stopCount: Int { lock.withLock { _stopCount } }
+    var extendedBy: [TimeInterval] { lock.withLock { _extendedBy } }
     func setScript(_ s: @escaping Script) { lock.withLock { _script = s } }
 
     func run(executable: String, arguments: [String], workDir: URL, path: String, timeout: TimeInterval,
@@ -52,6 +54,7 @@ final class FakeRunner: CommandRunning, @unchecked Sendable {
         return await script(call, onEvent)
     }
     func stop() { lock.withLock { _stopCount += 1 }; stopCont.yield() }
+    func extendDeadline(by seconds: TimeInterval) { lock.withLock { _extendedBy.append(seconds) } }
 }
 
 /// Claude stream-json 한 줄.
@@ -337,7 +340,6 @@ final class ChatViewModelTests: XCTestCase {
 
     func testStopWhileStillReadingThePageDoesNotStartTheCommand() async throws {
         bridge.tab = .success(TabReading(page: PageContext(title: "T", url: "https://a.example")))
-        vm.attachPage = true
         vm.input = "q"
         let t = vm.send()
         vm.stop()   // 사파리 읽는 중에 멈춤
@@ -411,29 +413,29 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.messages.last?.error, "한도에 걸렸어요")
     }
 
-    func testTimeoutShowsMessageAndCanSendAgain() async {
+    func testTimeoutMessage() async {
         runner.setScript { _, _ in .timedOut }
         await ask("q")
-        XCTAssertEqual(vm.messages.last?.error, ModelKind.claude.userMessage(for: .timedOut))
+        XCTAssertEqual(vm.messages.last?.error, "5분 안에 끝나지 않아 멈췄어요 — 생각 단계를 낮추거나 나눠서 시켜 보세요")
         runner.setScript { _, emit in emit(claudeAssistantLine("됐다")); return .finished(code: 0) }
         await ask("다시")
         XCTAssertEqual(vm.messages.last?.text, "됐다")
         XCTAssertNil(vm.messages.last?.error)
     }
 
-    // MARK: 이 페이지 함께
+    // MARK: 지금 사파리 탭 자동 첨부
 
-    func testPageToggleOffNeverReadsSafari() async {
-        bridge.tab = .success(TabReading(page: PageContext(title: "T", url: "https://a.example")))
-        vm.attachPage = false
+    func testNoSafariWindowDropsPageSilently() async {
+        bridge.tab = .failure(.noWindow)
         await ask("q")
-        XCTAssertEqual(bridge.tabCalls, 0, "토글이 꺼져 있으면 사파리 탭을 읽지 않는다")
+        XCTAssertEqual(bridge.tabCalls, 1)
         XCTAssertFalse(runner.calls[0].prompt.contains("[지금 사파리 탭]"))
+        XCTAssertNil(vm.hint, "사파리 창이 없으면 조용히 뺀다")
+        XCTAssertNil(vm.messages[0].pageTitle)
     }
 
-    func testPageToggleOnReadsOnceAtSendTimeOffMainAndAttaches() async {
+    func testPageAlwaysAttachedWhenSafariHasTab() async {
         bridge.tab = .success(TabReading(page: PageContext(title: "제목 T", url: "https://a.example/x?q=1", selection: "고른 글입니다")))
-        vm.attachPage = true
         await ask("이 글 요약해 줘")
         XCTAssertEqual(bridge.tabCalls, 1)
         XCTAssertEqual(bridge.tabCalledOnMain, false, "사파리 읽기는 메인 스레드에서 하지 않는다")
@@ -441,45 +443,36 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(p.contains("[지금 사파리 탭]\n제목: 제목 T\n주소: https://a.example/x?q=1\n고른 글: 고른 글입니다\n"))
         XCTAssertTrue(p.hasSuffix("이 글 요약해 줘"))
         XCTAssertEqual(vm.messages[0].pageTitle, "제목 T", "사용자 말풍선에 붙은 페이지가 보인다")
-        XCTAssertTrue(vm.attachPage, "성공하면 토글은 그대로")
     }
 
-    func testEmptyURLStartPageIsTreatedAsNoPage() async {
+    func testEmptyURLStartPageIsDroppedSilently() async {
         bridge.tab = .success(TabReading(page: PageContext(title: "시작 페이지", url: "")))
-        vm.attachPage = true
         await ask("q")
         XCTAssertFalse(runner.calls[0].prompt.contains("[지금 사파리 탭]"))
-        XCTAssertNotNil(vm.hint)
+        XCTAssertNil(vm.hint, "시작 페이지 등은 조용히 뺀다")
         XCTAssertNil(vm.messages[0].pageTitle)
     }
 
-    func testConsentDeniedTurnsToggleOffWithHintAndBacksOffThirtySeconds() async {
+    func testConsentDeniedShowsHintAndBacksOffThirtySeconds() async {
         bridge.tab = .failure(.automationDenied)
-        vm.attachPage = true
         await ask("첫 질문")
         XCTAssertEqual(bridge.tabCalls, 1)
-        XCTAssertFalse(vm.attachPage, "허락이 없으면 토글을 끈다")
         XCTAssertEqual(vm.hint, SafariBridgeError.automationDenied.hint)
         XCTAssertFalse(runner.calls[0].prompt.contains("[지금 사파리 탭]"), "질문은 페이지 없이 그대로 보낸다")
 
-        // 30초 안에 다시 켜고 보내면 사파리를 또 건드리지 않는다.
+        // 30초 안에 다시 보내면 사파리를 또 건드리지 않는다.
         clock.advance(10)
-        vm.attachPage = true
         await ask("둘째 질문")
         XCTAssertEqual(bridge.tabCalls, 1, "30초 안에는 다시 읽지 않는다")
-        XCTAssertFalse(vm.attachPage)
-        XCTAssertNotNil(vm.hint)
         XCTAssertEqual(runner.calls.count, 2, "질문 자체는 보낸다")
 
         clock.advance(21)   // 처음부터 31초
-        vm.attachPage = true
         await ask("셋째 질문")
         XCTAssertEqual(bridge.tabCalls, 2, "30초가 지나면 다시 시도")
     }
 
     func testPendingConsentPromptShowsWaitingMessageNotTryAgainLater() async {
         bridge.tab = .failure(.timedOut)
-        vm.attachPage = true
         await ask("q")
         XCTAssertEqual(vm.hint?.contains("사파리 허락을 기다리는 중이에요"), true)
         XCTAssertFalse(vm.hint?.contains("잠시 뒤") ?? true)
@@ -488,7 +481,6 @@ final class ChatViewModelTests: XCTestCase {
 
     func testJavaScriptOffStillAttachesTitleAndURL() async {
         bridge.tab = .success(TabReading(page: PageContext(title: "T", url: "https://a.example"), selectionIssue: .javaScriptDisabled))
-        vm.attachPage = true
         await ask("q")
         XCTAssertTrue(runner.calls[0].prompt.contains("주소: https://a.example"))
         XCTAssertEqual(vm.hint, SafariBridgeError.javaScriptDisabled.hint)
@@ -523,7 +515,6 @@ final class ChatViewModelTests: XCTestCase {
 
     func testLastRunRecordKeepsOnlyHostAndNeverTheSelection() async throws {
         bridge.tab = .success(TabReading(page: PageContext(title: "비밀 제목", url: "https://secret.example/a/b?token=zzz", selection: "고른 글 비밀")))
-        vm.attachPage = true
         runner.setScript { _, emit in emit(claudeAssistantLine("답입니다")); emit(claudeResultLine(text: "답입니다")); return .finished(code: 0) }
         await ask("질문입니다")
         let r = try XCTUnwrap(vm.lastRun)
@@ -539,5 +530,357 @@ final class ChatViewModelTests: XCTestCase {
         await ask("q")
         XCTAssertEqual(vm.lastRun?.error, ModelKind.claude.notFoundMessage)
         XCTAssertNil(vm.lastRun?.attachedPage)
+    }
+
+    // MARK: 한 칸 질문 — 사파리 도구 · 관문 자리 · 허락 카드 · 생각 단계
+
+    private func makeGateRig(routineName: @escaping @MainActor () -> String? = { nil },
+                             hasNode: @escaping @Sendable (String) -> Bool = { _ in true },
+                             createRunScript: Bool = true,
+                             sleeper: ManualSleeper? = nil) throws -> (vm: ChatViewModel, fakeGate: FakeGate, gate: InteractiveGate, siteModes: SiteModeStore, support: URL, resources: URL) {
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent("vm-gate-\(UUID().uuidString)", isDirectory: true)
+        let resources = support.appendingPathComponent("Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: resources.appendingPathComponent("safari-attraction", isDirectory: true), withIntermediateDirectories: true)
+        if createRunScript {
+            try "#!/bin/sh\n".write(to: resources.appendingPathComponent("safari-attraction/run.sh"), atomically: true, encoding: .utf8)
+        }
+        addTeardownBlock { try? FileManager.default.removeItem(at: support) }
+        let fakeGate = FakeGate()
+        let ig = InteractiveGate(support: support, makeServer: { fakeGate }, routineName: routineName)
+        try ig.start()
+        addTeardownBlock { Task { @MainActor in ig.shutdown() } }
+        let siteModes = SiteModeStore(directory: support)
+        let settings = AppSettingsStore(directory: support)
+        let c = clock!
+        let sl = sleeper
+        let vm = ChatViewModel(
+            runner: runner, bridge: bridge,
+            loginPath: { "/test/bin" },
+            workDirectory: { support.appendingPathComponent("work", isDirectory: true) },
+            supportDirectory: { support },
+            now: { c.date },
+            enabledModels: ModelKind.allCases,
+            settings: settings,
+            interactiveGate: ig,
+            siteModes: siteModes,
+            safariResources: resources,
+            nodeCheck: hasNode,
+            sleep: { sec in
+                if let sl { try await sl.sleep(sec) }
+                else { try await Task.sleep(nanoseconds: UInt64(sec * 1_000_000_000)) }
+            }
+        )
+        return (vm, fakeGate, ig, siteModes, support, resources)
+    }
+
+    private func clickRequest(id: String = "g1", host: String = "www.example.com", action: String = "click",
+                              target: String = "로그인", value: String = "", irreversible: Bool? = false) -> GateRequest {
+        GateRequest(id: id, host: host, url: "https://\(host)/", action: action, target: target, value: value, irreversible: irreversible)
+    }
+
+    func testSendAttachesSafariToolsWhenLeaseFree() async throws {
+        let rig = try makeGateRig()
+        runner.setScript { _, emit in
+            emit(claudeAssistantLine("완료"))
+            emit(claudeResultLine(text: "완료"))
+            return .finished(code: 0)
+        }
+        rig.vm.input = "사파리 열어 줘"
+        await rig.vm.send()?.value
+        let args = try XCTUnwrap(runner.calls.first?.arguments)
+        let idx = try XCTUnwrap(args.firstIndex(of: "--mcp-config"))
+        let mcp = args[idx + 1]
+        XCTAssertTrue(mcp.contains(rig.resources.appendingPathComponent("safari-attraction/run.sh").path))
+        XCTAssertTrue(mcp.contains(GateLink.url(support: rig.support).path))
+        XCTAssertTrue(mcp.contains(rig.support.appendingPathComponent("memory").path))
+        XCTAssertFalse(args.contains("--safe-mode"))
+        XCTAssertNil(rig.vm.messages.last?.notice)
+        XCTAssertNil(rig.gate.holder, "질문이 끝나면 관문 자리를 푼다")
+    }
+
+    func testSecondAskWithoutLeaseShowsNotice() async throws {
+        let rig = try makeGateRig()
+        let held = try XCTUnwrap(rig.gate.acquire { _ in .allow })
+        defer { held.release() }
+        runner.setScript { _, emit in
+            emit(claudeAssistantLine("답만 했어요"))
+            emit(claudeResultLine(text: "답만 했어요"))
+            return .finished(code: 0)
+        }
+        rig.vm.input = "질문"
+        await rig.vm.send()?.value
+        XCTAssertEqual(rig.vm.messages.last?.notice, "다른 질문이 사파리를 쓰는 중이라 이번 답은 사파리를 움직이지 않아요")
+        let args = try XCTUnwrap(runner.calls.first?.arguments)
+        XCTAssertFalse(args.contains("--mcp-config"))
+        XCTAssertTrue(args.contains("--safe-mode"))
+    }
+
+    func testRoutineRunningShowsNoticeAndSkipsSafariTools() async throws {
+        let rig = try makeGateRig(routineName: { "아침 뉴스" })
+        runner.setScript { _, emit in
+            emit(claudeAssistantLine("답"))
+            return .finished(code: 0)
+        }
+        rig.vm.input = "질문"
+        await rig.vm.send()?.value
+        XCTAssertEqual(rig.vm.messages.last?.notice, "루틴 「아침 뉴스」 이 도는 중이라 이번 답은 사파리를 움직이지 않아요")
+        XCTAssertFalse(runner.calls[0].arguments.contains("--mcp-config"))
+    }
+
+    func testMissingNodeShowsNoticeAndReleasesLease() async throws {
+        let rig = try makeGateRig(hasNode: { _ in false })
+        runner.setScript { _, emit in
+            emit(claudeAssistantLine("답"))
+            return .finished(code: 0)
+        }
+        rig.vm.input = "질문"
+        await rig.vm.send()?.value
+        XCTAssertEqual(rig.vm.messages.last?.notice, "사파리 도구를 못 켰어요(Node 18 이상 필요) — 답만 해요")
+        XCTAssertFalse(runner.calls[0].arguments.contains("--mcp-config"))
+        XCTAssertNil(rig.gate.holder)
+    }
+
+    func testCardAllowResolvesGateAllow() async throws {
+        let rig = try makeGateRig()
+        let hold = Gate()
+        runner.setScript { _, emit in
+            await hold.wait()
+            emit(claudeAssistantLine("눌렀어요"))
+            emit(claudeResultLine(text: "눌렀어요"))
+            return .finished(code: 0)
+        }
+        rig.vm.input = "로그인 눌러 줘"
+        let sendTask = try XCTUnwrap(rig.vm.send())
+        try await waitUntil("실행 시작") { self.runner.calls.count == 1 }
+
+        let decisionTask = rig.fakeGate.request(clickRequest(target: "로그인"))
+        try await waitUntil("카드 표시") { rig.vm.messages.contains { $0.cardID != nil } }
+        let cardMsg = try XCTUnwrap(rig.vm.messages.first { $0.cardID != nil })
+        let cardID = try XCTUnwrap(cardMsg.cardID)
+        XCTAssertEqual(cardMsg.card, .actionCard(host: "www.example.com", action: "click", target: "로그인", value: "", danger: false, state: .pending))
+        XCTAssertTrue(rig.vm.hasPendingCard)
+
+        XCTAssertTrue(rig.vm.answerCard(id: cardID, .approve))
+        let decision = await decisionTask.value
+        XCTAssertEqual(decision, .allow)
+        XCTAssertFalse(rig.vm.hasPendingCard)
+        XCTAssertEqual(rig.vm.messages.first { $0.cardID == cardID }?.card,
+                       .actionCard(host: "www.example.com", action: "click", target: "로그인", value: "", danger: false, state: .approved))
+
+        await hold.open()
+        await sendTask.value
+        XCTAssertEqual(rig.vm.messages.last?.text, "눌렀어요")
+    }
+
+    func testCardDenyResolvesGateDeny() async throws {
+        let rig = try makeGateRig()
+        let hold = Gate()
+        runner.setScript { _, emit in
+            await hold.wait()
+            emit(claudeAssistantLine("안 눌렀어요"))
+            return .finished(code: 0)
+        }
+        rig.vm.input = "눌러 줘"
+        let sendTask = try XCTUnwrap(rig.vm.send())
+        try await waitUntil("실행 시작") { self.runner.calls.count == 1 }
+
+        let decisionTask = rig.fakeGate.request(clickRequest())
+        try await waitUntil("카드 표시") { rig.vm.messages.contains { $0.cardID != nil } }
+        let cardID = try XCTUnwrap(rig.vm.messages.first { $0.cardID != nil }?.cardID)
+
+        XCTAssertTrue(rig.vm.answerCard(id: cardID, .reject))
+        let decision = await decisionTask.value
+        XCTAssertEqual(decision, .deny(AgentSession.cardRejectedReason))
+        XCTAssertEqual(rig.vm.messages.first { $0.cardID == cardID }?.card,
+                       .actionCard(host: "www.example.com", action: "click", target: "로그인", value: "", danger: false, state: .rejected))
+
+        await hold.open()
+        await sendTask.value
+    }
+
+    func testCardAlwaysAllowSiteSavesMode() async throws {
+        let rig = try makeGateRig()
+        let hold = Gate()
+        runner.setScript { _, emit in
+            await hold.wait()
+            emit(claudeAssistantLine("완료"))
+            return .finished(code: 0)
+        }
+        rig.vm.input = "눌러 줘"
+        let sendTask = try XCTUnwrap(rig.vm.send())
+        try await waitUntil("실행 시작") { self.runner.calls.count == 1 }
+
+        let decisionTask = rig.fakeGate.request(clickRequest(host: "shop.example.com"))
+        try await waitUntil("카드 표시") { rig.vm.messages.contains { $0.cardID != nil } }
+        let cardID = try XCTUnwrap(rig.vm.messages.first { $0.cardID != nil }?.cardID)
+
+        XCTAssertTrue(rig.vm.answerCard(id: cardID, .alwaysAllowSite))
+        let decision = await decisionTask.value
+        XCTAssertEqual(decision, .allow)
+        XCTAssertEqual(rig.siteModes.mode(for: "shop.example.com"), .allowAll)
+        await hold.open()
+        await sendTask.value
+    }
+
+    func testCodeCardFromGateResolvesAllowAndRejectsAlwaysAllow() async throws {
+        let rig = try makeGateRig()
+        let hold = Gate()
+        runner.setScript { _, emit in await hold.wait(); emit(claudeAssistantLine("끝")); return .finished(code: 0) }
+        rig.vm.input = "실행해 줘"
+        let sendTask = try XCTUnwrap(rig.vm.send())
+        try await waitUntil("실행 시작") { self.runner.calls.count == 1 }
+
+        let decisionTask = rig.fakeGate.request(clickRequest(action: "code", target: "코드 실행", value: "require('child_process')", irreversible: true))
+        try await waitUntil("코드 카드") { rig.vm.messages.contains { $0.cardID != nil } }
+        let cardMsg = try XCTUnwrap(rig.vm.messages.first { $0.cardID != nil })
+        let cardID = try XCTUnwrap(cardMsg.cardID)
+        XCTAssertEqual(cardMsg.card, .codeCard(code: "require('child_process')", state: .pending))
+        XCTAssertFalse(rig.vm.answerCard(id: cardID, .alwaysAllowSite), "코드 카드는 늘 허락 불가")
+        XCTAssertTrue(rig.vm.answerCard(id: cardID, .approve))
+        let d = await decisionTask.value
+        XCTAssertEqual(d, .allow)
+        await hold.open()
+        await sendTask.value
+    }
+
+    func testStopWithdrawsPendingCardAndReleasesLease() async throws {
+        let rig = try makeGateRig()
+        runner.setScript { [runner = runner!] _, _ in
+            for await _ in runner.stopEvents { break }
+            return .stopped
+        }
+        rig.vm.input = "눌러 줘"
+        let sendTask = try XCTUnwrap(rig.vm.send())
+        try await waitUntil("실행 시작") { self.runner.calls.count == 1 }
+
+        let decisionTask = rig.fakeGate.request(clickRequest())
+        try await waitUntil("카드 표시") { rig.vm.messages.contains { $0.cardID != nil } }
+        let cardID = try XCTUnwrap(rig.vm.messages.first { $0.cardID != nil }?.cardID)
+
+        rig.vm.stop()
+        let decision = await decisionTask.value
+        XCTAssertEqual(decision, .deny(GateServer.stoppedReason))
+        XCTAssertFalse(rig.vm.hasPendingCard)
+        XCTAssertEqual(rig.vm.messages.first { $0.cardID == cardID }?.card,
+                       .actionCard(host: "www.example.com", action: "click", target: "로그인", value: "", danger: false, state: .stopped))
+        XCTAssertNil(rig.gate.holder, "멈추면 자리를 푼다")
+        await sendTask.value
+        XCTAssertFalse(rig.vm.isRunning)
+    }
+
+    func testCardWaitExtendsDeadline() async throws {
+        let rig = try makeGateRig()
+        let hold = Gate()
+        runner.setScript { _, emit in
+            await hold.wait()
+            emit(claudeAssistantLine("완료"))
+            return .finished(code: 0)
+        }
+        rig.vm.input = "눌러 줘"
+        let sendTask = try XCTUnwrap(rig.vm.send())
+        try await waitUntil("실행 시작") { self.runner.calls.count == 1 }
+
+        let decisionTask = rig.fakeGate.request(clickRequest())
+        try await waitUntil("카드 표시") { rig.vm.messages.contains { $0.cardID != nil } }
+        let cardID = try XCTUnwrap(rig.vm.messages.first { $0.cardID != nil }?.cardID)
+
+        clock.advance(42)
+        XCTAssertTrue(rig.vm.answerCard(id: cardID, .approve))
+        _ = await decisionTask.value
+        XCTAssertEqual(runner.extendedBy, [42], "카드를 기다린 시간만큼 마감을 뒤로 민다")
+
+        await hold.open()
+        await sendTask.value
+    }
+
+    func testCardExpiresAfter300Seconds() async throws {
+        let sl = ManualSleeper()
+        let rig = try makeGateRig(sleeper: sl)
+        let hold = Gate()
+        runner.setScript { _, emit in await hold.wait(); emit(claudeAssistantLine("끝")); return .finished(code: 0) }
+        rig.vm.input = "눌러 줘"
+        let sendTask = try XCTUnwrap(rig.vm.send())
+        try await waitUntil("실행 시작") { self.runner.calls.count == 1 }
+
+        let decisionTask = rig.fakeGate.request(clickRequest())
+        try await waitUntil("카드 시계") { sl.sleepingCount == 1 }
+        XCTAssertEqual(sl.requested, [300])
+        sl.advance(300)
+        let decision = await decisionTask.value
+        XCTAssertEqual(decision, .deny(AgentSession.cardExpiredReason))
+        XCTAssertFalse(rig.vm.hasPendingCard)
+
+        await hold.open()
+        await sendTask.value
+    }
+
+    func testEffortSavedPerCLIAndDefaultRemovesKey() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vm-effort-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+
+        let store = AppSettingsStore(directory: dir)
+        let c = clock!
+        let vm = ChatViewModel(runner: runner, bridge: bridge, loginPath: { "/test/bin" },
+                               workDirectory: { dir }, now: { c.date },
+                               enabledModels: ModelKind.allCases, settings: store)
+
+        XCTAssertEqual(vm.effortChoices(for: .claude), Effort.claudeLevels)
+        XCTAssertNil(vm.selectedEffort(for: .claude))
+
+        vm.setEffort("high", for: .claude)
+        vm.setEffort("low", for: .opencode)
+        XCTAssertEqual(vm.selectedEffort(for: .claude), "high")
+        XCTAssertEqual(vm.selectedEffort(for: .opencode), "low")
+        XCTAssertEqual(AppSettingsStore(directory: dir).current.efforts, ["claude": "high", "opencode": "low"])
+
+        // 클로드 질문에 --effort high 가 들어간다.
+        runner.setScript { _, emit in emit(claudeResultLine(text: "ok")); return .finished(code: 0) }
+        vm.input = "질문"
+        await vm.send()?.value
+        let args = try XCTUnwrap(runner.calls.first?.arguments)
+        XCTAssertEqual(args[try XCTUnwrap(args.firstIndex(of: "--effort")) + 1], "high")
+
+        // 기본(nil)을 고르면 키가 지워진다.
+        vm.setEffort(nil, for: .claude)
+        XCTAssertNil(vm.selectedEffort(for: .claude))
+        XCTAssertNil(AppSettingsStore(directory: dir).current.efforts["claude"])
+        XCTAssertEqual(AppSettingsStore(directory: dir).current.efforts["opencode"], "low")
+    }
+
+    func testOldAgySettingsSplitsIntoModelAndEffort() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vm-agy-old-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        try Data(#"{"selectedCLI":"gemini","models":{"gemini":"gemini-4-neon-xhigh"},"agyMode":"isolated","webSearch":true,"attachPage":true}"#.utf8)
+            .write(to: dir.appendingPathComponent("settings.json"))
+
+        let script = ScriptedCLIRunner()
+        let gdir = CLIEnvironment.agyGeminiDirectory(support: dir)
+        let cmd = CLICommands.agyModels(geminiDir: gdir)
+        let key = ([cmd.executable] + cmd.arguments).joined(separator: " ")
+        script.reply(key, stdout: "gemini-4-neon-low\tN Low\ngemini-4-neon-medium\tN Med\ngemini-4-neon-high\tN High\ngemini-4-neon-xhigh\tN XHigh\ngemini-pro-orchestrator\tOrch\n")
+        let bin = FileManager.default.temporaryDirectory.appendingPathComponent("fakebin-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let agyBin = bin.appendingPathComponent("agy")
+        try "#!/bin/sh\n".write(to: agyBin, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: agyBin.path)
+        addTeardownBlock { try? FileManager.default.removeItem(at: bin) }
+
+        let status = CLIStatusService(loginPath: { bin.path }, runnerFactory: { script }, workDirectory: { dir }, supportDirectory: { dir }, timeout: 5)
+        await status.refresh(.gemini, force: true)
+
+        let store = AppSettingsStore(directory: dir)
+        let c = clock!
+        let vm = ChatViewModel(runner: runner, bridge: bridge, loginPath: { bin.path },
+                               workDirectory: { dir }, supportDirectory: { dir }, now: { c.date },
+                               enabledModels: ModelKind.allCases, settings: store, status: status)
+
+        XCTAssertEqual(vm.model, .gemini)
+        XCTAssertEqual(vm.selectedDisplayModelID(for: .gemini), "gemini-4-neon")
+        XCTAssertEqual(vm.selectedEffort(for: .gemini), "xhigh")
+        XCTAssertEqual(Effort.label(vm.selectedEffort(for: .gemini)!), "매우 높음")
+        XCTAssertEqual(vm.selectedModelID(for: .gemini), "gemini-4-neon-xhigh")
+        XCTAssertEqual(vm.effortChoices(for: .gemini), ["low", "medium", "high", "xhigh"])
     }
 }

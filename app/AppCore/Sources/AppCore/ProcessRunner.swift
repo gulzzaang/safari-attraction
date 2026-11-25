@@ -46,6 +46,9 @@ public final class ProcessRunner: @unchecked Sendable {
     private var reason: Reason?
     private var stopRequested = false
     private var killItem: DispatchWorkItem?
+    private var timeoutItem: DispatchWorkItem?
+    private var deadline: Date?
+    private var runToken: UInt64 = 0
     private var _lastPID: pid_t = 0
     /// 자식 표준 입력으로 가는 파이프의 쓰기 끝(양방향으로 띄웠을 때만, 아니면 -1). `inputLock` 이 지킨다.
     /// 락 순서: `inputLock` 을 쥔 채 `lock` 을 잡지 않는다(그 반대도 마찬가지로 겹쳐 잡지 않음).
@@ -84,6 +87,15 @@ public final class ProcessRunner: @unchecked Sendable {
             guard active else { return }
             if pid == 0 { stopRequested = true; return } // 아직 띄우는 중 — 띄운 직후에 처리
             terminateLocked(.stopped)
+        }
+    }
+
+    /// 실행 중 시간 상한을 `seconds` 만큼 뒤로 민다(카드를 기다린 시간은 제한에서 뺀다).
+    public func extendDeadline(by seconds: TimeInterval) {
+        guard seconds > 0 else { return }
+        lock.withLock {
+            guard active, !exited, !reaped, reason == nil, let current = deadline else { return }
+            scheduleTimeoutLocked(deadline: current.addingTimeInterval(seconds), token: runToken)
         }
     }
 
@@ -177,8 +189,26 @@ public final class ProcessRunner: @unchecked Sendable {
             if active { return false }
             active = true; pid = 0; exited = false; reaped = false
             reason = nil; stopRequested = false; killItem = nil
+            timeoutItem?.cancel(); timeoutItem = nil; deadline = nil
+            runToken &+= 1
             return true
         }
+    }
+
+    /// lock 을 쥔 채 부른다.
+    private func scheduleTimeoutLocked(deadline: Date, token: UInt64) {
+        timeoutItem?.cancel()
+        self.deadline = deadline
+        let delay = max(0, deadline.timeIntervalSinceNow)
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.lock.withLock {
+                guard self.active, self.runToken == token, let d = self.deadline, Date() >= d else { return }
+                self.terminateLocked(.timedOut)
+            }
+        }
+        timeoutItem = item
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: item)
     }
 
     /// lock 을 쥔 채 부른다. 그룹 전체에 SIGTERM, grace 뒤 SIGKILL 예약.
@@ -198,7 +228,12 @@ public final class ProcessRunner: @unchecked Sendable {
     }
 
     private func finishRun() {
-        lock.withLock { active = false; killItem?.cancel(); killItem = nil }
+        lock.withLock {
+            active = false
+            killItem?.cancel(); killItem = nil
+            timeoutItem?.cancel(); timeoutItem = nil
+            deadline = nil
+        }
     }
 
     /// 자식 CLI 에 넘길 환경 — 이 앱을 띄운 Claude 의 내부 값(`CLAUDECODE` · `CLAUDE_CODE_*`)은 빼고 나머지는 그대로, PATH 는 지정값.
@@ -294,15 +329,7 @@ public final class ProcessRunner: @unchecked Sendable {
         lock.withLock {
             pid = child; _lastPID = child
             if stopRequested { terminateLocked(.stopped) }
-        }
-        var timeoutItem: DispatchWorkItem?
-        if timeout > 0 {
-            let item = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                self.lock.withLock { self.terminateLocked(.timedOut) }
-            }
-            timeoutItem = item
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: item)
+            else if timeout > 0 { scheduleTimeoutLocked(deadline: Date().addingTimeInterval(timeout), token: runToken) }
         }
 
         // 읽기: 두 줄기를 따로 읽어 한 줄짜리 큐로 순서 있게 전달.
@@ -345,7 +372,7 @@ public final class ProcessRunner: @unchecked Sendable {
             reaped = true
         }
         closeInput() // 자식이 끝났으니 입력 파이프도 닫는다(이후 쓰기는 무시)
-        timeoutItem?.cancel()
+        lock.withLock { timeoutItem?.cancel(); timeoutItem = nil; deadline = nil }
         readers.wait()
         deliver.sync {}
 
