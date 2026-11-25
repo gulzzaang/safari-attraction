@@ -296,38 +296,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: 끝낼 때
 
+    private func makeTerminationCoordinator() -> UpdateTerminationCoordinator {
+        let vm = viewModel, agent = agent, panel = panelService
+        return UpdateTerminationCoordinator(
+            updateService: updateService,
+            isWorkRunning: {
+                (vm?.isRunning ?? false) || (agent?.isRunning ?? false) || (panel?.isRunning ?? false)
+            },
+            stopAcceptingNewWork: { [weak self] in
+                self?.hub?.shutdown()   // 끝내는 중에 새 루틴이 시작되지 않게 시계부터 끈다
+                self?.interactiveGate?.shutdown()   // 기다리는 관문 요청을 거절하고 gate-link.json 을 지운다
+                self?.panelHost?.shutdown()   // 페이지 패널 질문의 CLI 도 멈추고 연결 파일을 지운다
+            },
+            shutdownRunningWork: {
+                vm?.shutdown()
+                agent?.shutdown()
+            },
+            shutdownRemaining: { [weak self] in
+                self?.settingsWindow?.shutdown()   // 도는 기기 코드 로그인을 멈춘다
+                self?.status?.shutdown()           // 상태 · 목록 · 남은 양을 읽는 중인 CLI 도 멈춘다
+                self?.controller?.shutdown()
+                self?.hotKeys?.shutdown()
+            },
+            replyShouldTerminate: { should in
+                NSApp.reply(toApplicationShouldTerminate: should)
+            },
+            onLaunchError: { error in
+                NSLog("사파리-어트랙션: 업데이트 바꿔 넣기 스크립트를 띄우지 못했어요 (%@)", error.localizedDescription)
+            }
+        )
+    }
+
     /// 답하는 중(옆 창 · 루틴 · 페이지 패널 질문)이면 CLI 를 먼저 멈춘다 — 멈춤은 SIGTERM, 2초 뒤 SIGKILL 이라 정리될 때까지 잠깐(최대 3초) 기다린다.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        updateService?.stopSchedule()
-        hub?.shutdown()   // 끝내는 중에 새 루틴이 시작되지 않게 시계부터 끈다
-        interactiveGate?.shutdown()   // 기다리는 관문 요청을 거절하고 gate-link.json 을 지운다
-        panelHost?.shutdown()   // 페이지 패널 질문의 CLI 도 멈추고 연결 파일을 지운다
-        let vm = viewModel, agent = agent, panel = panelService
-        guard (vm?.isRunning ?? false) || (agent?.isRunning ?? false) || (panel?.isRunning ?? false) else { return .terminateNow }
-        vm?.shutdown()
-        agent?.shutdown()
-        Task { @MainActor in
-            for _ in 0..<30 where (vm?.isRunning ?? false) || (agent?.isRunning ?? false) || (panel?.isRunning ?? false) {
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
-            NSApp.reply(toApplicationShouldTerminate: true)
+        switch makeTerminationCoordinator().beginTermination() {
+        case .terminateNow: return .terminateNow
+        case .terminateLater: return .terminateLater
         }
-        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        updateService?.stopSchedule()
-        hub?.shutdown()
-        interactiveGate?.shutdown()
-        panelHost?.shutdown()   // 두 끝내기 길 모두에서(여러 번 불려도 된다)
-        viewModel?.shutdown()
-        agent?.shutdown()
-        settingsWindow?.shutdown()   // 도는 기기 코드 로그인을 멈춘다
-        status?.shutdown()           // 상태 · 목록 · 남은 양을 읽는 중인 CLI 도 멈춘다
-        controller?.shutdown()
-        hotKeys?.shutdown()
         // 답하는 질문 · 루틴 정리가 끝난 뒤 준비된 업데이트가 있으면 바꿔 넣기 스크립트를 띄운다.
-        _ = try? updateService?.launchPendingReplacement()
+        makeTerminationCoordinator().finishTermination()
     }
 
     // MARK: 개발 · 시험용 열쇠 — `DEV=1 app/scripts/build.sh` 로 만든 빌드에서만 들어 있다(평소 빌드엔 주소 등록도 코드도 없음).

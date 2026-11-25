@@ -159,6 +159,8 @@ public final class UpdateService {
     @ObservationIgnored private let checkInterval: TimeInterval
     @ObservationIgnored private var scheduleTask: Task<Void, Never>?
     @ObservationIgnored private var isChecking = false
+    @ObservationIgnored private var isInstalling = false
+    @ObservationIgnored private var installGeneration: UInt64 = 0
 
     public convenience init(currentVersion: AppVersion,
                             currentAppURL: URL,
@@ -212,10 +214,11 @@ public final class UpdateService {
 
     /// 릴리스 목록을 확인한다. `userInitiated == false` 이면 실패해도 조용히 넘긴다.
     public func checkNow(userInitiated: Bool) async {
-        guard !isChecking, state != .installing else { return }
+        guard !isChecking, !isInstalling, state != .installing, pendingNewAppURL == nil else { return }
         isChecking = true
         defer { isChecking = false }
 
+        let generation = installGeneration
         let previousState = state
         if userInitiated {
             state = .checking
@@ -226,6 +229,9 @@ public final class UpdateService {
                 throw URLError(.badURL)
             }
             let (data, response) = try await fetchWithLimit(feedURL, AppUpdate.maxZipBytes)
+            guard !isInstalling, state != .installing, pendingNewAppURL == nil, installGeneration == generation else {
+                return
+            }
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 throw URLError(.badServerResponse)
             }
@@ -240,6 +246,9 @@ public final class UpdateService {
                 state = .idle
             }
         } catch {
+            guard !isInstalling, state != .installing, pendingNewAppURL == nil, installGeneration == generation else {
+                return
+            }
             if userInitiated {
                 state = .failed(UpdateMessages.checkFailed)
             } else {
@@ -275,7 +284,7 @@ public final class UpdateService {
     /// 성공하면 `pendingNewAppURL` 을 채우고 `.success(())` 를 돌려준다.
     /// 실제 바꿔 넣기는 앱 종료 순서를 거친 뒤 `launchPendingReplacement(pid:)` 에서 실행한다.
     public func install() async -> Result<Void, UpdateError> {
-        guard case .available(let release) = state else {
+        guard !isInstalling, pendingNewAppURL == nil, case .available(let release) = state else {
             return .failure(UpdateError(UpdateMessages.invalidFile))
         }
         guard UpdateVerifier.allowedDownloadURL(release.zipURL, allowLocalhostHTTP: allowLocalhostHTTP),
@@ -283,6 +292,10 @@ public final class UpdateService {
             state = .failed(UpdateMessages.invalidFile)
             return .failure(UpdateError(UpdateMessages.invalidFile))
         }
+
+        isInstalling = true
+        installGeneration &+= 1
+        defer { isInstalling = false }
 
         pendingNewAppURL = nil
         state = .installing
@@ -332,12 +345,13 @@ public final class UpdateService {
 
     /// 앱 종료 직전(`applicationWillTerminate`)에 준비된 새 앱 바꿔 넣기 스크립트를 띄운다.
     /// 준비된 업데이트가 없으면 `false` 를 돌려준다.
+    /// 스크립트 실행이 실패하면 `pendingNewAppURL` 을 지우지 않아 다시 시도할 수 있게 남긴다.
     @discardableResult
     public func launchPendingReplacement(pid: Int32 = ProcessInfo.processInfo.processIdentifier) throws -> Bool {
         guard let newAppURL = pendingNewAppURL else { return false }
-        pendingNewAppURL = nil
         let script = installer.replaceScript(oldApp: currentAppURL, newApp: newAppURL, pid: pid)
         try launchScript(script)
+        pendingNewAppURL = nil
         return true
     }
 
@@ -398,6 +412,79 @@ public final class UpdateService {
                 request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
             }
             return try await delegate.fetch(request, session: session)
+        }
+    }
+}
+
+/// 앱 종료 요청(`applicationShouldTerminate`)에 대한 결정.
+public enum UpdateTerminationDecision: Equatable, Sendable {
+    case terminateNow
+    case terminateLater
+}
+
+/// 앱 종료 순서(`applicationShouldTerminate` → `applicationWillTerminate`)와
+/// 준비된 업데이트 바꿔 넣기 스크립트 실행을 한 곳에서 조정한다.
+@MainActor
+public struct UpdateTerminationCoordinator {
+    private let updateService: UpdateService?
+    private let isWorkRunning: @MainActor () -> Bool
+    private let stopAcceptingNewWork: @MainActor () -> Void
+    private let shutdownRunningWork: @MainActor () -> Void
+    private let shutdownRemaining: @MainActor () -> Void
+    private let replyShouldTerminate: @MainActor (Bool) -> Void
+    private let pollIntervalNanoseconds: UInt64
+    private let maxWaitTicks: Int
+    private let onLaunchError: (@MainActor (Error) -> Void)?
+
+    public init(updateService: UpdateService?,
+                isWorkRunning: @escaping @MainActor () -> Bool,
+                stopAcceptingNewWork: @escaping @MainActor () -> Void,
+                shutdownRunningWork: @escaping @MainActor () -> Void,
+                shutdownRemaining: @escaping @MainActor () -> Void,
+                replyShouldTerminate: @escaping @MainActor (Bool) -> Void,
+                pollIntervalNanoseconds: UInt64 = 100_000_000,
+                maxWaitTicks: Int = 30,
+                onLaunchError: (@MainActor (Error) -> Void)? = nil) {
+        self.updateService = updateService
+        self.isWorkRunning = isWorkRunning
+        self.stopAcceptingNewWork = stopAcceptingNewWork
+        self.shutdownRunningWork = shutdownRunningWork
+        self.shutdownRemaining = shutdownRemaining
+        self.replyShouldTerminate = replyShouldTerminate
+        self.pollIntervalNanoseconds = pollIntervalNanoseconds
+        self.maxWaitTicks = maxWaitTicks
+        self.onLaunchError = onLaunchError
+    }
+
+    /// 답하는 질문 · 루틴 · 페이지 패널 작업이 돌고 있으면 정리가 끝날 때까지 기다린 뒤 종료를 허락한다.
+    public func beginTermination() -> UpdateTerminationDecision {
+        updateService?.stopSchedule()
+        stopAcceptingNewWork()
+        guard isWorkRunning() else { return .terminateNow }
+        shutdownRunningWork()
+        let isRunning = isWorkRunning
+        let reply = replyShouldTerminate
+        let interval = pollIntervalNanoseconds
+        let maxTicks = maxWaitTicks
+        Task { @MainActor in
+            for _ in 0..<maxTicks where isRunning() {
+                try? await Task.sleep(nanoseconds: interval)
+            }
+            reply(true)
+        }
+        return .terminateLater
+    }
+
+    /// 모든 정리 작업을 마친 뒤 준비된 업데이트가 있으면 바꿔 넣기 스크립트를 띄운다.
+    public func finishTermination(pid: Int32 = ProcessInfo.processInfo.processIdentifier) {
+        updateService?.stopSchedule()
+        stopAcceptingNewWork()
+        shutdownRunningWork()
+        shutdownRemaining()
+        do {
+            _ = try updateService?.launchPendingReplacement(pid: pid)
+        } catch {
+            onLaunchError?(error)
         }
     }
 }

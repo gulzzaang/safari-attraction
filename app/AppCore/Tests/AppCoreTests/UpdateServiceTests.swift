@@ -339,6 +339,8 @@ final class UpdateServiceTests: XCTestCase {
         final class Box: @unchecked Sendable {
             var events: [String] = []
             var launchedScript: String?
+            var workRunning = true
+            var replyContinuation: CheckedContinuation<Bool, Never>?
         }
         let box = Box()
 
@@ -365,14 +367,331 @@ final class UpdateServiceTests: XCTestCase {
         XCTAssertTrue(box.events.isEmpty)
         XCTAssertNotNil(svc.pendingNewAppURL)
 
-        // 답하는 질문 · 루틴이 정리되는 applicationShouldTerminate → applicationWillTerminate 순서 흉내.
-        box.events.append("shouldTerminateCleanupDone")
-        let launched = try svc.launchPendingReplacement(pid: 9876)
-        XCTAssertTrue(launched)
-        XCTAssertEqual(box.events, ["shouldTerminateCleanupDone", "launchReplace"])
+        // 답하는 질문 · 루틴이 돌고 있으면 beginTermination() 이 .terminateLater 를 돌려주고,
+        // 작업이 정리된 뒤 replyShouldTerminate(true) → finishTermination() 순서로 바꿔 넣기 스크립트를 띄운다.
+        let coordinator = UpdateTerminationCoordinator(
+            updateService: svc,
+            isWorkRunning: { box.workRunning },
+            stopAcceptingNewWork: { box.events.append("stopAcceptingNewWork") },
+            shutdownRunningWork: {
+                box.events.append("shutdownRunningWork")
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 15_000_000)
+                    box.workRunning = false
+                    box.events.append("workStopped")
+                }
+            },
+            shutdownRemaining: { box.events.append("shutdownRemaining") },
+            replyShouldTerminate: { should in
+                box.events.append("replyShouldTerminate(\(should))")
+                box.replyContinuation?.resume(returning: should)
+                box.replyContinuation = nil
+            },
+            pollIntervalNanoseconds: 5_000_000,
+            maxWaitTicks: 20
+        )
+
+        let shouldTerminate: Bool = await withCheckedContinuation { cont in
+            box.replyContinuation = cont
+            let decision = coordinator.beginTermination()
+            XCTAssertEqual(decision, .terminateLater)
+            // 작업 정리 대기 중에는 아직 바꿔 넣기 스크립트를 띄우지 않는다.
+            XCTAssertFalse(box.events.contains("launchReplace"))
+            XCTAssertNotNil(svc.pendingNewAppURL)
+        }
+        XCTAssertTrue(shouldTerminate)
+        XCTAssertFalse(box.events.contains("launchReplace"), "applicationWillTerminate 전에는 스크립트를 띄우지 않아야 한다")
+
+        coordinator.finishTermination(pid: 9876)
+        XCTAssertEqual(
+            box.events,
+            [
+                "stopAcceptingNewWork",
+                "shutdownRunningWork",
+                "workStopped",
+                "replyShouldTerminate(true)",
+                "stopAcceptingNewWork",
+                "shutdownRunningWork",
+                "shutdownRemaining",
+                "launchReplace",
+            ]
+        )
         XCTAssertTrue(box.launchedScript?.contains("9876") == true)
         XCTAssertNil(svc.pendingNewAppURL)
         // 두 번 불러도 중복 실행하지 않는다.
+        XCTAssertFalse(try svc.launchPendingReplacement(pid: 9876))
+
+        // 돌고 있는 작업이 없으면 .terminateNow 를 돌려준다.
+        let idleCoordinator = UpdateTerminationCoordinator(
+            updateService: svc,
+            isWorkRunning: { false },
+            stopAcceptingNewWork: {},
+            shutdownRunningWork: { XCTFail("도는 작업이 없으면 shutdownRunningWork 를 부르지 않아야 한다") },
+            shutdownRemaining: {},
+            replyShouldTerminate: { _ in XCTFail("즉시 종료면 비동기 reply 를 부르지 않아야 한다") }
+        )
+        XCTAssertEqual(idleCoordinator.beginTermination(), .terminateNow)
+    }
+
+    func testAutoCheckFinishingDuringInstallDoesNotOverwriteInstallingOrAllowConcurrentInstall() async throws {
+        final class Gate: @unchecked Sendable {
+            private let lock = NSLock()
+            private var feedContinuation: CheckedContinuation<Result<Data, Error>, Never>?
+            private var zipContinuation: CheckedContinuation<Data, Never>?
+            private var feedWaiters: [CheckedContinuation<Void, Never>] = []
+            private var zipWaiters: [CheckedContinuation<Void, Never>] = []
+            private var feedPaused = false
+            private var zipPaused = false
+            private var feedCallCount = 0
+            private var zipCallCount = 0
+
+            func nextFeedIndex() -> Int {
+                lock.withLock {
+                    feedCallCount += 1
+                    return feedCallCount
+                }
+            }
+
+            func nextZipIndex() -> Int {
+                lock.withLock {
+                    zipCallCount += 1
+                    return zipCallCount
+                }
+            }
+
+            func waitFeedRelease() async throws -> Data {
+                let res: Result<Data, Error> = await withCheckedContinuation { cont in
+                    let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                        feedContinuation = cont
+                        feedPaused = true
+                        let w = feedWaiters
+                        feedWaiters.removeAll()
+                        return w
+                    }
+                    waiters.forEach { $0.resume() }
+                }
+                return try res.get()
+            }
+
+            func waitUntilFeedPaused() async {
+                await withCheckedContinuation { cont in
+                    let already = lock.withLock { () -> Bool in
+                        if feedPaused { return true }
+                        feedWaiters.append(cont)
+                        return false
+                    }
+                    if already { cont.resume() }
+                }
+            }
+
+            func releaseFeed(_ result: Result<Data, Error>) {
+                let cont = lock.withLock { () -> CheckedContinuation<Result<Data, Error>, Never>? in
+                    let c = feedContinuation
+                    feedContinuation = nil
+                    feedPaused = false
+                    return c
+                }
+                cont?.resume(returning: result)
+            }
+
+            func waitZipRelease() async -> Data {
+                await withCheckedContinuation { cont in
+                    let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                        zipContinuation = cont
+                        zipPaused = true
+                        let w = zipWaiters
+                        zipWaiters.removeAll()
+                        return w
+                    }
+                    waiters.forEach { $0.resume() }
+                }
+            }
+
+            func waitUntilZipPaused() async {
+                await withCheckedContinuation { cont in
+                    let already = lock.withLock { () -> Bool in
+                        if zipPaused { return true }
+                        zipWaiters.append(cont)
+                        return false
+                    }
+                    if already { cont.resume() }
+                }
+            }
+
+            func releaseZip(_ data: Data) {
+                let cont = lock.withLock { () -> CheckedContinuation<Data, Never>? in
+                    let c = zipContinuation
+                    zipContinuation = nil
+                    zipPaused = false
+                    return c
+                }
+                cont?.resume(returning: data)
+            }
+
+            var totalZipCalls: Int { lock.withLock { zipCallCount } }
+        }
+
+        // 시나리오 1: 자동 확인이 도는 도중에 install() 시작 → 자동 확인이 성공(.available)으로 끝나도 .installing 을 덮어쓰지 않는다.
+        let dir1 = try tempDir()
+        let currentApp1 = dir1.appendingPathComponent("SafariAttractionApp.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: currentApp1, withIntermediateDirectories: true)
+        let stageRoot1 = dir1.appendingPathComponent("stage", isDirectory: true)
+        try FileManager.default.createDirectory(at: stageRoot1, withIntermediateDirectories: true)
+
+        let key = Curve25519.Signing.PrivateKey()
+        let pubB64 = key.publicKey.rawRepresentation.base64EncodedString()
+        let zipData = Data("valid-zip".utf8)
+        let sigB64 = try key.signature(for: zipData).base64EncodedString()
+        let feedJSON = makeReleaseJSON(version: "0.3.0")
+
+        let gate1 = Gate()
+        let svc1 = UpdateService(
+            currentVersion: try XCTUnwrap(AppVersion("0.2.0")),
+            currentAppURL: currentApp1,
+            publicKeyBase64: pubB64,
+            installer: UpdateInstaller(runnerFactory: { FakeRunner() }, stagingRoot: stageRoot1),
+            fetch: { url in
+                if url.absoluteString.hasSuffix(".sig") {
+                    return (Data(sigB64.utf8), Self.httpResponse(url: url))
+                }
+                if url.absoluteString.hasSuffix(".zip") {
+                    _ = gate1.nextZipIndex()
+                    let d = await gate1.waitZipRelease()
+                    return (d, Self.httpResponse(url: url))
+                }
+                if gate1.nextFeedIndex() == 1 {
+                    return (feedJSON, Self.httpResponse(url: url))
+                }
+                let d = try await gate1.waitFeedRelease()
+                return (d, Self.httpResponse(url: url))
+            }
+        )
+
+        await svc1.checkNow(userInitiated: false)
+        guard case .available = svc1.state else {
+            return XCTFail("초기 확인 후 .available 상태여야 한다")
+        }
+
+        // 두 번째 자동 확인 시작(응답 대기 중)
+        let autoCheckTask = Task { await svc1.checkNow(userInitiated: false) }
+        await gate1.waitUntilFeedPaused()
+
+        // 자동 확인이 도는 도중에 설치 시작
+        let installTask = Task { await svc1.install() }
+        await gate1.waitUntilZipPaused()
+        XCTAssertEqual(svc1.state, .installing)
+
+        // 자동 확인이 새 버전 응답으로 끝나도 .installing 을 덮어쓰지 않아야 한다.
+        gate1.releaseFeed(.success(feedJSON))
+        await autoCheckTask.value
+        XCTAssertEqual(svc1.state, .installing)
+
+        // 중복 설치 시도는 막혀야 한다.
+        let duplicateResult = await svc1.install()
+        XCTAssertEqual(failureMessage(duplicateResult), UpdateMessages.invalidFile)
+
+        // 첫 번째 설치만 완료되고 임시 폴더도 하나만 만들어진다.
+        gate1.releaseZip(zipData)
+        let firstResult = await installTask.value
+        XCTAssertTrue(isSuccess(firstResult))
+        XCTAssertEqual(gate1.totalZipCalls, 1)
+        XCTAssertNotNil(svc1.pendingNewAppURL)
+        let stages = try FileManager.default.contentsOfDirectory(at: stageRoot1, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("sa-update-") }
+        XCTAssertEqual(stages.count, 1)
+
+        // 시나리오 2: 자동 확인이 도는 도중에 install() 시작 → 자동 확인이 실패로 끝나도 previousState 로 .installing 을 덮어쓰지 않는다.
+        let gate2 = Gate()
+        let svc2 = UpdateService(
+            currentVersion: try XCTUnwrap(AppVersion("0.2.0")),
+            currentAppURL: currentApp1,
+            publicKeyBase64: pubB64,
+            installer: UpdateInstaller(runnerFactory: { FakeRunner() }, stagingRoot: stageRoot1),
+            fetch: { url in
+                if url.absoluteString.hasSuffix(".sig") {
+                    return (Data(sigB64.utf8), Self.httpResponse(url: url))
+                }
+                if url.absoluteString.hasSuffix(".zip") {
+                    let d = await gate2.waitZipRelease()
+                    return (d, Self.httpResponse(url: url))
+                }
+                if gate2.nextFeedIndex() == 1 {
+                    return (feedJSON, Self.httpResponse(url: url))
+                }
+                let d = try await gate2.waitFeedRelease()
+                return (d, Self.httpResponse(url: url))
+            }
+        )
+        await svc2.checkNow(userInitiated: false)
+        let failingCheckTask = Task { await svc2.checkNow(userInitiated: false) }
+        await gate2.waitUntilFeedPaused()
+        let installTask2 = Task { await svc2.install() }
+        await gate2.waitUntilZipPaused()
+        XCTAssertEqual(svc2.state, .installing)
+
+        gate2.releaseFeed(.failure(URLError(.timedOut)))
+        await failingCheckTask.value
+        XCTAssertEqual(svc2.state, .installing)
+
+        gate2.releaseZip(zipData)
+        let result2 = await installTask2.value
+        XCTAssertTrue(isSuccess(result2))
+    }
+
+    func testLaunchPendingReplacementPreservesPendingURLWhenScriptLaunchFails() async throws {
+        let dir = try tempDir()
+        let currentApp = dir.appendingPathComponent("SafariAttractionApp.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: currentApp, withIntermediateDirectories: true)
+
+        let key = Curve25519.Signing.PrivateKey()
+        let pubB64 = key.publicKey.rawRepresentation.base64EncodedString()
+        let zipData = Data("valid-zip".utf8)
+        let sigB64 = try key.signature(for: zipData).base64EncodedString()
+        let feedJSON = makeReleaseJSON(version: "0.3.0")
+
+        final class LauncherState: @unchecked Sendable {
+            private let lock = NSLock()
+            private var attempts = 0
+            func nextAttempt() -> Int {
+                lock.withLock {
+                    attempts += 1
+                    return attempts
+                }
+            }
+        }
+        let launcherState = LauncherState()
+
+        let svc = UpdateService(
+            currentVersion: try XCTUnwrap(AppVersion("0.2.0")),
+            currentAppURL: currentApp,
+            publicKeyBase64: pubB64,
+            installer: UpdateInstaller(runnerFactory: { FakeRunner() }, stagingRoot: dir),
+            fetch: { url in
+                if url.absoluteString.hasSuffix(".sig") { return (Data(sigB64.utf8), Self.httpResponse(url: url)) }
+                if url.absoluteString.hasSuffix(".zip") { return (zipData, Self.httpResponse(url: url)) }
+                return (feedJSON, Self.httpResponse(url: url))
+            },
+            launchScript: { _ in
+                if launcherState.nextAttempt() == 1 {
+                    throw UpdateInstallError.scriptLaunchFailed
+                }
+            }
+        )
+
+        await svc.checkNow(userInitiated: false)
+        let result = await svc.install()
+        XCTAssertTrue(isSuccess(result))
+        let preparedURL = try XCTUnwrap(svc.pendingNewAppURL)
+
+        // 첫 실행이 실패하면 pendingNewAppURL 이 그대로 남아야 한다.
+        XCTAssertThrowsError(try svc.launchPendingReplacement(pid: 9876)) { error in
+            XCTAssertEqual(error as? UpdateInstallError, .scriptLaunchFailed)
+        }
+        XCTAssertEqual(svc.pendingNewAppURL, preparedURL)
+
+        // 다시 시도해 성공하면 그제서야 pendingNewAppURL 을 비운다.
+        XCTAssertTrue(try svc.launchPendingReplacement(pid: 9876))
+        XCTAssertNil(svc.pendingNewAppURL)
         XCTAssertFalse(try svc.launchPendingReplacement(pid: 9876))
     }
 

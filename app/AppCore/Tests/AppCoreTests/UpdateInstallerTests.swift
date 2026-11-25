@@ -218,21 +218,71 @@ final class UpdateInstallerTests: XCTestCase {
         XCTAssertFalse(script.contains("STAGE_DIR="))
     }
 
-    func testReplaceScriptCleansUpManagedStageDirOnSuccess() {
+    func testReplaceScriptCleansUpManagedStageDirOnAllExitPaths() throws {
         let installer = UpdateInstaller()
         let oldApp = URL(fileURLWithPath: "/Users/test user/Applications/SafariAttractionApp.app")
-        let stageDir = "/tmp/my's dir/sa-update-1234-ABCD"
-        let newApp = URL(fileURLWithPath: "\(stageDir)/SafariAttractionApp.app")
+        let stageDirPath = "/tmp/my's dir/sa-update-1234-ABCD"
+        let newApp = URL(fileURLWithPath: "\(stageDirPath)/SafariAttractionApp.app")
         let script = installer.replaceScript(oldApp: oldApp, newApp: newApp, pid: 4242)
 
         XCTAssertTrue(script.contains("STAGE_DIR='/tmp/my'\\''s dir/sa-update-1234-ABCD'"))
         XCTAssertTrue(script.contains(#"rm -rf "$STAGE_DIR" 2>/dev/null || true"#))
-        // 임시 폴더 정리는 새 앱 실행(open) 성공 뒤 마지막에 와야 한다.
-        if let openIdx = script.range(of: #"open "$OLD_APP" || rollback"#)?.upperBound,
-           let cleanupIdx = script.range(of: #"rm -rf "$STAGE_DIR""#)?.lowerBound {
-            XCTAssertGreaterThan(cleanupIdx, openIdx)
-        } else {
-            XCTFail("open 이후 STAGE_DIR 정리 줄이 있어야 한다")
+        XCTAssertTrue(script.contains("trap cleanup EXIT"), "성공 · 되돌리기 · PID 대기 실패 모든 종료 경로에서 STAGE_DIR 을 정리해야 한다")
+
+        // 생성된 스크립트가 /bin/sh 문법을 통과하고, 조기 실패(mv 실패) 종료에서도 STAGE_DIR 을 지운다.
+        let dir = try tempDir()
+        let managedStage = dir.appendingPathComponent("sa-update-\(UUID().uuidString)", isDirectory: true)
+        let stagedApp = managedStage.appendingPathComponent("SafariAttractionApp.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: stagedApp, withIntermediateDirectories: true)
+        let missingOldApp = dir.appendingPathComponent("MissingOld.app", isDirectory: true)
+        let realScript = installer.replaceScript(oldApp: missingOldApp, newApp: stagedApp, pid: 999_999)
+        let scriptFile = dir.appendingPathComponent("check.sh")
+        try Data(realScript.utf8).write(to: scriptFile)
+
+        let syntax = Process()
+        syntax.executableURL = URL(fileURLWithPath: "/bin/sh")
+        syntax.arguments = ["-n", scriptFile.path]
+        try syntax.run()
+        syntax.waitUntilExit()
+        XCTAssertEqual(syntax.terminationStatus, 0)
+
+        let run = Process()
+        run.executableURL = URL(fileURLWithPath: "/bin/sh")
+        run.arguments = [scriptFile.path]
+        run.standardInput = FileHandle.nullDevice
+        run.standardOutput = FileHandle.nullDevice
+        run.standardError = FileHandle.nullDevice
+        try run.run()
+        run.waitUntilExit()
+        XCTAssertEqual(run.terminationStatus, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: managedStage.path),
+                       "조기 종료 경로에서도 STAGE_DIR 을 정리해야 한다")
+    }
+
+    func testSpawnReplaceScriptRemovesTemporaryScriptFileAfterExit() async throws {
+        let dir = try tempDir()
+
+        for (name, exitCode) in [("ok", 0), ("fail", 1)] {
+            let marker = dir.appendingPathComponent("marker-\(name)")
+            let script = """
+            #!/bin/sh
+            printf '%s' '\(name)' > \(UpdateInstaller.shellQuote(marker.path))
+            exit \(exitCode)
+            """
+            try UpdateInstaller.spawnReplaceScript(script, in: dir)
+
+            var finished = false
+            for _ in 0..<60 {
+                let hasMarker = FileManager.default.fileExists(atPath: marker.path)
+                let leftovers = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?
+                    .filter { $0.lastPathComponent.hasPrefix("sa-replace-") } ?? []
+                if hasMarker && leftovers.isEmpty {
+                    finished = true
+                    break
+                }
+                try await Task.sleep(nanoseconds: 25_000_000)
+            }
+            XCTAssertTrue(finished, "실행이 끝난 sa-replace-*.sh 임시 스크립트 파일이 정리되어야 한다(\(name))")
         }
     }
 }

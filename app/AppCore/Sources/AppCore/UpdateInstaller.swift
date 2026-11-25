@@ -119,12 +119,24 @@ public final class UpdateInstaller: Sendable {
         let stageDir = newApp.standardizedFileURL.deletingLastPathComponent()
         let oldParent = oldApp.standardizedFileURL.deletingLastPathComponent()
         let hasManagedStageDir = stageDir.lastPathComponent.hasPrefix("sa-update-") && stageDir.path != oldParent.path
-        let stageVarLine = hasManagedStageDir ? "\nSTAGE_DIR=\(Self.shellQuote(stageDir.path))" : ""
-        let stageCleanupLine = hasManagedStageDir ? "\nrm -rf \"$STAGE_DIR\" 2>/dev/null || true" : ""
+        let stageSetupBlock: String
+        if hasManagedStageDir {
+            let qStage = Self.shellQuote(stageDir.path)
+            stageSetupBlock = """
+
+            STAGE_DIR=\(qStage)
+            cleanup() {
+              rm -rf "$STAGE_DIR" 2>/dev/null || true
+            }
+            trap cleanup EXIT
+            """
+        } else {
+            stageSetupBlock = ""
+        }
         return """
         #!/bin/sh
         OLD_APP=\(qOld)
-        NEW_APP=\(qNew)\(stageVarLine)
+        NEW_APP=\(qNew)\(stageSetupBlock)
         BACKUP_APP="${OLD_APP}.backup-$$"
         APPEX="${OLD_APP}/\(AppUpdate.extensionRelativePath)"
         PID=\(pid)
@@ -158,11 +170,12 @@ public final class UpdateInstaller: Sendable {
           /usr/bin/pluginkit -a "$APPEX" || rollback
         fi
         env -i HOME="$HOME" USER="$USER" PATH=/usr/bin:/bin open "$OLD_APP" || rollback
-        rm -rf "$BACKUP_APP" 2>/dev/null || true\(stageCleanupLine)
+        rm -rf "$BACKUP_APP" 2>/dev/null || true
         """
     }
 
     /// 스크립트 문자열을 임시 파일로 저장하고 `/bin/sh` 를 분리 실행한다(기다리지 않고 바로 돌아온다).
+    /// 실행이 끝나면 성공 · 실패 여부와 관계없이 임시 `sa-replace-*.sh` 파일을 지운다.
     public static func spawnReplaceScript(_ script: String, in directory: URL = FileManager.default.temporaryDirectory) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -172,7 +185,12 @@ public final class UpdateInstaller: Sendable {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [scriptURL.path]
+        process.arguments = [
+            "-c",
+            #"script_path="$1"; trap 'rm -f "$script_path" 2>/dev/null || true' EXIT; /bin/sh "$script_path""#,
+            "_",
+            scriptURL.path,
+        ]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
